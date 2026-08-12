@@ -1,0 +1,8 @@
+setup_common() {
+  MEMCAP_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
+  export MEMCAP_ROOT
+  MEMCAP_CONFIG_HOME="$BATS_TEST_TMPDIR/config"
+  MEMCAP_STATE_HOME="$BATS_TEST_TMPDIR/state"
+  export MEMCAP_CONFIG_HOME MEMCAP_STATE_HOME
+  mkdir -p "$MEMCAP_CONFIG_HOME" "$MEMCAP_STATE_HOME"
+}

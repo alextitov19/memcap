@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -uo pipefail
+MEMCAP_ROOT="${MEMCAP_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+LIB="$MEMCAP_ROOT/libexec"
+# shellcheck source=/dev/null
+. "$LIB/common.sh"
+
+case "${1:-help}" in
+  help|--help|-h) echo "memcap — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|watch|clean}" ;;
+  *) echo "unknown command: $1" >&2; exit 1 ;;
+esac
