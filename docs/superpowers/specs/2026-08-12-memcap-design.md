@@ -130,9 +130,14 @@ Reserve for the human, then everything else shares the remainder:
 
 ```
 reserve = min(max(total_gb * 0.35, 6), 16)
-cap     = round(total_gb - reserve)
-docker  = clamp(cap * 0.4, 4, 12)
+cap     = round(total_gb - reserve)          # floored at 40% of the machine
+docker  = clamp(cap * 0.4, 2, 12)
+docker  = min(docker, cap - 2)               # agents always keep at least 2 GB
 ```
+
+The last line is not cosmetic: without it an 8 GB machine yields cap 3 and docker 4, so
+the agent budget is negative and the watchdog treats agents as permanently over budget,
+killing a dev server on every pass. It does not affect 16 GB and larger.
 
 | Machine | Reserve | Cap | Docker slice |
 |---|---|---|---|
