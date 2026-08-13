@@ -24,6 +24,14 @@ setup() { setup_common;
   [ "$output" -ge 3 ]
 }
 
+@test "agents keep at least 1 GB at every machine size" {
+  for m in 8 16 24 32 64; do
+    cap=$(mc_cap_gb "$m")
+    d=$(mc_docker_gb "$cap")
+    [ $((cap - d)) -ge 1 ]
+  done
+}
+
 @test "stacks profile gives docker the larger share" {
   run mc_profile_split 16 stacks
   [ "$output" = "10 6" ]

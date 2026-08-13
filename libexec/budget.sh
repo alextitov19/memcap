@@ -17,9 +17,18 @@ mc_cap_gb() {
   awk -v t="$1" -v r="$r" 'BEGIN{ c=t-r; f=t*0.4; if(c<f)c=f; printf "%d", int(c+0.5) }'
 }
 
-# Docker VM ceiling: 40% of the cap, clamped to a sane 4-12 GB.
+# Docker VM ceiling: 40% of the cap within sane absolute bounds, but never so large
+# that agents are left with less than 2 GB. Without that last clamp an 8 GB machine
+# produces cap 3 / docker 4, i.e. a NEGATIVE agent budget, and `watch` then treats
+# agents as permanently over budget and kills a dev server every pass.
+# Values at 16/24/32/64 GB are unaffected by the clamp; only small machines move.
 mc_docker_gb() {
-  awk -v c="$1" 'BEGIN{ d=c*0.4; if(d<4)d=4; if(d>12)d=12; printf "%d", int(d+0.5) }'
+  awk -v c="$1" 'BEGIN{
+    d=c*0.4
+    if(d<2)d=2; if(d>12)d=12
+    m=c-2; if(d>m)d=m
+    if(d<0)d=0
+    printf "%d", int(d+0.5) }'
 }
 
 # Profiles are percentages so they mean the same thing on any machine size.
