@@ -5,6 +5,10 @@ setup() { setup_common;
   source "$MEMCAP_ROOT/libexec/budget.sh";
 }
 
+@test "reserve is clamped to a 6 GB floor" { run mc_reserve_gb 8;  [ "${output%.*}" = "6" ]; }
+@test "reserve is 35 percent mid-range"    { run mc_reserve_gb 24; [ "${output%.*}" = "8" ]; }
+@test "reserve is clamped to a 16 GB cap"  { run mc_reserve_gb 64; [ "${output%.*}" = "16" ]; }
+
 @test "cap for 16 GB is 10" { run mc_cap_gb 16; [ "$output" = "10" ]; }
 @test "cap for 24 GB is 16" { run mc_cap_gb 24; [ "$output" = "16" ]; }
 @test "cap for 32 GB is 21" { run mc_cap_gb 32; [ "$output" = "21" ]; }

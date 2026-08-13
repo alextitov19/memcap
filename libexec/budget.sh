@@ -9,12 +9,12 @@ mc_reserve_gb() {
 }
 
 # Everything agent-related shares what is left. Floored at 40% of the machine so a
-# small laptop still gets a usable budget rather than zero.
+# small laptop still gets a usable budget rather than zero. Derives the reserve from
+# mc_reserve_gb rather than re-inlining the clamp, so the budget rule lives in exactly
+# one place and a future change to 35%/6/16 cannot silently diverge.
 mc_cap_gb() {
-  awk -v t="$1" '
-    BEGIN{ r=t*0.35; if(r<6)r=6; if(r>16)r=16
-           c=t-r; f=t*0.4; if(c<f)c=f
-           printf "%d", int(c+0.5) }'
+  local r; r=$(mc_reserve_gb "$1")
+  awk -v t="$1" -v r="$r" 'BEGIN{ c=t-r; f=t*0.4; if(c<f)c=f; printf "%d", int(c+0.5) }'
 }
 
 # Docker VM ceiling: 40% of the cap, clamped to a sane 4-12 GB.
