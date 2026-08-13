@@ -1,0 +1,6 @@
+91633 90699 178000 claude
+91650 91633  21040 /Library/Java/JavaVirtualMachines/jdk-22.jdk/Contents/Home/bin/java -classpath /Users/x/.maestro/lib/* maestro.cli.AppKt
+12589 91633   4976 rg -A1 ms-playwright
+12600     1 148000 /Users/x/Library/Caches/ms-playwright/chromium-1187/chrome-mac/headless_shell --type=renderer
+55000 91633 512000 /Users/x/proj/node_modules/.bin/vite
+70001     1 9880000 /System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine

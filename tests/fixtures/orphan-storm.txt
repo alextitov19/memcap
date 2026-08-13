@@ -1,0 +1,5 @@
+ 8506     1  19280 /Users/x/.nvm/versions/node/v22.12.0/bin/node --import file:///Users/x/proj/node_modules/@esbuild-kit/esm-loader/dist/loader.mjs server/index.ts
+ 8507     1  17088 /Users/x/.nvm/versions/node/v22.12.0/bin/node --import file:///Users/x/proj/node_modules/@esbuild-kit/esm-loader/dist/loader.mjs server/index.ts
+ 8524  8507   7280 /Users/x/proj/node_modules/@esbuild-kit/esm-loader/node_modules/@esbuild/darwin-arm64/bin/esbuild --service=0.28.1 --ping
+91633 90699 178000 claude
+93077 91633  12000 /bin/zsh -c source /Users/x/.claude/shell-snapshots/snap.sh && npm run dev
