@@ -34,6 +34,12 @@ case "${1:-help}" in
     mc_reap_orphans
     mc_reap_sims
     ;;
+  docker)
+    shift
+    # shellcheck source=/dev/null
+    . "$LIB/docker.sh"
+    mc_docker_apply "$@"
+    ;;
   off)    mkdir -p "$(mc_state_dir)"; touch "$(mc_state_dir)/paused"; echo "memcap paused" ;;
   on)     rm -f "$(mc_state_dir)/paused"; echo "memcap resumed" ;;
   help|--help|-h) echo "memcap — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|watch|clean|profile|docker|off|on}" ;;
