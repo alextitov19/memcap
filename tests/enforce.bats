@@ -7,6 +7,14 @@ setup() {
   source "$MEMCAP_ROOT/libexec/roots.sh"
   # shellcheck source=/dev/null
   source "$MEMCAP_ROOT/libexec/enforce.sh"
+  # Belt: no test in this file may ever send a real kill, whatever else goes wrong.
+  # `mc_watch` records real sweep roots from live agent cwds and, if this machine is
+  # over budget, runs tier 1/2/3 for real against real pids -- exactly the scenario
+  # this belt exists to prevent, mirroring docker.bats's MC_DRY_RUN=1 for the same
+  # reason. Individual tests below still set MC_DRY_RUN=1 explicitly before calling
+  # enforcement functions directly; this covers the ones that shell out to
+  # `bin/memcap watch`/`clean` and would otherwise inherit no override at all.
+  export MC_DRY_RUN=1
 }
 
 @test "dry run reports without killing" {
