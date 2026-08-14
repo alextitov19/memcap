@@ -34,6 +34,12 @@ case "${1:-help}" in
     mc_reap_orphans
     mc_reap_sims
     ;;
+  profile)
+    shift
+    # shellcheck source=/dev/null
+    . "$LIB/profile.sh"
+    if [ $# -eq 0 ]; then mc_profile_list; else mc_profile_set "$1"; fi
+    ;;
   docker)
     shift
     case "${1:-}" in
