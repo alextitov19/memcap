@@ -39,7 +39,8 @@ fixture() { cat "$MEMCAP_ROOT/tests/fixtures/$1"; }
 }
 
 @test "EXTRA_AGENTS from the config extends the agent list" {
-  export EXTRA_AGENTS="mycustomagent"
+  # shellcheck disable=SC2034  # consumed by mc_classify via awk -v
+  EXTRA_AGENTS="mycustomagent"
   eval "$(printf '%s\n' '  999     1  50000 /usr/local/bin/mycustomagent --run' | mc_classify)"
   [[ "$AGENTPIDS" == *999* ]]
 }
