@@ -4,8 +4,15 @@ MEMCAP_ROOT="${MEMCAP_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 LIB="$MEMCAP_ROOT/libexec"
 # shellcheck source=/dev/null
 . "$LIB/common.sh"
+for m in budget detect measure classify roots status; do
+  # shellcheck source=/dev/null
+  . "$LIB/$m.sh"
+done
+# shellcheck source=/dev/null
+[ -f "$(mc_config_file)" ] && . "$(mc_config_file)"
 
 case "${1:-help}" in
-  help|--help|-h) echo "memcap — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|watch|clean}" ;;
+  status) mc_render_status ;;
+  help|--help|-h) echo "memcap — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|watch|clean|profile|docker|off|on}" ;;
   *) echo "unknown command: $1" >&2; exit 1 ;;
 esac
