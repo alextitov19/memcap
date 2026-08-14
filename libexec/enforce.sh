@@ -3,8 +3,37 @@ set -uo pipefail
 
 MC_DRY_RUN="${MC_DRY_RUN:-0}"
 
+# Every pid memcap kills passes through here, so the protection filter lives here too
+# rather than in one tier. A tier-2 subtree walk is role-blind: if a dev server has an
+# agent CLI anywhere beneath it -- an ordinary shape in agentic workflows -- a naive
+# walk would kill the agent along with the server.
+mc_self_ancestry() {
+  local p="$$" out=" $$ " i=0
+  while [ "$i" -lt 8 ]; do
+    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+    [ -z "$p" ] && break
+    [ "$p" = "0" ] && break
+    [ "$p" = "1" ] && break
+    out="$out$p "
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+
+mc_filter_protected() {
+  local pid out="" self
+  self=$(mc_self_ancestry)
+  for pid in $1; do
+    case " ${AGENTPIDS:-} " in *" $pid "*) continue ;; esac
+    case "$self" in *" $pid "*) continue ;; esac
+    out="$out $pid"
+  done
+  printf '%s' "$out"
+}
+
 mc_kill_pids() {
-  local pids="$1" reason="$2" p alive
+  local pids reason="$2" p alive
+  pids=$(mc_filter_protected "$1")
   [ -z "${pids// /}" ] && return 0
   if [ "$MC_DRY_RUN" = "1" ]; then
     echo "would kill ($reason): $pids"; return 0

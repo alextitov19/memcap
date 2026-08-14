@@ -27,6 +27,9 @@ case "${1:-help}" in
   clean)
     # shellcheck source=/dev/null
     . "$LIB/enforce.sh"
+    # `memcap off` is a kill switch, so it stops manual sweeps too. Otherwise
+    # "paused" would mean "paused unless you type the other command".
+    if mc_is_paused; then echo "memcap is paused (memcap on to resume)"; exit 0; fi
     eval "$(mc_ps_snapshot | mc_classify)"
     mc_reap_orphans
     mc_reap_sims

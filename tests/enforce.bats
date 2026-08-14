@@ -143,3 +143,77 @@ setup() {
   [ "$status" -ne 0 ]
   [[ "$output" == *misconfigured* ]]
 }
+
+# --- Review round 1, Finding 1 (CRITICAL): never kill an agent CLI via a subtree
+# walk. mc_kill_pids is the single choke point every tier's kill list passes
+# through, so the protection filter is tested there directly, plus once more at
+# the tier-2 level to prove a real subtree gets it right end to end.
+@test "mc_kill_pids filters out a pid present in AGENTPIDS" {
+  sleep 600 & victim=$!
+  # shellcheck disable=SC2034  # consumed by mc_filter_protected
+  AGENTPIDS="$victim"
+  MC_DRY_RUN=1
+  output=$(mc_kill_pids "$victim" "test")
+  kill -0 "$victim"
+  kill "$victim" 2>/dev/null
+  [ -z "$output" ]
+}
+
+@test "mc_kill_pids filters out memcap's own pid" {
+  MC_DRY_RUN=1
+  output=$(mc_kill_pids "$$" "test")
+  [ -z "$output" ]
+}
+
+@test "mc_kill_pids filters out its own parent, not just itself" {
+  parent=$(ps -o ppid= -p $$ | tr -d ' ')
+  MC_DRY_RUN=1
+  output=$(mc_kill_pids "$parent" "test")
+  [ -z "$output" ]
+}
+
+@test "mc_kill_pids does not filter out an ordinary, unrelated pid" {
+  sleep 600 & victim=$!
+  AGENTPIDS=""
+  MC_DRY_RUN=1
+  output=$(mc_kill_pids "$victim" "test")
+  kill -0 "$victim"
+  kill "$victim" 2>/dev/null
+  [[ "$output" == *"would kill"* ]]
+  [[ "$output" == *"$victim"* ]]
+}
+
+@test "tier2: a subtree containing an agent pid kills the server but spares the agent" {
+  bash -c 'sleep 600 & wait' >/dev/null 2>&1 & server=$!
+  sleep 0.3
+  agent_child=$(pgrep -P "$server" | head -1)
+  [ -n "$agent_child" ]
+
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
+  DEVPIDS="$server"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
+  TIER2_MIN_AGE_SEC=0
+  # AGENTPIDS marks the child as an agent CLI living beneath the dev server --
+  # an ordinary shape in agentic workflows (e.g. `npm run dev` shelling out to one).
+  # shellcheck disable=SC2034  # consumed by mc_filter_protected
+  AGENTPIDS="$agent_child"
+  # shellcheck disable=SC2034  # consumed by mc_kill_pids, sourced from enforce.sh
+  MC_DRY_RUN=1
+  run mc_kill_over_budget
+
+  kill "$agent_child" 2>/dev/null
+  kill "$server" 2>/dev/null
+
+  [[ "$output" == *"would kill"* ]]
+  [[ "$output" == *"$server"* ]]
+  [[ "$output" != *"$agent_child"* ]]
+}
+
+# --- Review round 1, Finding 3: `clean` must honour the pause file too. `memcap
+# off` is a kill switch -- it should stop manual sweeps, not just the watch loop.
+@test "clean refuses while paused" {
+  "$MEMCAP_ROOT/bin/memcap" off
+  run "$MEMCAP_ROOT/bin/memcap" clean
+  [[ "$output" == *paused* ]]
+  "$MEMCAP_ROOT/bin/memcap" on
+}

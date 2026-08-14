@@ -21,6 +21,11 @@ mc_notify() {
   now=$(date +%s); last=$(cat "$stamp" 2>/dev/null || echo 0)
   [ $((now - last)) -lt 300 ] && return 0
   mkdir -p "$(mc_state_dir)"; echo "$now" > "$stamp"
-  osascript -e "display notification \"$1\" with title \"memcap\"" 2>/dev/null
+  # Escape before interpolating into AppleScript: an unescaped quote or backslash in a
+  # message breaks the script, and callers build messages from process data.
+  local msg="$1"
+  msg=${msg//\\/\\\\}
+  msg=${msg//\"/\\\"}
+  osascript -e "display notification \"$msg\" with title \"memcap\"" 2>/dev/null
   return 0
 }
