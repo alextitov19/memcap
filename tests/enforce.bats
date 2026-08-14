@@ -217,3 +217,70 @@ setup() {
   [[ "$output" == *paused* ]]
   "$MEMCAP_ROOT/bin/memcap" on
 }
+
+# --- Follow-up: tier 3 must honour SIM_IDLE_GRACE_SEC ------------------------
+# SIM_IDLE_GRACE_SEC is written by init but was read by no code, so a hand-booted
+# simulator (Simulator.app or `simctl` run directly, no Xcode, no agent session) was
+# reaped on the very first poll. mc_reap_sims must stamp the first idle sighting and
+# wait out the grace before reaping, and clear the stamp whenever a session reappears.
+@test "tier3: first idle poll stamps the grace period and kills nothing" {
+  sleep 600 & victim=$!
+  AGENTPIDS=""
+  SIMPIDS="$victim"
+  MC_DRY_RUN=1
+  run mc_reap_sims
+
+  kill -0 "$victim"
+  kill "$victim" 2>/dev/null
+
+  [ -z "$output" ]
+  [ -f "$(mc_sims_idle_stamp)" ]
+}
+
+@test "tier3: once the idle stamp is past SIM_IDLE_GRACE_SEC the reap proceeds" {
+  # A real sim-pattern match is needed once the reap actually proceeds -- a plain
+  # sleep would never be selected by mc_reap_sims's own command-line filter. perl
+  # keeps the marker argument visible in `ps -o command=`.
+  perl -e 'sleep 600' "ms-playwright-fixture" &
+  victim=$!
+  sleep 0.2
+  AGENTPIDS=""
+  SIMPIDS="$victim"
+  MC_DRY_RUN=1
+
+  run mc_reap_sims
+  [ -z "$output" ]
+  stamp="$(mc_sims_idle_stamp)"
+  [ -f "$stamp" ]
+
+  # Grace set to 0 rather than sleeping for real: time has moved forward at least
+  # zero seconds since the first poll, so the gate opens on this second poll.
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIM_IDLE_GRACE_SEC=0
+  run mc_reap_sims
+
+  kill "$victim" 2>/dev/null
+
+  [[ "$output" == *"would kill"* ]]
+  [[ "$output" == *"$victim"* ]]
+  [ ! -f "$stamp" ]
+}
+
+@test "tier3: a live agent session clears an existing idle stamp" {
+  stamp="$(mc_sims_idle_stamp)"
+  mkdir -p "$(mc_state_dir)"
+  echo "1" > "$stamp"
+
+  sleep 600 & agent=$!
+  # shellcheck disable=SC2034  # consumed by mc_no_live_session, sourced from enforce.sh
+  AGENTPIDS="$agent"
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_kill_pids, sourced from enforce.sh
+  MC_DRY_RUN=1
+  run mc_reap_sims
+
+  kill "$agent" 2>/dev/null
+
+  [ ! -f "$stamp" ]
+}

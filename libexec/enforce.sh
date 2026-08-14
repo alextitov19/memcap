@@ -137,10 +137,31 @@ mc_no_live_session() {
   return 0
 }
 
+# SIM_IDLE_GRACE_SEC gives a hand-booted simulator a reprieve. Without it, someone
+# running Simulator.app or `simctl` directly -- no Xcode open, no agent session -- has
+# their simulator killed within one poll. The prototype this tool generalizes stamps
+# when sims are first seen idle and waits out the grace before reaping; memcap must too.
+mc_sims_idle_stamp() { printf '%s/sims-idle\n' "$(mc_state_dir)"; }
+
 mc_reap_sims() {
-  local pid targets=""
-  mc_no_live_session || return 0
-  mc_hands_on_mobile && return 0
+  local pid targets="" stamp first now
+  stamp="$(mc_sims_idle_stamp)"
+  if ! mc_no_live_session || mc_hands_on_mobile; then
+    rm -f "$stamp"
+    return 0
+  fi
+  if [ -z "${SIMPIDS// /}" ]; then
+    rm -f "$stamp"
+    return 0
+  fi
+  now=$(date +%s)
+  first=$(cat "$stamp" 2>/dev/null || echo 0)
+  if [ "$first" = "0" ]; then
+    mkdir -p "$(mc_state_dir)"
+    echo "$now" > "$stamp"
+    first="$now"
+  fi
+  [ $((now - first)) -lt "${SIM_IDLE_GRACE_SEC:-600}" ] && return 0
   if [ "$MC_DRY_RUN" != "1" ] && xcrun simctl list devices booted 2>/dev/null | grep -q Booted; then
     mc_log "tier3: xcrun simctl shutdown all"
     xcrun simctl shutdown all >/dev/null 2>&1
@@ -151,6 +172,7 @@ mc_reap_sims() {
     targets="$targets $pid"
   done
   [ -n "${targets// /}" ] && mc_kill_pids "$targets" "tier3 idle simulator"
+  rm -f "$stamp"
   return 0
 }
 
