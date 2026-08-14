@@ -36,11 +36,12 @@ setup() {
 # behavior, but say so in the command's own output as well as the README.
 @test "the dry-run message names all five settings it would change" {
   run env MC_DRY_RUN=1 bash -c "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/docker.sh'; mc_docker_apply"
-  [[ "$output" == *"GB"* ]]
-  [[ "$output" == *"cores"* ]]
-  [[ "$output" == *"swap"* ]]
-  [[ "$output" == *"Resource Saver"* ]]
-  [[ "$output" == *"auto-pause"* ]]
+  # One combined [[ ]] rather than five separate ones: under bash 3.2 a non-final
+  # `[[ ]]` that evaluates false does not abort the test (see classify.bats's
+  # EXTRA_AGENTS test for the full explanation), so only the last of five separate
+  # checks would actually be enforced.
+  [[ "$output" == *"GB"* && "$output" == *"cores"* && "$output" == *"swap"* \
+     && "$output" == *"Resource Saver"* && "$output" == *"auto-pause"* ]]
 }
 
 # A typo routed straight to mc_docker_apply must not fall through to the real runtime
@@ -54,6 +55,18 @@ setup() {
 @test "mc_docker_apply still accepts --force" {
   run mc_docker_apply --force
   [[ "$output" == *would* ]]
+}
+
+# --- Final review, small fix: reject trailing arguments -----------------------
+# `memcap docker apply --force rm-everything` only ever looked at $1, so the case
+# statement matched "--force" and silently discarded "rm-everything" -- running the
+# force path (quits and restarts Docker) with the tail unexamined. uninstall already
+# has this discipline (bin/memcap:60); apply is the riskier of the two commands and
+# did not.
+@test "mc_docker_apply rejects a trailing argument after --force" {
+  run mc_docker_apply --force rm-everything
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"usage: memcap docker apply"* ]]
 }
 
 @test "memcap docker aply (typo) is rejected with usage, before touching Docker" {
@@ -115,9 +128,9 @@ SCRIPT
     mc_docker_apply
   "
   [ "$status" -eq 1 ]
-  [[ "$output" == *"failed to write"* ]]
-  [[ "$output" == *jq* ]]
-  [[ "$output" != *OPEN_CALLED* ]]
+  # Combined into one [[ ]] so bash 3.2's non-final-[[ ]] quirk (see classify.bats)
+  # cannot let an earlier check silently pass without being enforced.
+  [[ "$output" == *"failed to write"* && "$output" == *jq* && "$output" != *OPEN_CALLED* ]]
   [ "$(cat "$store")" = '{"MemoryMiB":2048,"Cpus":4}' ]
 }
 

@@ -58,3 +58,9 @@ SCRIPT
   run cat "$capture"
   [ "$output" = 'display notification "path C:\\temp" with title "memcap"' ]
 }
+
+# --- Final review, small fix: usage omits docker apply / bare docker ----------
+@test "the usage line mentions docker apply --force and that bare docker works" {
+  run "$MEMCAP_ROOT/bin/memcap" help
+  [[ "$output" == *"docker [apply [--force]]"* ]]
+}

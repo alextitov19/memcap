@@ -16,9 +16,15 @@ mc_docker_runtime() {
 # toward the budget but cannot be capped; say so once rather than nagging.
 mc_docker_apply() {
   local force=0 rt mem_mib running
-  # Validate the argument BEFORE anything else. The dispatcher routes every `memcap
+  # Validate the arguments BEFORE anything else. The dispatcher routes every `memcap
   # docker <anything>` here, so without this a typo -- `memcap docker aply` -- silently
   # performs the single riskiest action in the codebase: quitting and restarting Docker.
+  # A trailing argument after --force must be rejected too, the same discipline
+  # `memcap uninstall` already has: `memcap docker apply --force rm-everything` would
+  # otherwise match "--force" on $1 alone and silently run the force path anyway.
+  if [ $# -gt 1 ]; then
+    echo "usage: memcap docker apply [--force]" >&2; return 2
+  fi
   case "${1:-}" in
     "")        : ;;
     --force)   force=1 ;;

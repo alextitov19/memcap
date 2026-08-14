@@ -62,8 +62,12 @@ fixture() { cat "$MEMCAP_ROOT/tests/fixtures/$1"; }
   # shellcheck disable=SC2034  # consumed by mc_classify via awk -v
   EXTRA_AGENTS="myagent otheragent"
   eval "$(printf '%s\n%s\n' '998 1 50000 /usr/local/bin/myagent --run' '999 1 50000 /usr/local/bin/otheragent --run' | mc_classify)"
-  [[ "$AGENTPIDS" == *998* ]]
-  [[ "$AGENTPIDS" == *999* ]]
+  # A single combined [[ ]], not two separate ones: bash 3.2 -- the shipped macOS
+  # /bin/bash, and what `bats` itself runs under when nothing newer is on PATH --
+  # has a real quirk where a bare `[[ ]]` that evaluates false does NOT trigger
+  # `set -e` unless it is the test's last command, so a non-final `[[ ]]` here would
+  # silently not fail the test even if 998 were missing.
+  [[ "$AGENTPIDS" == *998* && "$AGENTPIDS" == *999* ]]
 }
 
 @test "the docker VM is counted as docker, not as an agent" {

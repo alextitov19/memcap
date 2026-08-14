@@ -240,8 +240,63 @@ setup() {
   run mc_kill_pids "$victim" "test"
   kill -0 "$victim"
   kill "$victim" 2>/dev/null
-  [[ "$output" == *"would kill"* ]]
-  [[ "$output" == *"$victim"* ]]
+  # Combined into one [[ ]]: bash 3.2 (this session's /bin/bash, and what `bats`
+  # itself runs under absent a newer bash on PATH) does not abort on a non-final
+  # `[[ ]]` that evaluates false, so a separate, non-last check here would not
+  # actually be enforced.
+  [[ "$output" == *"would kill"* && "$output" == *"$victim"* ]]
+}
+
+# --- Final review, small fix: an empty rss reading must not corrupt tier2 ranking
+# If a candidate exits between the age check and the rss read, `kb` comes back
+# empty and the ranked line becomes " $pid" instead of "$kb $pid". `sort -rn` then
+# parses that bare pid as the sort key -- and a pid number routinely exceeds a real
+# kb value, so the exited candidate's line can sort ABOVE a legitimate, still-alive
+# candidate. `awk '{print $2}'` then extracts nothing from the single-field line,
+# and the pass silently kills nothing even though a real over-budget candidate was
+# right there. `ps` and `pgrep` are stubbed so this is fully deterministic: pid
+# 999000 mimics the exited candidate (age succeeds, rss comes back empty), pid 123
+# mimics a real, legitimate candidate with 500000 KB -- chosen smaller than 999000
+# so the bug's mis-sort would rank the exited pid first.
+@test "tier2: a candidate with no rss reading is skipped instead of corrupting the ranking" {
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/ps" <<'SCRIPT'
+#!/usr/bin/env bash
+pid="" mode=""
+for a in "$@"; do
+  case "$a" in
+    etime=) mode=etime ;;
+    rss=)   mode=rss ;;
+    [0-9]*) pid="$a" ;;
+  esac
+done
+case "$pid:$mode" in
+  999000:etime) echo "  05:00" ;;
+  999000:rss)   : ;;                 # gone -- no output, exactly like an exited pid
+  123:etime)    echo "  05:00" ;;
+  123:rss)      echo " 500000" ;;
+esac
+exit 0
+SCRIPT
+  chmod +x "$fakebin/ps"
+  cat > "$fakebin/pgrep" <<'SCRIPT'
+#!/usr/bin/env bash
+exit 1
+SCRIPT
+  chmod +x "$fakebin/pgrep"
+
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
+  DEVPIDS="999000 123"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
+  TIER2_MIN_AGE_SEC=0
+  # shellcheck disable=SC2034  # consumed by mc_kill_pids, sourced from enforce.sh
+  MC_DRY_RUN=1
+  PATH="$fakebin:$PATH" run mc_kill_over_budget
+
+  # Combined into one [[ ]]: see classify.bats's EXTRA_AGENTS test for why a
+  # non-final `[[ ]]` cannot be trusted to fail this test under bash 3.2.
+  [[ "$output" == *"would kill"* && "$output" == *"123"* && "$output" != *"999000"* ]]
 }
 
 @test "tier2: a subtree containing an agent pid kills the server but spares the agent" {
@@ -322,8 +377,9 @@ setup() {
 
   kill "$victim" 2>/dev/null
 
-  [[ "$output" == *"would kill"* ]]
-  [[ "$output" == *"$victim"* ]]
+  # Combined into one [[ ]]: bash 3.2 (see classify.bats's EXTRA_AGENTS test) does
+  # not fail a test on a non-final `[[ ]]` that evaluates false.
+  [[ "$output" == *"would kill"* && "$output" == *"$victim"* ]]
   [ ! -f "$stamp" ]
 }
 
@@ -354,8 +410,9 @@ setup() {
 
   kill "$old" "$fresh" 2>/dev/null
 
-  [[ "$output" != *"would kill"* ]]
-  [ -f "$(mc_sims_idle_stamp "$fresh")" ]
+  # One combined [[ ]] (it supports -f file tests too): under bash 3.2 a non-final
+  # `[[ ]]` that evaluates false does not fail the test (see classify.bats).
+  [[ "$output" != *"would kill"* && -f "$(mc_sims_idle_stamp "$fresh")" ]]
 }
 
 @test "I6: once every tracked sim pid has individually cleared the grace, the reap proceeds" {
@@ -368,7 +425,12 @@ setup() {
   mkdir -p "$(mc_sims_idle_dir)"
   echo 1 > "$(mc_sims_idle_stamp "$old")"
   run mc_reap_sims
-  [[ "$output" != *"would kill"* ]]
+  # A `case`, not a standalone `[[ ]]`: this check's own $output is about to be
+  # overwritten by the next `run` below, so it cannot be folded into a later
+  # combined [[ ]] the way the other fixes in this file are. `case ... ) false ;;`
+  # is a plain simple command on the failing branch, so it correctly participates
+  # in bash 3.2's error handling where a bare `[[ ]]` would not (see classify.bats).
+  case "$output" in *"would kill"*) false ;; esac
 
   # Grace set to 0 rather than sleeping for real, same trick as the single-pid test
   # above: $fresh's own stamp (written on the poll just above) now also counts as
@@ -379,8 +441,7 @@ setup() {
 
   kill "$old" "$fresh" 2>/dev/null
 
-  [[ "$output" == *"would kill"* ]]
-  [[ "$output" == *"$old"* ]]
+  [[ "$output" == *"would kill"* && "$output" == *"$old"* ]]
 }
 
 @test "I6: mc_hands_on_mobile also treats Simulator.app itself as hands-on" {
@@ -420,8 +481,9 @@ SCRIPT
 
   kill "$victim" 2>/dev/null
 
-  [[ "$output" == *"would kill"* ]]
-  [ ! -f "$capture" ]
+  # One combined [[ ]] (it supports negated file tests too): see classify.bats for
+  # why a non-final `[[ ]]` cannot be trusted under bash 3.2.
+  [[ "$output" == *"would kill"* && ! -f "$capture" ]]
 }
 
 @test "I2: a tier2 pass where protection removed every candidate does not notify either" {

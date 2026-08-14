@@ -114,6 +114,13 @@ mc_kill_over_budget() {
     age=$(mc_etime_secs "$age_raw") || continue
     [ "$age" -lt "${TIER2_MIN_AGE_SEC:-300}" ] && continue
     kb=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')
+    # A candidate that exits between the age check and this read leaves kb empty,
+    # turning the ranked line into " $pid" instead of "$kb $pid". sort -rn would
+    # then parse that bare pid as the sort key -- and a pid number routinely
+    # exceeds a real kb value -- so the exited candidate's line could sort ABOVE a
+    # legitimate, still-alive one, and awk '{print $2}' extracts nothing from the
+    # resulting single-field line. Skip it instead of feeding sort a malformed row.
+    [ -n "$kb" ] || continue
     ranked="$ranked$kb $pid
 "
   done

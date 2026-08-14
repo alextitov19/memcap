@@ -64,6 +64,6 @@ case "${1:-help}" in
     echo "Config kept at $(mc_config_file) — delete it yourself for a clean slate."
     echo "Then: brew uninstall memcap"
     ;;
-  help|--help|-h) echo "memcap — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|watch|clean|profile|docker|off|on|uninstall}" ;;
+  help|--help|-h) echo "memcap — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|watch|clean|profile|docker [apply [--force]]|off|on|uninstall}" ;;
   *) echo "unknown command: $1" >&2; exit 1 ;;
 esac
