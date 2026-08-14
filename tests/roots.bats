@@ -35,6 +35,24 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "a path escaping HOME with .. is rejected" {
+  run mc_root_is_safe "$HOME/../etc"
+  [ "$status" -ne 0 ]
+}
+
+@test "a path climbing to the filesystem root with .. is rejected" {
+  run mc_root_is_safe "$HOME/x/y/../../../../"
+  [ "$status" -ne 0 ]
+}
+
+@test "a symlink pointing outside HOME is rejected" {
+  mkdir -p "$HOME/.memcap-test-$$"
+  ln -sfn /etc "$HOME/.memcap-test-$$/link"
+  run mc_root_is_safe "$HOME/.memcap-test-$$/link"
+  rm -rf "$HOME/.memcap-test-$$"
+  [ "$status" -ne 0 ]
+}
+
 @test "an unsafe root is never recorded" {
   mc_record_root "$HOME"
   run mc_sweep_roots

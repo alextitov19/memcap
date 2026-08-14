@@ -6,9 +6,26 @@ set -uo pipefail
 mc_roots_file() { printf '%s/roots\n' "$(mc_state_dir)"; }
 
 # Refuse anything broad enough to sweep unrelated work: must be at least two
-# levels below $HOME.
+# levels below $HOME. This gates a destructive operation -- whatever it accepts becomes a
+# directory where memcap later kills processes -- so it rejects two escapes that
+# satisfy the depth pattern while resolving elsewhere:
+#   $HOME/../etc            -> /etc
+#   $HOME/x/y/../../../../  -> /
+#   a symlink at $HOME/a/b pointing to /etc
 mc_root_is_safe() {
-  case "$1" in
+  local dir="$1" real
+  [ -n "$dir" ] || return 1
+  case "$dir" in
+    ../*|*/../*|*/..) return 1 ;;
+  esac
+  # Judge the canonical path when the directory exists, so a symlink cannot smuggle
+  # the sweep outside $HOME. Non-existent paths are judged textually.
+  if [ -d "$dir" ]; then
+    real=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
+  else
+    real="$dir"
+  fi
+  case "$real" in
     "$HOME"/*/*) return 0 ;;
     *) return 1 ;;
   esac
