@@ -12,7 +12,27 @@ done
 [ -f "$(mc_config_file)" ] && . "$(mc_config_file)"
 
 case "${1:-help}" in
+  init)
+    shift
+    # shellcheck source=/dev/null
+    . "$LIB/init.sh"
+    mc_run_init "$@"
+    ;;
   status) mc_render_status ;;
+  watch)
+    # shellcheck source=/dev/null
+    . "$LIB/enforce.sh"
+    mc_watch
+    ;;
+  clean)
+    # shellcheck source=/dev/null
+    . "$LIB/enforce.sh"
+    eval "$(mc_ps_snapshot | mc_classify)"
+    mc_reap_orphans
+    mc_reap_sims
+    ;;
+  off)    mkdir -p "$(mc_state_dir)"; touch "$(mc_state_dir)/paused"; echo "memcap paused" ;;
+  on)     rm -f "$(mc_state_dir)/paused"; echo "memcap resumed" ;;
   help|--help|-h) echo "memcap — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|watch|clean|profile|docker|off|on}" ;;
   *) echo "unknown command: $1" >&2; exit 1 ;;
 esac

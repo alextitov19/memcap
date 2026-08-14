@@ -38,6 +38,14 @@ fixture() { cat "$MEMCAP_ROOT/tests/fixtures/$1"; }
   [[ "$SIMPIDS" == *91650* ]]
 }
 
+@test "REGRESSION: grepping for a maestro/playwright marker is not itself a simulator (MC_SIM_SKIP)" {
+  # Without MC_SIM_SKIP excluding /grep as an exe, this line's argument
+  # ("maestro.cli") matches MC_SIM_ARG and the process would land in SIMPIDS --
+  # tier 3's kill-candidate list -- for having merely searched for the string.
+  eval "$(printf '%s\n' '12700 91633 4976 /opt/homebrew/bin/grep -r maestro.cli /Users/x/proj' | mc_classify)"
+  [[ "$SIMPIDS" != *12700* ]]
+}
+
 @test "EXTRA_AGENTS from the config extends the agent list" {
   # shellcheck disable=SC2034  # consumed by mc_classify via awk -v
   EXTRA_AGENTS="mycustomagent"
