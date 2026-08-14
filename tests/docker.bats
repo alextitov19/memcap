@@ -67,6 +67,47 @@ setup() {
   [[ "$output" == *would* ]]
 }
 
+# --- Final review, I3: a failed settings write must not report success -------
+# docker.sh never got the false-success pass T9 spent three rounds on in
+# profile.sh: the `cp` was unchecked and `jq ... && mv` had no else branch. If jq is
+# missing or errors, Docker has already been quit by the time this runs and would be
+# restarted anyway with success printed -- a full Docker restart for nothing,
+# reported as done, with a leaked temp file. `mc_docker_runtime`, `pgrep`, and
+# `docker` are all stubbed so this never comes near a real Docker process or the
+# real settings-store.json; `open` is stubbed too so a failure to notice the write
+# error would show up as this test seeing "OPEN CALLED" it should never reach.
+@test "a failed settings write reports failure and never opens Docker" {
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  # Standing in for "jq missing or erroring" -- the write path must fail closed
+  # either way, not just when the command is entirely absent.
+  cat > "$fakebin/jq" <<'SCRIPT'
+#!/usr/bin/env bash
+exit 1
+SCRIPT
+  chmod +x "$fakebin/jq"
+
+  store="$BATS_TEST_TMPDIR/settings-store.json"
+  printf '{"MemoryMiB":2048,"Cpus":4}' > "$store"
+
+  run env PATH="$fakebin:$PATH" bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/docker.sh'
+    mc_docker_runtime() { echo desktop; }
+    pgrep() { return 1; }
+    docker() { return 0; }
+    open() { echo OPEN_CALLED; }
+    MC_DOCKER_STORE='$store'
+    MC_DRY_RUN=0
+    mc_docker_apply
+  "
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to write"* ]]
+  [[ "$output" == *jq* ]]
+  [[ "$output" != *OPEN_CALLED* ]]
+  [ "$(cat "$store")" = '{"MemoryMiB":2048,"Cpus":4}' ]
+}
+
 @test "the deferral message does not claim a write that never happens" {
   # Fakes `docker ps -q` so the containers-running branch is reached without any real
   # Docker call; the branch returns before mc_docker_apply ever shells out to `docker`

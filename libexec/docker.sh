@@ -49,12 +49,23 @@ mc_docker_apply() {
     while pgrep -q "Docker Desktop" 2>/dev/null && [ $i -lt 30 ]; do sleep 1; i=$((i+1)); done
   fi
 
-  cp "$MC_DOCKER_STORE" "$MC_DOCKER_STORE.memcap.bak"
+  # Both writes checked: an unchecked `cp` or a `jq ... && mv` with no else branch
+  # reports success when nothing was written. By this point Docker has already been
+  # quit, so failing silently here would mean a full restart for nothing -- restarted
+  # anyway, with success printed, on the caller's original settings.
+  if ! cp "$MC_DOCKER_STORE" "$MC_DOCKER_STORE.memcap.bak"; then
+    echo "failed to back up $MC_DOCKER_STORE -- not touching it" >&2
+    return 1
+  fi
   local tmp; tmp=$(mktemp)
-  jq --argjson mem "$mem_mib" --argjson cpus "${DOCKER_CPUS:-8}" '
+  if ! jq --argjson mem "$mem_mib" --argjson cpus "${DOCKER_CPUS:-8}" '
     .MemoryMiB = $mem | .Cpus = $cpus | .SwapMiB = 2048
     | .ResourceSaverEnabled = true | .AutoPauseTimeoutSeconds = 30' \
-    "$MC_DOCKER_STORE" > "$tmp" && mv "$tmp" "$MC_DOCKER_STORE"
+    "$MC_DOCKER_STORE" > "$tmp" || ! mv "$tmp" "$MC_DOCKER_STORE"; then
+    rm -f "$tmp"
+    echo "failed to write $MC_DOCKER_STORE (is jq installed?)" >&2
+    return 1
+  fi
 
   open -a Docker
   printf 'Waiting for the Docker engine'
