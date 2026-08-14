@@ -127,7 +127,7 @@ computed default if it is absent or commented out.
 | `SOFT_TRIGGER` | `0.80` | Fraction of the agents' budget that, once crossed, triggers a tier-1 sweep before anything is killed outright. |
 | `MIN_FREE_PCT` | `15` | If system-wide free memory drops below this percentage, a tier-1 sweep runs regardless of whether the agent budget itself has been crossed. |
 | `TIER2_MIN_AGE_SEC` | `300` | Minimum age, in seconds, a dev server must have reached before tier 2 will consider killing it. |
-| `SIM_IDLE_GRACE_SEC` | `600` | Written by `memcap init` for a future idle-grace check on tier 3. Not currently read by the enforcement code — tier 3 acts as soon as no agent session is alive, subject to the Xcode/Android Studio exemption above, regardless of this value. |
+| `SIM_IDLE_GRACE_SEC` | `600` | How long simulators, emulators, and Playwright browsers must sit idle — no agent session alive, Xcode and Android Studio both closed — before tier 3 will shut them down. The countdown restarts if an agent session reappears or one of those apps opens, and clears again once a reap happens. This is what protects a simulator you booted by hand (via Simulator.app or `simctl`) from being killed within one poll. |
 | `EXTRA_AGENTS` | empty | Extra agent binary names to recognize, beyond the built-in list (`claude codex cursor-agent aider gemini amp opencode goose crush`). Also spliced into the process-classification regex, so avoid regex metacharacters in the names you add. |
 
 ## Files on disk
@@ -147,6 +147,9 @@ State, at `~/.local/state/memcap/` (override with `MEMCAP_STATE_HOME`):
   enforcement is active.
 - `.notified` — a timestamp used to rate-limit desktop notifications to at most
   one every 5 minutes.
+- `sims-idle` — a timestamp marking when idle simulators were first seen with no
+  agent session alive; tier 3 waits out `SIM_IDLE_GRACE_SEC` from this stamp
+  before reaping, and the stamp is cleared whenever that condition stops holding.
 
 All of the above is removed by `memcap uninstall`.
 
