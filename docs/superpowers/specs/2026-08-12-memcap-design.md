@@ -207,7 +207,7 @@ prototype:
 |---|---|
 | No Docker installed | Docker module skipped; budget covers agents only |
 | OrbStack / Colima / Podman | Usage counted, no ceiling possible; stated once at init |
-| Docker busy at init | Setting written, restart deferred, prints `memcap docker apply` |
+| Docker busy at init | Restart deferred, prints `memcap docker apply`. Nothing is written: Docker rewrites its own settings file on quit, so a write made while it runs is clobbered by the very restart that would apply it. |
 | Engine slow after restart | Wait loop, then an explicit message that an empty `docker images` is a slow image-store load and **not** data loss |
 | Intel Mac | Docker VM is hyperkit, not Virtualization.framework; match both |
 | No agents detected | Installs fine; daemon idles until one appears |
