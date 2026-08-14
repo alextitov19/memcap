@@ -39,12 +39,13 @@ setup() {
   [ -f "$MEMCAP_STATE_HOME/memcap/paused" ]
 }
 
-@test "status still works after uninstall, recreating state as needed" {
-  mkdir -p "$MEMCAP_STATE_HOME/memcap"
+@test "state is recreated on the next command that needs it" {
   "$MEMCAP_ROOT/bin/memcap" uninstall
-
-  run "$MEMCAP_ROOT/bin/memcap" status
-  [ "$status" -eq 0 ]
+  [ ! -d "$MEMCAP_STATE_HOME/memcap" ]
+  "$MEMCAP_ROOT/bin/memcap" off
+  [ -d "$MEMCAP_STATE_HOME/memcap" ]
+  [ -f "$MEMCAP_STATE_HOME/memcap/paused" ]
+  "$MEMCAP_ROOT/bin/memcap" on
 }
 
 @test "uninstall is a no-op on state that was already gone" {

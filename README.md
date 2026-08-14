@@ -23,7 +23,7 @@ process anymore — there is nothing left for it to be doing.
 budget after tier 1 has run. Only processes older than `TIER2_MIN_AGE_SEC` (default
 300 seconds) are eligible. A dev server runs for hours; a `vite build` or test run
 lasts seconds. If every candidate is younger than the age gate, memcap logs that,
-sends a notification, and kills nothing that pass.
+sends a notification, and kills nothing on that pass.
 
 **Tier 3 — idle simulators.** iOS Simulators, Android emulators, Playwright
 browsers, and Maestro processes, and only when no agent session is alive. It never
@@ -56,8 +56,11 @@ CPU ceiling on it (`memcap docker apply`), which is the only hard limit in the
 whole system — the hypervisor enforces it, unlike the soft, self-policed budget
 everywhere else. Applying that ceiling requires quitting and restarting Docker
 Desktop, so memcap declines to do it while containers are running rather than
-interrupting them; run `memcap docker apply` again when it's convenient. One
-thing worth knowing in advance: right after that restart, `docker images` and
+interrupting them; run `memcap docker apply` again when it's convenient.
+`memcap docker apply --force` overrides that refusal — it applies the ceiling
+even with containers running, which restarts Docker and stops them, so use it
+deliberately rather than as the default. One thing worth knowing in advance:
+right after a restart, `docker images` and
 `docker ps -a` can return empty for several minutes while a large image store
 reloads. That is not data loss, and restarting Docker again to "fix" it only
 makes the wait longer.
@@ -106,7 +109,7 @@ leaves memcap paused from the start.
 | `memcap off` | Pause switch. See above. |
 | `memcap on` | Resume enforcement. |
 | `memcap profile [name]` | List the budget profiles (`balanced`, `stacks`, `mobile`), or switch to one — rewrites `DOCKER_BUDGET_GB` in the config. |
-| `memcap docker apply [--force]` | Push `DOCKER_BUDGET_GB`/`DOCKER_CPUS` to the Docker Desktop VM ceiling; restarts Docker Desktop to do it. |
+| `memcap docker apply [--force]` | Push `DOCKER_BUDGET_GB`/`DOCKER_CPUS` to the Docker Desktop VM ceiling; restarts Docker Desktop to do it. Normally refuses while containers are running; `--force` overrides that and stops them. |
 | `memcap uninstall` | Stop the service and remove memcap's state. Keeps your config. See Uninstall below. |
 | `memcap help` | Usage summary. |
 
@@ -134,11 +137,16 @@ your settings, as described above. Not removed by `memcap uninstall`.
 
 State, at `~/.local/state/memcap/` (override with `MEMCAP_STATE_HOME`):
 
-- `actions.log` — an append-only record of every kill memcap has made, with the
-  reason and the process line, so you can audit what happened after the fact.
+- `actions.log` — an append-only record of memcap's enforcement decisions, not
+  only kills: it also logs a tier-2 pass that found nothing old enough to kill,
+  a tier-3 `simctl shutdown all`, and `watch` refusing to act against a
+  misconfigured budget. If you're wondering why memcap did or didn't do
+  something, this is where to look.
 - `roots` — the learned sweep roots, one canonicalized path per line.
 - `paused` — present exactly when `memcap off` is in effect; its absence means
   enforcement is active.
+- `.notified` — a timestamp used to rate-limit desktop notifications to at most
+  one every 5 minutes.
 
 All of the above is removed by `memcap uninstall`.
 
