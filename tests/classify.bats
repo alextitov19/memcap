@@ -38,6 +38,12 @@ fixture() { cat "$MEMCAP_ROOT/tests/fixtures/$1"; }
   [[ "$SIMPIDS" == *91650* ]]
 }
 
+@test "EXTRA_AGENTS from the config extends the agent list" {
+  export EXTRA_AGENTS="mycustomagent"
+  eval "$(printf '%s\n' '  999     1  50000 /usr/local/bin/mycustomagent --run' | mc_classify)"
+  [[ "$AGENTPIDS" == *999* ]]
+}
+
 @test "the docker VM is counted as docker, not as an agent" {
   eval "$(fixture mixed.txt | mc_classify)"
   [ "$DOCKER_KB" -gt 9000000 ]

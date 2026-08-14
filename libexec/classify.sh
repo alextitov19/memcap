@@ -14,7 +14,7 @@ MC_SIM_ARG='--user-data-dir=[^[:space:]]*(playwright|pw-browser)|\.maestro/lib|m
 MC_SIM_SKIP='/(rg|grep|egrep|awk|sed|ps|top|tail|head|cat|sort|cut|tr|xargs|find|bash|zsh|sh|jq)$'
 
 mc_classify() {
-  awk -v agentpat="${MC_AGENT_PATTERN}${MC_EXTRA_AGENTS:+|$MC_EXTRA_AGENTS}" \
+  awk -v agentpat="${MC_AGENT_PATTERN}${EXTRA_AGENTS:+|$EXTRA_AGENTS}" \
       -v devpat="$MC_DEV_PATTERN" -v dockpat="$MC_DOCKER_PATTERN" \
       -v simexe="$MC_SIM_EXE" -v simarg="$MC_SIM_ARG" -v simskip="$MC_SIM_SKIP" '
     {
