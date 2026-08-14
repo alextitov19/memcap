@@ -180,9 +180,16 @@ prototype:
   of the agent. A tree-walk reports 0 GB while they consume 5 GB.
 - **Match `argv[0]`, not the whole command line.** Matching anywhere in the command line
   classified `rg ms-playwright` as a browser and made it a kill candidate.
-- **`ps` RSS is wrong for the Docker VM.** It counts file-backed pages of the disk
-  image — 9.02 GB RSS for a 6 GB VM. Use physical footprint from
-  `top -l 1 -pid N -stats mem`, falling back to RSS with a logged caveat.
+- **`ps` RSS is the wrong metric, everywhere — not just for Docker.** Two independent
+  measurements on a real machine: the Docker VM reported 9.02 GB of RSS for a 6 GB VM
+  because RSS counts file-backed pages of its disk image; and a booted iOS Simulator's
+  266 processes summed to 16.18 GB of RSS against 6.42 GB of real footprint, because
+  every process in a tree sharing the runtime's dyld cache counts those shared pages
+  again. Both are the same error. `mc_ps_snapshot` therefore merges one
+  `top -l 1 -stats pid,mem` sample into the `ps` structure, so the size column is
+  physical footprint for every process and no component needs its own correction.
+  Falls back to RSS per-process when top has no row, and entirely under `MC_NO_TOP=1`.
+  Measured cost 0.43s per pass against 0.05s for bare `ps`.
 - **Orphan status is the safety gate.** `ppid == 1` is what distinguishes garbage from a
   process a live session or a human terminal still owns.
 
