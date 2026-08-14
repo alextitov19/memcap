@@ -209,7 +209,10 @@ setup() {
   # shellcheck disable=SC2034  # consumed by mc_filter_protected
   AGENTPIDS="$victim"
   MC_DRY_RUN=1
-  output=$(mc_kill_pids "$victim" "test")
+  # run, not a bare `output=$(...)`: mc_kill_pids now returns non-zero (I2) whenever
+  # it kills nothing, including this filtered-empty case, and a bare assignment's
+  # exit status trips bats' own error trap before the cleanup `kill` below can run.
+  run mc_kill_pids "$victim" "test"
   kill -0 "$victim"
   kill "$victim" 2>/dev/null
   [ -z "$output" ]
@@ -217,14 +220,14 @@ setup() {
 
 @test "mc_kill_pids filters out memcap's own pid" {
   MC_DRY_RUN=1
-  output=$(mc_kill_pids "$$" "test")
+  run mc_kill_pids "$$" "test"
   [ -z "$output" ]
 }
 
 @test "mc_kill_pids filters out its own parent, not just itself" {
   parent=$(ps -o ppid= -p $$ | tr -d ' ')
   MC_DRY_RUN=1
-  output=$(mc_kill_pids "$parent" "test")
+  run mc_kill_pids "$parent" "test"
   [ -z "$output" ]
 }
 
@@ -232,7 +235,9 @@ setup() {
   sleep 600 & victim=$!
   AGENTPIDS=""
   MC_DRY_RUN=1
-  output=$(mc_kill_pids "$victim" "test")
+  # Dry run is also a non-kill outcome (I2), so this now returns non-zero too --
+  # `run` again, for the same reason as above.
+  run mc_kill_pids "$victim" "test"
   kill -0 "$victim"
   kill "$victim" 2>/dev/null
   [[ "$output" == *"would kill"* ]]
@@ -320,6 +325,69 @@ setup() {
   [[ "$output" == *"would kill"* ]]
   [[ "$output" == *"$victim"* ]]
   [ ! -f "$stamp" ]
+}
+
+# --- Final review, I2: dry run must not notify that a kill happened ---------
+# mc_notify was called unconditionally after mc_kill_pids, so MC_DRY_RUN=1 -- and a
+# real pass where mc_filter_protected removed every candidate -- told the user a dev
+# server was killed when nothing was, contradicting the dry-run guarantee and burning
+# the 5-minute notification rate limit. osascript is stubbed so this cannot fire a
+# real desktop notification, matching scaffold.bats's stub_osascript pattern.
+@test "I2: a dry-run tier2 pass does not send the 'killed a leaked dev server' notification" {
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  capture="$BATS_TEST_TMPDIR/osascript-arg"
+  cat > "$fakebin/osascript" <<SCRIPT
+#!/usr/bin/env bash
+printf '%s' "\$2" >> "$capture"
+SCRIPT
+  chmod +x "$fakebin/osascript"
+
+  sleep 600 & victim=$!
+  sleep 0.2
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
+  DEVPIDS="$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
+  TIER2_MIN_AGE_SEC=0
+  # shellcheck disable=SC2034  # consumed by mc_kill_pids, sourced from enforce.sh
+  MC_DRY_RUN=1
+  PATH="$fakebin:$PATH" run mc_kill_over_budget
+
+  kill "$victim" 2>/dev/null
+
+  [[ "$output" == *"would kill"* ]]
+  [ ! -f "$capture" ]
+}
+
+@test "I2: a tier2 pass where protection removed every candidate does not notify either" {
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  capture="$BATS_TEST_TMPDIR/osascript-arg"
+  cat > "$fakebin/osascript" <<SCRIPT
+#!/usr/bin/env bash
+printf '%s' "\$2" >> "$capture"
+SCRIPT
+  chmod +x "$fakebin/osascript"
+
+  sleep 600 & victim=$!
+  sleep 0.2
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
+  DEVPIDS="$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
+  TIER2_MIN_AGE_SEC=0
+  # The candidate is itself in AGENTPIDS, so mc_filter_protected removes it before
+  # mc_kill_pids ever reaches the MC_DRY_RUN check -- this must not claim a kill
+  # happened regardless of dry-run status. MC_DRY_RUN=1 kept per this machine's
+  # safety rules; it is not what this test is exercising.
+  # shellcheck disable=SC2034  # consumed by mc_filter_protected
+  AGENTPIDS="$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_pids, sourced from enforce.sh
+  MC_DRY_RUN=1
+  PATH="$fakebin:$PATH" run mc_kill_over_budget
+
+  kill "$victim" 2>/dev/null
+
+  [ ! -f "$capture" ]
 }
 
 @test "tier3: a live agent session clears an existing idle stamp" {

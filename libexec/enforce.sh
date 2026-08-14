@@ -31,12 +31,16 @@ mc_filter_protected() {
   printf '%s' "$out"
 }
 
+# Return status signals whether a real kill happened: 0 only when pids were actually
+# sent a signal. Dry run and "nothing left after protection" both return 1, so a
+# caller that gates a "killed" notification on this cannot claim one that never
+# happened -- see mc_kill_over_budget below.
 mc_kill_pids() {
   local pids reason="$2" p alive
   pids=$(mc_filter_protected "$1")
-  [ -z "${pids// /}" ] && return 0
+  [ -z "${pids// /}" ] && return 1
   if [ "$MC_DRY_RUN" = "1" ]; then
-    echo "would kill ($reason): $pids"; return 0
+    echo "would kill ($reason): $pids"; return 1
   fi
   for p in $pids; do
     mc_log "$reason: $(ps -o pid=,rss=,command= -p "$p" 2>/dev/null | cut -c1-160)"
@@ -119,8 +123,12 @@ mc_kill_over_budget() {
     return 0
   fi
   pid=$(printf '%s' "$ranked" | sort -rn | head -1 | awk '{print $2}')
-  mc_kill_pids "$(mc_descendants "$pid" | tr '\n' ' ')" "tier2 over-budget dev server"
-  mc_notify "memcap killed a leaked dev server to stay inside your budget."
+  # Gated on mc_kill_pids actually killing something: a dry run, or a real pass where
+  # mc_filter_protected removed the only candidate, must not tell the user a dev
+  # server was killed -- that both contradicts MC_DRY_RUN's contract and burns the
+  # 5-minute notification rate limit on a notification that lied.
+  mc_kill_pids "$(mc_descendants "$pid" | tr '\n' ' ')" "tier2 over-budget dev server" &&
+    mc_notify "memcap killed a leaked dev server to stay inside your budget."
   return 0
 }
 
