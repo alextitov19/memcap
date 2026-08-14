@@ -12,11 +12,16 @@ jobs:
       # missing its `# shellcheck source=/dev/null` directive still exits 0 — which is
       # exactly how that defect hid in tests/scaffold.bats for ten tasks. Verified:
       # with the directive stripped, the group form exits 0 and the loop exits 1.
+      #
+      # `|| exit 1` rather than relying on the runner injecting `-e`: a bare loop's
+      # exit status is its LAST iteration, so without this the step passes whenever
+      # the final file happens to be clean. Making it self-failing removes the
+      # dependency on an ambient shell option a future `shell:` key could drop.
       - name: Shellcheck
         run: |
           shellcheck bin/memcap libexec/*.sh
           for f in tests/*.bats; do
-            shellcheck "$f"
+            shellcheck "$f" || exit 1
           done
       - name: Bash 3.2 parse check
         run: /bin/bash -n bin/memcap libexec/*.sh
