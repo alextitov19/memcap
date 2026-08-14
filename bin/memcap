@@ -36,6 +36,10 @@ case "${1:-help}" in
     ;;
   docker)
     shift
+    case "${1:-}" in
+      apply|"") shift 2>/dev/null || true ;;
+      *) echo "usage: memcap docker apply [--force]" >&2; exit 2 ;;
+    esac
     # shellcheck source=/dev/null
     . "$LIB/docker.sh"
     mc_docker_apply "$@"

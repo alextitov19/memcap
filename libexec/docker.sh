@@ -16,7 +16,14 @@ mc_docker_runtime() {
 # toward the budget but cannot be capped; say so once rather than nagging.
 mc_docker_apply() {
   local force=0 rt mem_mib running
-  [ "${1:-}" = "--force" ] && force=1
+  # Validate the argument BEFORE anything else. The dispatcher routes every `memcap
+  # docker <anything>` here, so without this a typo -- `memcap docker aply` -- silently
+  # performs the single riskiest action in the codebase: quitting and restarting Docker.
+  case "${1:-}" in
+    "")        : ;;
+    --force)   force=1 ;;
+    *)         echo "usage: memcap docker apply [--force]" >&2; return 2 ;;
+  esac
   rt=$(mc_docker_runtime)
   if [ "$rt" != "desktop" ]; then
     echo "Docker runtime is '$rt' — memcap can measure it but cannot set a VM ceiling." >&2
@@ -29,7 +36,10 @@ mc_docker_apply() {
   fi
   running=$(docker ps -q 2>/dev/null)
   if [ -n "$running" ] && [ "$force" = "0" ]; then
-    echo "Containers are running. Settings saved; run 'memcap docker apply' when convenient." >&2
+    # Deliberately does NOT write the setting here. Docker Desktop rewrites its own
+    # settings file when it quits, so anything written while it is running is clobbered
+    # on the very restart that would apply it. The ceiling is written at apply time.
+    echo "Containers are running; not restarting Docker. Run 'memcap docker apply' when convenient." >&2
     return 1
   fi
 
