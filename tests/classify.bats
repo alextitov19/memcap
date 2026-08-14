@@ -53,6 +53,19 @@ fixture() { cat "$MEMCAP_ROOT/tests/fixtures/$1"; }
   [[ "$AGENTPIDS" == *999* ]]
 }
 
+# --- Final review, C2: EXTRA_AGENTS with more than one name -------------------
+# detect.sh word-splits EXTRA_AGENTS; classify.sh spliced the raw string into the
+# awk ERE as a single alternation branch, so a two-name value only matched the
+# literal string "myagent otheragent" -- which no real command line produces --
+# and silently voided mc_filter_protected's protection for both names.
+@test "EXTRA_AGENTS with more than one name protects every name, not just a literal match" {
+  # shellcheck disable=SC2034  # consumed by mc_classify via awk -v
+  EXTRA_AGENTS="myagent otheragent"
+  eval "$(printf '%s\n%s\n' '998 1 50000 /usr/local/bin/myagent --run' '999 1 50000 /usr/local/bin/otheragent --run' | mc_classify)"
+  [[ "$AGENTPIDS" == *998* ]]
+  [[ "$AGENTPIDS" == *999* ]]
+}
+
 @test "the docker VM is counted as docker, not as an agent" {
   eval "$(fixture mixed.txt | mc_classify)"
   [ "$DOCKER_KB" -gt 9000000 ]

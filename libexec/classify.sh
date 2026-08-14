@@ -13,8 +13,18 @@ MC_SIM_EXE='(CoreSimulator|Simulator\.app|launchd_sim|SimulatorTrampoline|simdis
 MC_SIM_ARG='--user-data-dir=[^[:space:]]*(playwright|pw-browser)|\.maestro/lib|maestro\.cli|[[:space:]]-avd[[:space:]]'
 MC_SIM_SKIP='/(rg|grep|egrep|awk|sed|ps|top|tail|head|cat|sort|cut|tr|xargs|find|bash|zsh|sh|jq)$'
 
+# EXTRA_AGENTS is a space-separated word list (detect.sh's mc_installed_agents word-
+# splits it the same way). Splicing the raw string into the awk ERE as a single
+# alternation branch would only match that literal multi-word string -- never a real
+# command line -- so build one alternation branch per name instead.
+mc_extra_agent_pattern() {
+  local a alt=""
+  for a in ${EXTRA_AGENTS:-}; do alt="$alt|(^|/)$a([[:space:]]|\$)"; done
+  printf '%s' "$alt"
+}
+
 mc_classify() {
-  awk -v agentpat="${MC_AGENT_PATTERN}${EXTRA_AGENTS:+|$EXTRA_AGENTS}" \
+  awk -v agentpat="${MC_AGENT_PATTERN}$(mc_extra_agent_pattern)" \
       -v devpat="$MC_DEV_PATTERN" -v dockpat="$MC_DOCKER_PATTERN" \
       -v simexe="$MC_SIM_EXE" -v simarg="$MC_SIM_ARG" -v simskip="$MC_SIM_SKIP" '
     {
