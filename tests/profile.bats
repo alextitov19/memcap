@@ -63,6 +63,43 @@ setup() {
   [ "$output" = "DOCKER_BUDGET_GB=10" ]
 }
 
+# --- Final review, I5: profile.sh must not hardcode a 16 GB fallback ----------
+# status.sh and enforce.sh both fall back to mc_cap_gb "$(mc_total_ram_gb)" when
+# TOTAL_BUDGET_GB is absent; profile.sh used a literal 16. On a machine that is not
+# ~16 GB, `memcap profile stacks` with no TOTAL_BUDGET_GB in the config would write a
+# DOCKER_BUDGET_GB sized for the wrong cap -- on a small machine, large enough to
+# leave `watch` refusing to act (agents_budget < 1) forever.
+@test "profile list uses the computed cap when TOTAL_BUDGET_GB is absent, not a hardcoded 16" {
+  mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
+  printf 'DOCKER_CPUS=8\n' > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  run bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/profile.sh'
+    mc_total_ram_gb() { echo 32; }
+    mc_profile_list
+  "
+  # cap for 32 GB is 21 (budget.bats); stacks is 65% -> 14 GB docker / 7 GB agents.
+  # The old hardcoded fallback would show 16's split (10 GB / 6 GB) instead.
+  [[ "$(echo "$output" | grep stacks)" == *"14 GB"*"7 GB"* ]]
+}
+
+@test "profile set writes a DOCKER_BUDGET_GB sized for the computed cap, not 16" {
+  mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
+  printf 'DOCKER_CPUS=8\n' > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  run bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/profile.sh'
+    mc_total_ram_gb() { echo 32; }
+    mc_profile_set stacks
+  "
+  run grep '^DOCKER_BUDGET_GB=' "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  [ "$output" = "DOCKER_BUDGET_GB=14" ]
+}
+
 @test "switching adds an active key when the existing one is commented out" {
   printf 'TOTAL_BUDGET_GB=16\n# DOCKER_BUDGET_GB=6\n' > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
   "$MEMCAP_ROOT/bin/memcap" profile stacks

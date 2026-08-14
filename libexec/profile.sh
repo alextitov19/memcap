@@ -2,7 +2,7 @@
 set -uo pipefail
 
 mc_profile_list() {
-  local cap="${TOTAL_BUDGET_GB:-16}" p split desc
+  local cap="${TOTAL_BUDGET_GB:-$(mc_cap_gb "$(mc_total_ram_gb)")}" p split desc
   echo "  profile    docker  agents  for"
   for p in balanced stacks mobile; do
     split=$(mc_profile_split "$cap" "$p")
@@ -20,7 +20,7 @@ mc_profile_set() {
   case "$name" in balanced|stacks|mobile) ;; *) echo "unknown profile: $name" >&2; return 1 ;; esac
   conf="$(mc_config_file)"
   [ -f "$conf" ] || { echo "no config — run 'memcap init' first" >&2; return 1; }
-  cap="${TOTAL_BUDGET_GB:-16}"
+  cap="${TOTAL_BUDGET_GB:-$(mc_cap_gb "$(mc_total_ram_gb)")}"
   split=$(mc_profile_split "$cap" "$name")
   docker=$(echo "$split" | cut -d' ' -f1)
   # Rewrite only the one assignment; every comment and other knob is preserved.
