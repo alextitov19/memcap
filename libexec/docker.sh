@@ -31,7 +31,8 @@ mc_docker_apply() {
   fi
   mem_mib=$(( ${DOCKER_BUDGET_GB:-6} * 1024 ))
   if [ "$MC_DRY_RUN" = "1" ]; then
-    echo "would set Docker VM to ${DOCKER_BUDGET_GB:-6} GB / ${DOCKER_CPUS:-8} cores"
+    echo "would set Docker VM to ${DOCKER_BUDGET_GB:-6} GB / ${DOCKER_CPUS:-8} cores" \
+         "(also: 2 GB swap, Resource Saver on, auto-pause after 30s idle)"
     return 0
   fi
   running=$(docker ps -q 2>/dev/null)
@@ -72,7 +73,8 @@ mc_docker_apply() {
   local n=0
   while [ $n -lt 60 ]; do
     if [ -S "$HOME/.docker/run/docker.sock" ] && docker info >/dev/null 2>&1; then
-      echo " up. VM ceiling ${DOCKER_BUDGET_GB:-6} GB / ${DOCKER_CPUS:-8} cores."
+      echo " up. VM ceiling ${DOCKER_BUDGET_GB:-6} GB / ${DOCKER_CPUS:-8} cores" \
+           "(also: 2 GB swap, Resource Saver on, auto-pause after 30s idle)."
       return 0
     fi
     printf '.'; sleep 5; n=$((n+1))

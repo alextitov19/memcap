@@ -76,6 +76,16 @@ right after a restart, `docker images` and
 reloads. That is not data loss, and restarting Docker again to "fix" it only
 makes the wait longer.
 
+`memcap docker apply` writes five settings, not just the two implied above —
+all five are printed in the command's own output so nothing here is a surprise:
+`DOCKER_BUDGET_GB` → `MemoryMiB`, `DOCKER_CPUS` → `Cpus`, plus a fixed 2 GB of
+swap (`SwapMiB`), Resource Saver turned on (`ResourceSaverEnabled`), and
+auto-pause after 30 seconds idle (`AutoPauseTimeoutSeconds`). The last two are
+Docker Desktop features worth having on their own — Resource Saver idles the VM
+down when nothing is running, and auto-pause suspends it during inactivity —
+they just were not previously mentioned anywhere. If you had deliberately set
+your own swap size, `memcap docker apply` overwrites it to 2 GB.
+
 ## `memcap off`: the panic switch
 
 If memcap ever does something you don't want, or you just want it out of the way:
@@ -120,7 +130,7 @@ leaves memcap paused from the start.
 | `memcap off` | Pause switch. See above. |
 | `memcap on` | Resume enforcement. |
 | `memcap profile [name]` | List the budget profiles (`balanced`, `stacks`, `mobile`), or switch to one — rewrites `DOCKER_BUDGET_GB` in the config. |
-| `memcap docker apply [--force]` | Push `DOCKER_BUDGET_GB`/`DOCKER_CPUS` to the Docker Desktop VM ceiling; restarts Docker Desktop to do it. Normally refuses while containers are running; `--force` overrides that and stops them. |
+| `memcap docker apply [--force]` | Push `DOCKER_BUDGET_GB`/`DOCKER_CPUS` to the Docker Desktop VM ceiling, plus swap/Resource Saver/auto-pause — see Docker section above; restarts Docker Desktop to do it. Normally refuses while containers are running; `--force` overrides that and stops them. |
 | `memcap uninstall` | Stop the service and remove memcap's state. Keeps your config. See Uninstall below. |
 | `memcap help` | Usage summary. |
 

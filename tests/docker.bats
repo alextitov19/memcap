@@ -30,6 +30,19 @@ setup() {
   [[ "$output" == *would* ]]
 }
 
+# --- Final review, I4: docker apply silently rewrites three undocumented settings
+# SwapMiB, ResourceSaverEnabled, and AutoPauseTimeoutSeconds are set alongside
+# memory and CPU, but only memory/CPU were ever mentioned to the user. Keep the
+# behavior, but say so in the command's own output as well as the README.
+@test "the dry-run message names all five settings it would change" {
+  run env MC_DRY_RUN=1 bash -c "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/docker.sh'; mc_docker_apply"
+  [[ "$output" == *"GB"* ]]
+  [[ "$output" == *"cores"* ]]
+  [[ "$output" == *"swap"* ]]
+  [[ "$output" == *"Resource Saver"* ]]
+  [[ "$output" == *"auto-pause"* ]]
+}
+
 # A typo routed straight to mc_docker_apply must not fall through to the real runtime
 # logic -- it is the single riskiest action in the codebase (quits and restarts Docker).
 @test "mc_docker_apply rejects an unrecognized argument" {
