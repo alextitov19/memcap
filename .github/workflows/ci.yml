@@ -1,0 +1,15 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: brew install bats-core shellcheck
+      - name: Shellcheck
+        run: shellcheck bin/memcap libexec/*.sh tests/*.bats
+      - name: Bash 3.2 parse check
+        run: /bin/bash -n bin/memcap libexec/*.sh
+      - name: Tests
+        run: bats tests/
