@@ -70,6 +70,21 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
+@test "a path containing a newline is rejected" {
+  run mc_root_is_safe "$(printf '%s/a\nb/c' "$HOME")"
+  [ "$status" -ne 0 ]
+}
+
+@test "a recorded root is stored resolved, not as given" {
+  mkdir -p "$HOME/.memcap-real-$$/proj"
+  ln -sfn "$HOME/.memcap-real-$$" "$HOME/.memcap-link-$$"
+  mc_record_root "$HOME/.memcap-link-$$/proj"
+  run mc_sweep_roots
+  rm -rf "$HOME/.memcap-real-$$" "$HOME/.memcap-link-$$"
+  [[ "$output" == *".memcap-real-$$/proj"* ]]
+  [[ "$output" != *".memcap-link-$$"* ]]
+}
+
 @test "an unsafe root is never recorded" {
   mc_record_root "$HOME"
   run mc_sweep_roots

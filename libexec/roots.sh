@@ -5,45 +5,54 @@ set -uo pipefail
 
 mc_roots_file() { printf '%s/roots\n' "$(mc_state_dir)"; }
 
-mc_root_is_safe() {
-  local dir="$1" real head tail
+# Canonical absolute path for a directory that may not exist yet. Echoes the resolved
+# path; returns 1 for anything that cannot be reasoned about safely.
+mc_canonicalize() {
+  local dir="$1" head tail real nl
   [ -n "$dir" ] || return 1
   case "$dir" in
     ../*|*/../*|*/..) return 1 ;;
   esac
-  # Trim trailing slashes. "$HOME/code/" otherwise satisfies "$HOME"/*/* with the
-  # second * matching the empty string, passing one level off as two.
+  # The roots state file is line-oriented: one embedded newline becomes two roots on
+  # read-back, and the stray fragment is later substring-matched against process
+  # command lines during a sweep. Refuse control characters outright.
+  nl=$(printf '\nx'); nl=${nl%x}
+  case "$dir" in *"$nl"*|*"$(printf '\rx')"*) return 1 ;; esac
   while [ "$dir" != "${dir%/}" ]; do dir="${dir%/}"; done
   [ -n "$dir" ] || return 1
-  # Only absolute paths can be reasoned about; a relative path also has no ancestor
-  # chain to walk, which would spin the loop below forever.
   case "$dir" in /*) : ;; *) return 1 ;; esac
-  # Canonicalize against the nearest EXISTING ancestor, then re-append the remainder.
-  # Judging a non-existent path textually lets an intermediate symlink escape: with
-  # $HOME/scratch -> /tmp, the string "$HOME/scratch/proj" looks safe while actually
-  # designating /tmp/proj.
   head="$dir"; tail=""
   while [ ! -d "$head" ] && [ "$head" != "/" ]; do
     tail="${head##*/}${tail:+/$tail}"
-    case "$head" in
-      */*) head="${head%/*}" ;;
-      *)   head="" ;;
-    esac
+    case "$head" in */*) head="${head%/*}" ;; *) head="" ;; esac
     [ -z "$head" ] && head="/"
   done
   real=$(cd "$head" 2>/dev/null && pwd -P) || return 1
+  [ "$real" = "/" ] && real=""
   [ -n "$tail" ] && real="$real/$tail"
+  [ -n "$real" ] || return 1
+  printf '%s\n' "$real"
+}
+
+# Refuse anything broad enough to sweep unrelated work: at least two levels below
+# $HOME, judged on the canonical path.
+mc_root_is_safe() {
+  local real
+  real=$(mc_canonicalize "$1") || return 1
   case "$real" in
     "$HOME"/*/*) return 0 ;;
     *) return 1 ;;
   esac
 }
 
+# Persists the CANONICAL path, not the caller's string: what gets stored must be what
+# was validated, or a later sweep acts on a path nobody checked.
 mc_record_root() {
-  local dir="$1" f
-  mc_root_is_safe "$dir" || return 0
+  local real f
+  real=$(mc_canonicalize "$1") || return 0
+  case "$real" in "$HOME"/*/*) : ;; *) return 0 ;; esac
   f="$(mc_roots_file)"; mkdir -p "$(dirname "$f")"; touch "$f"
-  grep -qxF "$dir" "$f" 2>/dev/null || echo "$dir" >> "$f"
+  grep -qxF "$real" "$f" 2>/dev/null || printf '%s\n' "$real" >> "$f"
 }
 
 # Working directory of a pid, via lsof. Empty if it cannot be determined.
