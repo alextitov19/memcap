@@ -295,7 +295,7 @@ setup() {
   kill "$victim" 2>/dev/null
 
   [ -z "$output" ]
-  [ -f "$(mc_sims_idle_stamp)" ]
+  [ -f "$(mc_sims_idle_stamp "$victim")" ]
 }
 
 @test "tier3: once the idle stamp is past SIM_IDLE_GRACE_SEC the reap proceeds" {
@@ -311,7 +311,7 @@ setup() {
 
   run mc_reap_sims
   [ -z "$output" ]
-  stamp="$(mc_sims_idle_stamp)"
+  stamp="$(mc_sims_idle_stamp "$victim")"
   [ -f "$stamp" ]
 
   # Grace set to 0 rather than sleeping for real: time has moved forward at least
@@ -325,6 +325,71 @@ setup() {
   [[ "$output" == *"would kill"* ]]
   [[ "$output" == *"$victim"* ]]
   [ ! -f "$stamp" ]
+}
+
+# --- Final review, I6: the idle grace stamp must be per-pid, not machine-wide -
+# One shared `sims-idle` stamp meant a hand-booted simulator inherited whichever
+# timestamp an unrelated, already-idle sim process had accumulated, and could be
+# reaped with none of its own grace. Each tracked sim pid now gets its own stamp,
+# and a pid seen idle for the first time this pass blocks the WHOLE reap -- not just
+# itself -- until it too clears the grace, rather than being swept in in with an
+# older pid's head start.
+@test "I6: a freshly-tracked sim pid blocks the reap even though another tracked sim already cleared its own grace" {
+  perl -e 'sleep 600' "ms-playwright-fixture" & old=$!
+  sleep 600 & fresh=$!
+  sleep 0.2
+  AGENTPIDS=""
+  SIMPIDS="$old $fresh"
+  MC_DRY_RUN=1
+  # $old gets a stamp far enough in the past to have cleared any real-world grace on
+  # its own -- mirroring a sim that has genuinely been idle a while. $fresh gets none:
+  # it is tracked for the first time on this very pass, exactly like a simulator just
+  # booted by hand. Under the old shared-stamp design this single old timestamp would
+  # have applied to $fresh too, and $old (a real kill-pattern match) would have been
+  # reaped immediately -- taking $fresh's grace away from it in the process.
+  mkdir -p "$(mc_sims_idle_dir)"
+  echo 1 > "$(mc_sims_idle_stamp "$old")"
+
+  run mc_reap_sims
+
+  kill "$old" "$fresh" 2>/dev/null
+
+  [[ "$output" != *"would kill"* ]]
+  [ -f "$(mc_sims_idle_stamp "$fresh")" ]
+}
+
+@test "I6: once every tracked sim pid has individually cleared the grace, the reap proceeds" {
+  perl -e 'sleep 600' "ms-playwright-fixture" & old=$!
+  sleep 600 & fresh=$!
+  sleep 0.2
+  AGENTPIDS=""
+  SIMPIDS="$old $fresh"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  echo 1 > "$(mc_sims_idle_stamp "$old")"
+  run mc_reap_sims
+  [[ "$output" != *"would kill"* ]]
+
+  # Grace set to 0 rather than sleeping for real, same trick as the single-pid test
+  # above: $fresh's own stamp (written on the poll just above) now also counts as
+  # cleared, so both pids are individually ready and the pass proceeds.
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIM_IDLE_GRACE_SEC=0
+  run mc_reap_sims
+
+  kill "$old" "$fresh" 2>/dev/null
+
+  [[ "$output" == *"would kill"* ]]
+  [[ "$output" == *"$old"* ]]
+}
+
+@test "I6: mc_hands_on_mobile also treats Simulator.app itself as hands-on" {
+  perl -e 'sleep 600' "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator" &
+  victim=$!
+  sleep 0.2
+  run mc_hands_on_mobile
+  kill "$victim" 2>/dev/null
+  [ "$status" -eq 0 ]
 }
 
 # --- Final review, I2: dry run must not notify that a kill happened ---------
@@ -390,10 +455,10 @@ SCRIPT
   [ ! -f "$capture" ]
 }
 
-@test "tier3: a live agent session clears an existing idle stamp" {
-  stamp="$(mc_sims_idle_stamp)"
-  mkdir -p "$(mc_state_dir)"
-  echo "1" > "$stamp"
+@test "tier3: a live agent session clears every existing idle stamp" {
+  dir="$(mc_sims_idle_dir)"
+  mkdir -p "$dir"
+  echo "1" > "$(mc_sims_idle_stamp 99999)"
 
   sleep 600 & agent=$!
   # shellcheck disable=SC2034  # consumed by mc_no_live_session, sourced from enforce.sh
@@ -406,5 +471,5 @@ SCRIPT
 
   kill "$agent" 2>/dev/null
 
-  [ ! -f "$stamp" ]
+  [ ! -d "$dir" ]
 }

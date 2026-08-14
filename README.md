@@ -27,8 +27,8 @@ sends a notification, and kills nothing on that pass.
 
 **Tier 3 — idle simulators.** iOS Simulators, Android emulators, Playwright
 browsers, and Maestro processes, and only when no agent session is alive. It never
-runs while Xcode or Android Studio is open, so it will not pull a device out from
-under you while you are testing by hand.
+runs while Xcode, Android Studio, or Simulator.app itself is open, so it will not
+pull a device out from under you while you are testing by hand.
 
 **Simulator memory counts toward the combined cap, but only tier 3 can reclaim
 it.** A booted simulator or a Playwright-driven browser is counted into the same
@@ -148,7 +148,7 @@ computed default if it is absent or commented out.
 | `SOFT_TRIGGER` | `0.80` | Fraction of the agents' budget that, once crossed, triggers a tier-1 sweep before anything is killed outright. |
 | `MIN_FREE_PCT` | `15` | If system-wide free memory drops below this percentage, a tier-1 sweep runs regardless of whether the agent budget itself has been crossed. |
 | `TIER2_MIN_AGE_SEC` | `300` | Minimum age, in seconds, a dev server must have reached before tier 2 will consider killing it. |
-| `SIM_IDLE_GRACE_SEC` | `600` | How long simulators, emulators, and Playwright browsers must sit idle — no agent session alive, Xcode and Android Studio both closed — before tier 3 will shut them down. The countdown restarts if an agent session reappears or one of those apps opens, and clears again once a reap happens. This is what protects a simulator you booted by hand (via Simulator.app or `simctl`) from being killed within one poll. |
+| `SIM_IDLE_GRACE_SEC` | `600` | How long simulators, emulators, and Playwright browsers must sit idle — no agent session alive, Xcode/Android Studio/Simulator.app all closed — before tier 3 will shut them down. Each tracked process earns its own clock, starting the moment memcap first sees it idle, not a single clock shared by every simulator on the machine — booting a second simulator by hand does not inherit however long an unrelated, already-idle process has been sitting there. Tier 3 only acts once every currently-tracked process has individually cleared the grace, so one freshly-booted simulator holds the whole pass back rather than being swept in early alongside an older one. The clock for a process restarts if an agent session reappears or one of those apps opens, and every clock clears once a reap happens. |
 | `EXTRA_AGENTS` | empty | Extra agent binary names to recognize, beyond the built-in list (`claude codex cursor-agent aider gemini amp opencode goose crush`). Also spliced into the process-classification regex, so avoid regex metacharacters in the names you add. |
 
 ## Files on disk
@@ -168,9 +168,11 @@ State, at `~/.local/state/memcap/` (override with `MEMCAP_STATE_HOME`):
   enforcement is active.
 - `.notified` — a timestamp used to rate-limit desktop notifications to at most
   one every 5 minutes.
-- `sims-idle` — a timestamp marking when idle simulators were first seen with no
-  agent session alive; tier 3 waits out `SIM_IDLE_GRACE_SEC` from this stamp
-  before reaping, and the stamp is cleared whenever that condition stops holding.
+- `sims-idle/` — one timestamp file per tracked simulator/emulator/browser
+  process (named by pid), marking when memcap first saw it idle with no agent
+  session alive; tier 3 waits out `SIM_IDLE_GRACE_SEC` from each pid's own
+  stamp before reaping, and every stamp is cleared whenever that condition
+  stops holding, or a reap happens.
 
 All of the above is removed by `memcap uninstall`.
 

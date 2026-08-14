@@ -136,6 +136,7 @@ mc_kill_over_budget() {
 mc_hands_on_mobile() {
   pgrep -qf '/Xcode\.app/Contents/MacOS/Xcode' 2>/dev/null && return 0
   pgrep -qf 'Android Studio\.app/Contents/MacOS' 2>/dev/null && return 0
+  pgrep -qf '/Simulator\.app/Contents/MacOS/Simulator' 2>/dev/null && return 0
   return 1
 }
 
@@ -145,42 +146,76 @@ mc_no_live_session() {
   return 0
 }
 
+MC_SIM_KILL_PATTERN='qemu-system|/emulator( |$)|emulator64|ms-playwright|headless_shell|\.maestro/lib'
+
 # SIM_IDLE_GRACE_SEC gives a hand-booted simulator a reprieve. Without it, someone
 # running Simulator.app or `simctl` directly -- no Xcode open, no agent session -- has
 # their simulator killed within one poll. The prototype this tool generalizes stamps
 # when sims are first seen idle and waits out the grace before reaping; memcap must too.
-mc_sims_idle_stamp() { printf '%s/sims-idle\n' "$(mc_state_dir)"; }
+#
+# One stamp PER TRACKED PID, not one shared file: a single machine-wide stamp meant a
+# simulator booted by hand inherited whatever timestamp an unrelated, already-idle sim
+# process (a stale Playwright browser, say) had accumulated, and could be reaped with
+# none of its own grace. Each pid earns its own clock starting the moment it is first
+# seen idle, and the whole reap -- not just that pid -- waits until EVERY currently
+# tracked pid has individually cleared the grace. That is more conservative than
+# reaping each pid the instant its own clock allows (a genuinely-idle process now
+# waits on a newer sibling too), but it is what actually protects the newer one, and
+# tier 3 is the soft, best-effort tier to begin with.
+mc_sims_idle_dir() { printf '%s/sims-idle\n' "$(mc_state_dir)"; }
+mc_sims_idle_stamp() { printf '%s/%s\n' "$(mc_sims_idle_dir)" "$1"; }
 
 mc_reap_sims() {
-  local pid targets="" stamp first now
-  stamp="$(mc_sims_idle_stamp)"
+  local pid targets="" dir stamp first now grace all_ready=1
+  dir="$(mc_sims_idle_dir)"
+
   if ! mc_no_live_session || mc_hands_on_mobile; then
-    rm -f "$stamp"
+    rm -rf "$dir"
     return 0
   fi
+
+  # Prune stamps for pids no longer alive or no longer sim-classified, so a reused
+  # pid number cannot inherit a stale idle clock and an exited sim does not leave a
+  # stray file behind forever.
+  if [ -d "$dir" ]; then
+    for stamp in "$dir"/*; do
+      [ -e "$stamp" ] || continue
+      pid="${stamp##*/}"
+      case " $SIMPIDS " in
+        *" $pid "*) kill -0 "$pid" 2>/dev/null && continue ;;
+      esac
+      rm -f "$stamp"
+    done
+  fi
+
   if [ -z "${SIMPIDS// /}" ]; then
-    rm -f "$stamp"
     return 0
   fi
+
+  mkdir -p "$dir"
   now=$(date +%s)
-  first=$(cat "$stamp" 2>/dev/null || echo 0)
-  if [ "$first" = "0" ]; then
-    mkdir -p "$(mc_state_dir)"
-    echo "$now" > "$stamp"
-    first="$now"
-  fi
-  [ $((now - first)) -lt "${SIM_IDLE_GRACE_SEC:-600}" ] && return 0
+  grace="${SIM_IDLE_GRACE_SEC:-600}"
+  for pid in $SIMPIDS; do
+    stamp="$(mc_sims_idle_stamp "$pid")"
+    first=$(cat "$stamp" 2>/dev/null || echo 0)
+    if [ "$first" = "0" ]; then
+      first="$now"
+      echo "$first" > "$stamp"
+    fi
+    [ $((now - first)) -lt "$grace" ] && all_ready=0
+  done
+  [ "$all_ready" = "0" ] && return 0
+
   if [ "$MC_DRY_RUN" != "1" ] && xcrun simctl list devices booted 2>/dev/null | grep -q Booted; then
     mc_log "tier3: xcrun simctl shutdown all"
     xcrun simctl shutdown all >/dev/null 2>&1
   fi
   for pid in $SIMPIDS; do
-    ps -o command= -p "$pid" 2>/dev/null |
-      grep -Eq 'qemu-system|/emulator( |$)|emulator64|ms-playwright|headless_shell|\.maestro/lib' || continue
+    ps -o command= -p "$pid" 2>/dev/null | grep -Eq "$MC_SIM_KILL_PATTERN" || continue
     targets="$targets $pid"
   done
   [ -n "${targets// /}" ] && mc_kill_pids "$targets" "tier3 idle simulator"
-  rm -f "$stamp"
+  rm -rf "$dir"
   return 0
 }
 
