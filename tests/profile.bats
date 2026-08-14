@@ -25,6 +25,30 @@ setup() {
   [ "$output" = "TIER2_MIN_AGE_SEC=999" ]
 }
 
+@test "appending to a config with no trailing newline does not corrupt the last key" {
+  printf 'TOTAL_BUDGET_GB=16\nDOCKER_CPUS=8' > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  "$MEMCAP_ROOT/bin/memcap" profile stacks
+  run grep -c '^DOCKER_CPUS=8$' "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  [ "$output" = "1" ]
+  run grep '^DOCKER_BUDGET_GB=' "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  [ "$output" = "DOCKER_BUDGET_GB=10" ]
+}
+
+@test "a failed write reports failure instead of false success" {
+  printf 'TOTAL_BUDGET_GB=16\n' > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  chmod 444 "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  run "$MEMCAP_ROOT/bin/memcap" profile stacks
+  chmod 644 "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  [ "$status" -ne 0 ]
+}
+
+@test "switching preserves the config file mode" {
+  chmod 644 "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  "$MEMCAP_ROOT/bin/memcap" profile mobile
+  run stat -f '%Lp' "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  [ "$output" = "644" ]
+}
+
 @test "an unknown profile is rejected" {
   run "$MEMCAP_ROOT/bin/memcap" profile bogus
   [ "$status" -ne 0 ]

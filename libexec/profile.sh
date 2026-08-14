@@ -16,7 +16,7 @@ mc_profile_list() {
 }
 
 mc_profile_set() {
-  local name="$1" cap split docker conf tmp
+  local name="$1" cap split docker conf tmp mode
   case "$name" in balanced|stacks|mobile) ;; *) echo "unknown profile: $name" >&2; return 1 ;; esac
   conf="$(mc_config_file)"
   [ -f "$conf" ] || { echo "no config — run 'memcap init' first" >&2; return 1; }
@@ -29,15 +29,30 @@ mc_profile_set() {
   # the append branch the command would report success and change no bytes.
   # Colocate the temp file with the config so the mv is atomic on the same filesystem,
   # and clean it up if the rewrite fails rather than leaving a stray file beside it.
+  mode=$(stat -f '%Lp' "$conf" 2>/dev/null || echo 644)
   if grep -q '^DOCKER_BUDGET_GB=' "$conf"; then
     tmp=$(mktemp "${conf}.XXXXXX") || return 1
     if sed -e "s/^DOCKER_BUDGET_GB=.*/DOCKER_BUDGET_GB=$docker/" "$conf" > "$tmp"; then
-      mv "$tmp" "$conf"
+      # mktemp creates the file 0600, and `mv` replaces the config's inode along with
+      # its permissions. Restore the original mode so switching profiles never silently
+      # narrows who can read the config.
+      chmod "$mode" "$tmp" 2>/dev/null
+      mv "$tmp" "$conf" || { rm -f "$tmp"; return 1; }
     else
       rm -f "$tmp"; return 1
     fi
   else
-    printf 'DOCKER_BUDGET_GB=%s\n' "$docker" >> "$conf"
+    # Appending to a file with no trailing newline glues the new key onto the last
+    # line: it corrupts that key's value AND never defines this one. Command
+    # substitution strips trailing newlines, so a non-empty result here means the
+    # final byte was not a newline.
+    if [ -n "$(tail -c1 "$conf")" ]; then
+      printf '\n' >> "$conf" || return 1
+    fi
+    # Checked, like the sed branch above it. An unchecked append would report success
+    # on a read-only config while writing nothing -- the same false-success bug this
+    # whole task has been chasing.
+    printf 'DOCKER_BUDGET_GB=%s\n' "$docker" >> "$conf" || return 1
   fi
   echo "profile '$name' → docker ${docker} GB, agents $((cap - docker)) GB"
   echo "Run 'memcap docker apply' to move the VM ceiling (needs a Docker restart)."
