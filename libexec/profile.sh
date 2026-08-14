@@ -2,7 +2,7 @@
 set -uo pipefail
 
 mc_profile_list() {
-  local cap="${TOTAL_BUDGET_GB:-16}" p split
+  local cap="${TOTAL_BUDGET_GB:-16}" p split desc
   echo "  profile    docker  agents  for"
   for p in balanced stacks mobile; do
     split=$(mc_profile_split "$cap" "$p")
@@ -24,8 +24,21 @@ mc_profile_set() {
   split=$(mc_profile_split "$cap" "$name")
   docker=$(echo "$split" | cut -d' ' -f1)
   # Rewrite only the one assignment; every comment and other knob is preserved.
-  tmp=$(mktemp)
-  sed -e "s/^DOCKER_BUDGET_GB=.*/DOCKER_BUDGET_GB=$docker/" "$conf" > "$tmp" && mv "$tmp" "$conf"
+  # A substitution can only change a line that exists. If the key is absent -- an older
+  # config, or one where the user commented it out -- sed matches nothing, and without
+  # the append branch the command would report success and change no bytes.
+  # Colocate the temp file with the config so the mv is atomic on the same filesystem,
+  # and clean it up if the rewrite fails rather than leaving a stray file beside it.
+  if grep -q '^DOCKER_BUDGET_GB=' "$conf"; then
+    tmp=$(mktemp "${conf}.XXXXXX") || return 1
+    if sed -e "s/^DOCKER_BUDGET_GB=.*/DOCKER_BUDGET_GB=$docker/" "$conf" > "$tmp"; then
+      mv "$tmp" "$conf"
+    else
+      rm -f "$tmp"; return 1
+    fi
+  else
+    printf 'DOCKER_BUDGET_GB=%s\n' "$docker" >> "$conf"
+  fi
   echo "profile '$name' → docker ${docker} GB, agents $((cap - docker)) GB"
   echo "Run 'memcap docker apply' to move the VM ceiling (needs a Docker restart)."
   return 0
