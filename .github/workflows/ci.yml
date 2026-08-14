@@ -20,7 +20,10 @@ jobs:
       - name: Shellcheck
         run: |
           shellcheck bin/memcap libexec/*.sh || exit 1
-          for f in tests/*.bats; do
+          # tests/*.bash too: helper.bash is executed by all ten bats files via
+          # `load helper`, and was in neither loop. Individually, not grouped with the
+          # .bats files -- grouping reopens the source-resolution masking.
+          for f in tests/*.bats tests/*.bash; do
             shellcheck "$f" || exit 1
           done
       # MUST loop. `bash -n file1 file2` parses only file1 -- everything after it
@@ -30,7 +33,7 @@ jobs:
       # silently checked one file out of eleven.
       - name: Bash 3.2 parse check
         run: |
-          for f in bin/memcap libexec/*.sh; do
+          for f in bin/memcap libexec/*.sh tests/*.bash; do
             /bin/bash -n "$f" || exit 1
           done
       - name: Tests
