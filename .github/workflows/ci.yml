@@ -7,8 +7,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install tools
         run: brew install bats-core shellcheck
+      # Bats files MUST be checked one at a time. In a single group invocation
+      # shellcheck resolves `source` targets across the whole file list, so a bats file
+      # missing its `# shellcheck source=/dev/null` directive still exits 0 — which is
+      # exactly how that defect hid in tests/scaffold.bats for ten tasks. Verified:
+      # with the directive stripped, the group form exits 0 and the loop exits 1.
       - name: Shellcheck
-        run: shellcheck bin/memcap libexec/*.sh tests/*.bats
+        run: |
+          shellcheck bin/memcap libexec/*.sh
+          for f in tests/*.bats; do
+            shellcheck "$f"
+          done
       - name: Bash 3.2 parse check
         run: /bin/bash -n bin/memcap libexec/*.sh
       - name: Tests
