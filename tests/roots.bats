@@ -85,6 +85,20 @@ setup() {
   [[ "$output" != *".memcap-link-$$"* ]]
 }
 
+@test "a path containing a carriage return is rejected" {
+  run mc_root_is_safe "$HOME/code/proj"$'\r'"sneaky"
+  [ "$status" -ne 0 ]
+}
+
+@test "a symlink to a directory whose name contains a newline is rejected" {
+  real_dir="$HOME/.memcap-nl-$$/a"$'\n'"b"
+  mkdir -p "$real_dir"
+  ln -sfn "$real_dir" "$HOME/.memcap-nllink-$$"
+  run mc_root_is_safe "$HOME/.memcap-nllink-$$/proj"
+  rm -rf "$HOME/.memcap-nl-$$" "$HOME/.memcap-nllink-$$"
+  [ "$status" -ne 0 ]
+}
+
 @test "an unsafe root is never recorded" {
   mc_record_root "$HOME"
   run mc_sweep_roots

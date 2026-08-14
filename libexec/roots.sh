@@ -8,16 +8,11 @@ mc_roots_file() { printf '%s/roots\n' "$(mc_state_dir)"; }
 # Canonical absolute path for a directory that may not exist yet. Echoes the resolved
 # path; returns 1 for anything that cannot be reasoned about safely.
 mc_canonicalize() {
-  local dir="$1" head tail real nl
+  local dir="$1" head tail real
   [ -n "$dir" ] || return 1
   case "$dir" in
     ../*|*/../*|*/..) return 1 ;;
   esac
-  # The roots state file is line-oriented: one embedded newline becomes two roots on
-  # read-back, and the stray fragment is later substring-matched against process
-  # command lines during a sweep. Refuse control characters outright.
-  nl=$(printf '\nx'); nl=${nl%x}
-  case "$dir" in *"$nl"*|*"$(printf '\rx')"*) return 1 ;; esac
   while [ "$dir" != "${dir%/}" ]; do dir="${dir%/}"; done
   [ -n "$dir" ] || return 1
   case "$dir" in /*) : ;; *) return 1 ;; esac
@@ -31,6 +26,12 @@ mc_canonicalize() {
   [ "$real" = "/" ] && real=""
   [ -n "$tail" ] && real="$real/$tail"
   [ -n "$real" ] || return 1
+  # Guard the FINAL resolved value, not the caller's input. The roots state file is
+  # line-oriented, so an embedded newline becomes two roots on read-back and the stray
+  # fragment gets substring-matched against process command lines during a sweep. It
+  # must be checked here because a symlinked ancestor can introduce a control character
+  # the raw input never contained.
+  case "$real" in *[[:cntrl:]]*) return 1 ;; esac
   printf '%s\n' "$real"
 }
 
