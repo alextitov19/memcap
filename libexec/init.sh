@@ -11,6 +11,29 @@ mc_ask() {
   echo "${answer:-$default}"
 }
 
+# Re-prompts until the answer is a plain non-negative integer of at least `min`
+# (default 0). Both cap and the Docker ceiling feed `-ge`/`-eq` comparisons and,
+# downstream in watch/status, bash arithmetic under `set -u` -- a non-numeric
+# answer (a typo, or someone typing "sixteen") dies there with a raw "integer
+# expression expected" error instead of a message a user could act on. `min=1`
+# is what rejects a degenerate 0 total cap; the Docker prompt explicitly allows 0
+# ("0 to skip Docker"), so it passes min=0.
+mc_ask_int() {
+  local prompt="$1" default="$2" min="${3:-0}" answer
+  while :; do
+    answer=$(mc_ask "$prompt" "$default")
+    case "$answer" in
+      ''|*[!0-9]*) echo "  Please enter a whole number." >&2; continue ;;
+    esac
+    if [ "$answer" -lt "$min" ]; then
+      echo "  Please enter a number of at least $min." >&2
+      continue
+    fi
+    echo "$answer"
+    return 0
+  done
+}
+
 mc_run_init() {
   local no_service=0 no_docker=0 total cores cap docker_gb agents enforce start_svc safe_docker
   while [ $# -gt 0 ]; do
@@ -42,9 +65,9 @@ mc_run_init() {
     echo "  Imported existing settings from ~/.claude/agent-budget.conf"
   fi
 
-  cap=$(mc_ask "Total cap for agents + Docker + sims (GB)" "$cap")
+  cap=$(mc_ask_int "Total cap for agents + Docker + sims (GB)" "$cap" 1)
   if [ "$no_docker" = "0" ]; then
-    docker_gb=$(mc_ask "Docker VM ceiling (GB, 0 to skip Docker)" "$docker_gb")
+    docker_gb=$(mc_ask_int "Docker VM ceiling (GB, 0 to skip Docker)" "$docker_gb" 0)
   else
     docker_gb=0
   fi

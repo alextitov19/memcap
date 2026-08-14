@@ -43,6 +43,37 @@ setup() {
   [[ "$output" == *TOTAL_BUDGET_GB=* ]]
 }
 
+# --- Final review, small fix: init must validate numeric answers -------------
+# Both the total cap and the Docker ceiling feed a `-ge` comparison and, later in
+# watch/status, bash arithmetic under `set -u`. A non-numeric answer used to die
+# there with a raw "integer expression expected" error instead of a message a
+# user could act on, and a degenerate 0 total cap was accepted outright (it fails
+# closed downstream -- watch refuses to enforce -- but silently, with init never
+# saying why). Both are the same missing check, fixed together with mc_ask_int.
+@test "init re-prompts on a non-numeric total cap instead of writing it" {
+  run bash -c "printf 'sixteen\n16\n0\nno\n' | '$MEMCAP_ROOT/bin/memcap' init --no-service"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"whole number"* ]]
+  run cat "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  [[ "$output" == *"TOTAL_BUDGET_GB=16"* && "$output" == *"DOCKER_BUDGET_GB=0"* ]]
+}
+
+@test "init re-prompts on a total cap of 0 instead of writing a degenerate config" {
+  run bash -c "printf '0\n16\n0\nno\n' | '$MEMCAP_ROOT/bin/memcap' init --no-service"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"at least 1"* ]]
+  run cat "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  [[ "$output" == *"TOTAL_BUDGET_GB=16"* ]]
+}
+
+@test "init accepts a Docker ceiling of exactly 0 (skip Docker) without re-prompting" {
+  run bash -c "printf '16\n0\nno\n' | '$MEMCAP_ROOT/bin/memcap' init --no-service"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"whole number"* && "$output" != *"at least"* ]]
+  run cat "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  [[ "$output" == *"DOCKER_BUDGET_GB=0"* ]]
+}
+
 # --- Carried finding 1: TOCTOU on sweep roots ---------------------------------
 # A root recorded while safe can be replaced by a symlink before tier 1 acts on it.
 # mc_reap_orphans must re-validate with mc_root_is_safe immediately before using a
