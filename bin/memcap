@@ -52,6 +52,18 @@ case "${1:-help}" in
     ;;
   off)    mkdir -p "$(mc_state_dir)"; touch "$(mc_state_dir)/paused"; echo "memcap paused" ;;
   on)     rm -f "$(mc_state_dir)/paused"; echo "memcap resumed" ;;
-  help|--help|-h) echo "memcap — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|watch|clean|profile|docker|off|on}" ;;
+  uninstall)
+    shift
+    # Validate before acting, the same lesson as `docker apply`: the dispatcher routes
+    # every `memcap uninstall <anything>` here, so a stray argument must be rejected
+    # before the rm -rf runs, not after.
+    if [ $# -gt 0 ]; then echo "usage: memcap uninstall" >&2; exit 2; fi
+    brew services stop memcap 2>/dev/null
+    rm -rf "$(mc_state_dir)"
+    echo "Removed memcap state ($(mc_state_dir))."
+    echo "Config kept at $(mc_config_file) — delete it yourself for a clean slate."
+    echo "Then: brew uninstall memcap"
+    ;;
+  help|--help|-h) echo "memcap — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|watch|clean|profile|docker|off|on|uninstall}" ;;
   *) echo "unknown command: $1" >&2; exit 1 ;;
 esac
