@@ -178,7 +178,7 @@ mc_reap_sims() {
 
 mc_watch() {
   if mc_is_paused; then echo "memcap is paused (memcap on to resume)"; return 0; fi
-  local total cap docker_budget agents_budget agent_gb over free
+  local total cap docker_budget agents_budget agent_net_gb over free
   eval "$(mc_ps_snapshot | mc_classify)"
   mc_record_roots "$AGENTPIDS"
 
@@ -195,19 +195,22 @@ mc_watch() {
     echo "memcap.conf is misconfigured: DOCKER_BUDGET_GB ($docker_budget) >= TOTAL_BUDGET_GB ($cap). Fix memcap.conf; not enforcing."
     return 1
   fi
-  agent_gb=$(mc_gb "$AGENT_KB")
+  # Net of sims, not the gross AGENT_KB: sims still count toward the combined cap and
+  # are still reclaimed by tier 3, but tier 1's soft trigger and tier 2's kill decision
+  # must not fire on an overage that belongs to a simulator neither tier can touch.
+  agent_net_gb=$(mc_gb "$(mc_agent_net_kb "$AGENT_KB" "$SIM_KB")")
   free=$(mc_free_pct)
 
-  over=$(awk -v a="$agent_gb" -v b="$agents_budget" -v t="${SOFT_TRIGGER:-0.80}" 'BEGIN{print (a > b*t) ? 1 : 0}')
+  over=$(awk -v a="$agent_net_gb" -v b="$agents_budget" -v t="${SOFT_TRIGGER:-0.80}" 'BEGIN{print (a > b*t) ? 1 : 0}')
   if [ "$over" = "1" ] || [ "$free" -lt "${MIN_FREE_PCT:-15}" ]; then
     mc_reap_orphans
     eval "$(mc_ps_snapshot | mc_classify)"
-    agent_gb=$(mc_gb "$AGENT_KB")
+    agent_net_gb=$(mc_gb "$(mc_agent_net_kb "$AGENT_KB" "$SIM_KB")")
   fi
 
   mc_reap_sims
 
-  over=$(awk -v a="$agent_gb" -v b="$agents_budget" 'BEGIN{print (a > b) ? 1 : 0}')
+  over=$(awk -v a="$agent_net_gb" -v b="$agents_budget" 'BEGIN{print (a > b) ? 1 : 0}')
   [ "$over" = "1" ] && mc_kill_over_budget
   return 0
 }

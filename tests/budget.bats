@@ -41,3 +41,27 @@ setup() { setup_common;
   run mc_profile_split 16 mobile
   [ "$output" = "4 12" ]
 }
+
+# --- C1: sims count toward the combined cap but cannot drive tier 2 ----------
+# classify.sh folds sim footprint into AGENT_KB, so tier 2 (which cannot touch
+# sims -- only tier 3 can) must trigger on AGENT_KB net of SIM_KB, not on the
+# gross figure.
+@test "agent net is agent minus sim" {
+  run mc_agent_net_kb 12000000 9000000
+  [ "$output" = "3000000" ]
+}
+
+@test "agent net floors at zero rather than going negative" {
+  run mc_agent_net_kb 1000 5000
+  [ "$output" = "0" ]
+}
+
+@test "agent net with no sim footprint equals the gross figure" {
+  run mc_agent_net_kb 5000000 0
+  [ "$output" = "5000000" ]
+}
+
+@test "agent net defaults both inputs to zero" {
+  run mc_agent_net_kb
+  [ "$output" = "0" ]
+}

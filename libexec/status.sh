@@ -4,7 +4,7 @@ set -uo pipefail
 mc_gb() { awk -v k="$1" 'BEGIN{printf "%.2f", k/1024/1024}'; }
 
 mc_render_status() {
-  local total cap docker_budget agents_budget agent_gb docker_gb combined free docker_ceiling_label
+  local total cap docker_budget agents_budget agent_gb agent_net_gb docker_gb combined free docker_ceiling_label
   total=$(mc_total_ram_gb)
   cap="${TOTAL_BUDGET_GB:-$(mc_cap_gb "$total")}"
   docker_budget="${DOCKER_BUDGET_GB:-$(mc_docker_gb "$cap")}"
@@ -12,6 +12,7 @@ mc_render_status() {
 
   eval "$(mc_ps_snapshot | mc_classify)"
   agent_gb=$(mc_gb "$AGENT_KB"); docker_gb=$(mc_gb "$DOCKER_KB")
+  agent_net_gb=$(mc_gb "$(mc_agent_net_kb "$AGENT_KB" "$SIM_KB")")
   combined=$(awk -v a="$agent_gb" -v d="$docker_gb" 'BEGIN{printf "%.2f", a+d}')
   free=$(mc_free_pct)
 
@@ -26,6 +27,7 @@ memcap — $(mc_config_file)
   agents + everything they spawn   ${agent_gb} GB / ${agents_budget} GB budget
     of which leaked/orphaned       $(mc_gb "$ORPHAN_KB") GB
     of which sims/playwright       $(mc_gb "$SIM_KB") GB
+    net of sims (drives tier 2)    ${agent_net_gb} GB
   docker VM + helpers              ${docker_gb} GB / ${docker_ceiling_label}
   ---------------------------------------------------------
   combined                         ${combined} GB / ${cap} GB budget

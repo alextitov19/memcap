@@ -31,6 +31,20 @@ mc_docker_gb() {
     printf "%d", int(d+0.5) }'
 }
 
+# classify.sh folds every sim-classified process's footprint into AGENT_KB as well as
+# SIM_KB (sims are agent-adjacent work, so they count toward the combined cap), but tier
+# 3 is the only tier that can reclaim that memory -- tier 2 kills dev servers and cannot
+# touch a simulator. Triggering tier 2 on the gross figure fires it against an overage it
+# is structurally unable to fix, killing a dev server every pass without converging.
+# Floored at zero: SIM_KB should never exceed AGENT_KB since classify.sh adds sim
+# footprint into both, but a classifier quirk should not produce a negative "net".
+mc_agent_net_kb() {
+  local agent="${1:-0}" sim="${2:-0}" net
+  net=$((agent - sim))
+  [ "$net" -lt 0 ] && net=0
+  printf '%s' "$net"
+}
+
 # Profiles are percentages so they mean the same thing on any machine size.
 mc_profile_split() {
   local cap="$1" profile="$2" pct

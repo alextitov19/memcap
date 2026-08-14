@@ -30,6 +30,17 @@ browsers, and Maestro processes, and only when no agent session is alive. It nev
 runs while Xcode or Android Studio is open, so it will not pull a device out from
 under you while you are testing by hand.
 
+**Simulator memory counts toward the combined cap, but only tier 3 can reclaim
+it.** A booted simulator or a Playwright-driven browser is counted into the same
+agent-side total tier 1 and tier 2 measure, because it is agent-adjacent work and
+should not be invisible to the budget. But tier 3 — the only tier that can shut a
+simulator down — refuses outright whenever an agent session is alive, which is the
+tool's normal operating state. So tier 1's soft trigger and tier 2's kill decision
+are measured net of simulator memory (agents' own footprint, not what a booted
+simulator or headless browser is using): sims still count toward `status`'s
+combined figure and are still reclaimed by tier 3 once idle, they just cannot be
+the reason a dev server gets killed.
+
 Four guarantees hold across all three tiers, enforced at a single choke point
 (`mc_kill_pids`) that every kill routes through:
 

@@ -133,6 +133,54 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
+# --- Final review, C1: tier 2 must trigger on agents NET of simulators -------
+# classify.sh folds sim footprint into AGENT_KB too, but only tier 3 can reclaim it,
+# and tier 3 declines outright whenever an agent session is alive -- which is the
+# tool's entire premise. Left unguarded, tier 2 fires on an overage it structurally
+# cannot fix and kills a dev server every pass without converging. mc_watch must
+# trigger tier 2 (and tier 1's soft trigger) on AGENT_KB - SIM_KB, not the gross
+# figure. Driven through the real `bin/memcap watch` wiring -- common/budget/
+# detect/measure/classify/roots/status/enforce sourced in the same order bin/memcap
+# uses -- with mc_ps_snapshot stubbed for a deterministic fixture and
+# mc_kill_over_budget stubbed to record whether tier 2 was reached, since the actual
+# kill path is exercised elsewhere. MC_DRY_RUN=1 throughout per this machine's
+# safety rules, though nothing here reaches a real kill or a real `xcrun simctl` call.
+@test "C1: tier2 does not fire when the overage is entirely sim-attributable" {
+  run env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=1 bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/measure.sh'
+    source '$MEMCAP_ROOT/libexec/classify.sh'
+    source '$MEMCAP_ROOT/libexec/roots.sh'
+    source '$MEMCAP_ROOT/libexec/status.sh'
+    source '$MEMCAP_ROOT/libexec/enforce.sh'
+    mc_ps_snapshot() { printf '9001 1 3000000 /usr/local/bin/claude\n9002 1 9000000 /path/ms-playwright/chromium/chrome\n'; }
+    mc_kill_over_budget() { echo TIER2_FIRED; }
+    mc_record_roots() { :; }
+    mc_watch
+  "
+  [[ "$output" != *TIER2_FIRED* ]]
+}
+
+@test "C1: tier2 still fires when agents are genuinely over budget on their own" {
+  run env TOTAL_BUDGET_GB=5 DOCKER_BUDGET_GB=0 MC_DRY_RUN=1 bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/measure.sh'
+    source '$MEMCAP_ROOT/libexec/classify.sh'
+    source '$MEMCAP_ROOT/libexec/roots.sh'
+    source '$MEMCAP_ROOT/libexec/status.sh'
+    source '$MEMCAP_ROOT/libexec/enforce.sh'
+    mc_ps_snapshot() { printf '9002 1 9000000 /usr/local/bin/claude\n'; }
+    mc_kill_over_budget() { echo TIER2_FIRED; }
+    mc_record_roots() { :; }
+    mc_watch
+  "
+  [[ "$output" == *TIER2_FIRED* ]]
+}
+
 @test "watch refuses to act when DOCKER_BUDGET_GB leaves no room for agents" {
   mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
   cat > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" <<-'EOF'
