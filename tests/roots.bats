@@ -53,6 +53,23 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
+@test "an intermediate symlink with a missing leaf is rejected" {
+  ln -sfn /tmp "$HOME/.memcap-test-link-$$"
+  run mc_root_is_safe "$HOME/.memcap-test-link-$$/nonexistent"
+  rm -f "$HOME/.memcap-test-link-$$"
+  [ "$status" -ne 0 ]
+}
+
+@test "a trailing slash cannot pass one level off as two" {
+  run mc_root_is_safe "$HOME/code/"
+  [ "$status" -ne 0 ]
+}
+
+@test "a relative path is rejected without hanging" {
+  run mc_root_is_safe "relative/path"
+  [ "$status" -ne 0 ]
+}
+
 @test "an unsafe root is never recorded" {
   mc_record_root "$HOME"
   run mc_sweep_roots

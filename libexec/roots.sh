@@ -5,26 +5,34 @@ set -uo pipefail
 
 mc_roots_file() { printf '%s/roots\n' "$(mc_state_dir)"; }
 
-# Refuse anything broad enough to sweep unrelated work: must be at least two
-# levels below $HOME. This gates a destructive operation -- whatever it accepts becomes a
-# directory where memcap later kills processes -- so it rejects two escapes that
-# satisfy the depth pattern while resolving elsewhere:
-#   $HOME/../etc            -> /etc
-#   $HOME/x/y/../../../../  -> /
-#   a symlink at $HOME/a/b pointing to /etc
 mc_root_is_safe() {
-  local dir="$1" real
+  local dir="$1" real head tail
   [ -n "$dir" ] || return 1
   case "$dir" in
     ../*|*/../*|*/..) return 1 ;;
   esac
-  # Judge the canonical path when the directory exists, so a symlink cannot smuggle
-  # the sweep outside $HOME. Non-existent paths are judged textually.
-  if [ -d "$dir" ]; then
-    real=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
-  else
-    real="$dir"
-  fi
+  # Trim trailing slashes. "$HOME/code/" otherwise satisfies "$HOME"/*/* with the
+  # second * matching the empty string, passing one level off as two.
+  while [ "$dir" != "${dir%/}" ]; do dir="${dir%/}"; done
+  [ -n "$dir" ] || return 1
+  # Only absolute paths can be reasoned about; a relative path also has no ancestor
+  # chain to walk, which would spin the loop below forever.
+  case "$dir" in /*) : ;; *) return 1 ;; esac
+  # Canonicalize against the nearest EXISTING ancestor, then re-append the remainder.
+  # Judging a non-existent path textually lets an intermediate symlink escape: with
+  # $HOME/scratch -> /tmp, the string "$HOME/scratch/proj" looks safe while actually
+  # designating /tmp/proj.
+  head="$dir"; tail=""
+  while [ ! -d "$head" ] && [ "$head" != "/" ]; do
+    tail="${head##*/}${tail:+/$tail}"
+    case "$head" in
+      */*) head="${head%/*}" ;;
+      *)   head="" ;;
+    esac
+    [ -z "$head" ] && head="/"
+  done
+  real=$(cd "$head" 2>/dev/null && pwd -P) || return 1
+  [ -n "$tail" ] && real="$real/$tail"
   case "$real" in
     "$HOME"/*/*) return 0 ;;
     *) return 1 ;;
