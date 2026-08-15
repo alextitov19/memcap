@@ -176,7 +176,13 @@ mc_reap_sims() {
   local pid targets="" dir stamp first now grace all_ready=1
   dir="$(mc_sims_idle_dir)"
 
-  if ! mc_no_live_session || mc_hands_on_mobile; then
+  if ! mc_no_live_session; then
+    mc_log "tier3: declining -- an agent session is alive"
+    rm -rf "$dir"
+    return 0
+  fi
+  if mc_hands_on_mobile; then
+    mc_log "tier3: declining -- hands-on mobile work detected (Xcode, Android Studio, or Simulator.app open)"
     rm -rf "$dir"
     return 0
   fi
@@ -229,6 +235,7 @@ mc_reap_sims() {
 mc_watch() {
   if mc_is_paused; then echo "memcap is paused (memcap on to resume)"; return 0; fi
   local total cap docker_budget agents_budget agent_net_gb over free
+  local agent_gb docker_gb combined_gb gross_over
   eval "$(mc_ps_snapshot | mc_classify)"
   mc_record_roots "$AGENTPIDS"
 
@@ -261,6 +268,27 @@ mc_watch() {
   mc_reap_sims
 
   over=$(awk -v a="$agent_net_gb" -v b="$agents_budget" 'BEGIN{print (a > b) ? 1 : 0}')
-  [ "$over" = "1" ] && mc_kill_over_budget
+  if [ "$over" = "1" ]; then
+    mc_kill_over_budget
+  else
+    # Net is fine, so tier 2 correctly declines -- but the machine can still sit
+    # over its COMBINED cap when the excess is simulator/browser memory, which
+    # only tier 3 (not tier 2) can reclaim. Pre-C1 this state was loud and wrong
+    # (tier 2 killed a dev server that could never fix it, every pass); post-C1 it
+    # is correct but was entirely silent -- no log line, no notification -- which
+    # reads as broken for the one state this tool exists to handle. Log it
+    # unconditionally (an accurate description of current state regardless of dry
+    # run) and notify once, gated on MC_DRY_RUN the same way I2 gated tier 2's
+    # "killed" notification; mc_notify's own 5-minute rate limiter is what keeps
+    # this from nagging on every 60-second poll, so no new machinery is needed.
+    agent_gb=$(mc_gb "$AGENT_KB")
+    docker_gb=$(mc_gb "$DOCKER_KB")
+    combined_gb=$(awk -v a="$agent_gb" -v d="$docker_gb" 'BEGIN{printf "%.2f", a+d}')
+    gross_over=$(awk -v c="$combined_gb" -v cap="$cap" 'BEGIN{print (c > cap) ? 1 : 0}')
+    if [ "$gross_over" = "1" ]; then
+      mc_log "watch: combined ${combined_gb} GB exceeds the ${cap} GB cap, but agents net of sims are ${agent_net_gb} GB / ${agents_budget} GB budget -- the excess is simulator/browser memory tier 2 cannot reclaim by killing a dev server; tier 3 will reclaim it once no agent session is alive"
+      [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over your ${cap} GB combined budget from simulator/browser memory -- tier 2 won't kill a dev server for it, and tier 3 will reclaim it once no agent session is alive."
+    fi
+  fi
   return 0
 }

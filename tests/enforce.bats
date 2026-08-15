@@ -220,6 +220,128 @@ setup() {
   [[ "$output" == *TIER2_FIRED* ]]
 }
 
+# --- Final review follow-up, SILENT-GAP: memcap must not go quiet when sims blow
+# the combined cap. Post-C1, tier 2 correctly declines to kill a dev server when
+# the overage is sim-attributable (killing one would not reclaim a byte) -- but
+# mc_notify's only two call sites are both inside mc_kill_over_budget, which by
+# construction no longer runs in exactly that state, and nothing ever compared the
+# combined figure against `cap`. So a machine sitting over its combined budget from
+# simulator/browser memory alone -- the state this tool exists for -- used to
+# produce neither a log line nor a notification. mc_watch now logs unconditionally
+# and notifies once (through mc_notify's existing 5-minute rate limiter, no new
+# machinery) when combined exceeds cap but agents net of sims are under budget.
+@test "SILENT-GAP: a real pass logs and notifies once when combined exceeds cap but net is under budget" {
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  capture="$BATS_TEST_TMPDIR/osascript-arg"
+  cat > "$fakebin/osascript" <<SCRIPT
+#!/usr/bin/env bash
+printf '%s' "\$2" >> "$capture"
+SCRIPT
+  chmod +x "$fakebin/osascript"
+
+  # Same fixture as the first C1 test: combined (12 GB) > cap (10 GB) entirely
+  # because of the 9 GB Playwright process, while agents net of sims (3 GB) are
+  # comfortably under the 10 GB agent budget -- tier 2 correctly declines.
+  # MC_DRY_RUN=0 to prove the REAL (non-dry) path notifies; nothing here can touch
+  # anything real -- mc_ps_snapshot is a fixed fixture, mc_kill_over_budget is
+  # stubbed, and osascript is stubbed to a capture file instead of a real
+  # notification.
+  run env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=0 PATH="$fakebin:$PATH" bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/measure.sh'
+    source '$MEMCAP_ROOT/libexec/classify.sh'
+    source '$MEMCAP_ROOT/libexec/roots.sh'
+    source '$MEMCAP_ROOT/libexec/status.sh'
+    source '$MEMCAP_ROOT/libexec/enforce.sh'
+    mc_ps_snapshot() { printf '9001 1 3000000 /usr/local/bin/claude\n9002 1 9000000 /path/ms-playwright/chromium/chrome\n'; }
+    mc_kill_over_budget() { echo TIER2_FIRED; }
+    mc_record_roots() { :; }
+    mc_watch
+  "
+  # `case ... ) false ;; esac`, not `[[ ]]`, for every check that is not this
+  # test's last command: bash 3.2 (this session's /bin/bash, and what `bats`
+  # itself runs under absent a newer bash on PATH) does not fail a test on a
+  # non-final `[[ ]]` that evaluates false -- confirmed empirically and fixed
+  # throughout this branch's earlier tests. `false` on the mismatching branch is a
+  # plain simple command, which correctly participates in bash 3.2's error
+  # handling regardless of position.
+  case "$output" in *TIER2_FIRED*) false ;; esac
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  case "$output" in *"combined"*) : ;; *) false ;; esac
+  case "$output" in *"cap"*) : ;; *) false ;; esac
+  run cat "$capture"
+  [ -n "$output" ]
+}
+
+@test "SILENT-GAP: a normal under-budget state logs and notifies neither" {
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  capture="$BATS_TEST_TMPDIR/osascript-arg"
+  cat > "$fakebin/osascript" <<SCRIPT
+#!/usr/bin/env bash
+printf '%s' "\$2" >> "$capture"
+SCRIPT
+  chmod +x "$fakebin/osascript"
+
+  # A lone 2 GB agent process against a 10 GB budget: combined is nowhere near cap.
+  run env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=1 PATH="$fakebin:$PATH" bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/measure.sh'
+    source '$MEMCAP_ROOT/libexec/classify.sh'
+    source '$MEMCAP_ROOT/libexec/roots.sh'
+    source '$MEMCAP_ROOT/libexec/status.sh'
+    source '$MEMCAP_ROOT/libexec/enforce.sh'
+    mc_ps_snapshot() { printf '9001 1 2000000 /usr/local/bin/claude\n'; }
+    mc_kill_over_budget() { echo TIER2_FIRED; }
+    mc_record_roots() { :; }
+    mc_watch
+  "
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  # case, not [[ ]]: see the comment in the previous test for why.
+  case "$output" in *"combined"*"exceeds"*) false ;; esac
+  [ ! -s "$capture" ]
+}
+
+@test "SILENT-GAP: a dry run logs the same combined-over-cap state but does not notify" {
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  capture="$BATS_TEST_TMPDIR/osascript-arg"
+  cat > "$fakebin/osascript" <<SCRIPT
+#!/usr/bin/env bash
+printf '%s' "\$2" >> "$capture"
+SCRIPT
+  chmod +x "$fakebin/osascript"
+
+  # Identical fixture to the first test above, but MC_DRY_RUN=1: the log line
+  # (an accurate description of current state either way) still fires, but the
+  # notification -- gated the same way I2 gated the tier-2 "killed" notification --
+  # must not, matching MC_DRY_RUN's contract everywhere else in this codebase.
+  run env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=1 PATH="$fakebin:$PATH" bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/measure.sh'
+    source '$MEMCAP_ROOT/libexec/classify.sh'
+    source '$MEMCAP_ROOT/libexec/roots.sh'
+    source '$MEMCAP_ROOT/libexec/status.sh'
+    source '$MEMCAP_ROOT/libexec/enforce.sh'
+    mc_ps_snapshot() { printf '9001 1 3000000 /usr/local/bin/claude\n9002 1 9000000 /path/ms-playwright/chromium/chrome\n'; }
+    mc_kill_over_budget() { echo TIER2_FIRED; }
+    mc_record_roots() { :; }
+    mc_watch
+  "
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  # case, not [[ ]]: see the comment in the first SILENT-GAP test for why.
+  case "$output" in *"combined"*) : ;; *) false ;; esac
+  case "$output" in *"cap"*) : ;; *) false ;; esac
+  [ ! -s "$capture" ]
+}
+
 @test "watch refuses to act when DOCKER_BUDGET_GB leaves no room for agents" {
   mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
   cat > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" <<-'EOF'
@@ -548,7 +670,12 @@ SCRIPT
   [ ! -f "$capture" ]
 }
 
-@test "tier3: a live agent session clears every existing idle stamp" {
+# --- Final review follow-up: log why tier 3 declined -------------------------
+# mc_reap_sims used to return silently whenever a live session or hands-on mobile
+# work blocked it, so a wedge (a broken mc_hands_on_mobile pattern, say) would leave
+# actions.log with nothing to diagnose it, despite the README promising the log
+# records enforcement decisions.
+@test "tier3: a live agent session clears every existing idle stamp, and logs why it declined" {
   dir="$(mc_sims_idle_dir)"
   mkdir -p "$dir"
   echo "1" > "$(mc_sims_idle_stamp 99999)"
@@ -565,4 +692,26 @@ SCRIPT
   kill "$agent" 2>/dev/null
 
   [ ! -d "$dir" ]
+  # grep -q, not [[ ]]: a real external command's failure correctly trips bash
+  # 3.2's error handling regardless of position, unlike a bare `[[ ]]` (see the
+  # SILENT-GAP tests above for the full explanation) -- moot here since this is
+  # already the test's last check, but kept consistent with the rest of this file.
+  grep -q "declining -- an agent session is alive" "$(mc_state_dir)/actions.log"
+}
+
+@test "tier3: hands-on mobile work (Simulator.app) declines and logs why" {
+  perl -e 'sleep 600' "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator" &
+  sim=$!
+  sleep 0.2
+  # shellcheck disable=SC2034  # consumed by mc_no_live_session, sourced from enforce.sh
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_kill_pids, sourced from enforce.sh
+  MC_DRY_RUN=1
+  run mc_reap_sims
+
+  kill "$sim" 2>/dev/null
+
+  grep -q "declining -- hands-on mobile work" "$(mc_state_dir)/actions.log"
 }

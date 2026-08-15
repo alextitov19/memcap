@@ -28,7 +28,11 @@ sends a notification, and kills nothing on that pass.
 **Tier 3 — idle simulators.** iOS Simulators, Android emulators, Playwright
 browsers, and Maestro processes, and only when no agent session is alive. It never
 runs while Xcode, Android Studio, or Simulator.app itself is open, so it will not
-pull a device out from under you while you are testing by hand.
+pull a device out from under you while you are testing by hand. One consequence
+worth knowing: `expo run:ios`, `react-native run-ios`, and Maestro's iOS flows all
+launch the simulator through Simulator.app's own UI, so any of them keeps tier 3
+switched off for as long as Simulator.app stays open — including well after the
+command that launched it has exited — not just while you're actively looking at it.
 
 **Simulator memory counts toward the combined cap, but only tier 3 can reclaim
 it.** A booted simulator or a Playwright-driven browser is counted into the same
@@ -160,9 +164,11 @@ State, at `~/.local/state/memcap/` (override with `MEMCAP_STATE_HOME`):
 
 - `actions.log` — an append-only record of memcap's enforcement decisions, not
   only kills: it also logs a tier-2 pass that found nothing old enough to kill,
-  a tier-3 `simctl shutdown all`, and `watch` refusing to act against a
-  misconfigured budget. If you're wondering why memcap did or didn't do
-  something, this is where to look.
+  a tier-3 `simctl shutdown all`, tier 3 declining because an agent session is
+  alive or hands-on mobile work is in progress, `watch` refusing to act against
+  a misconfigured budget, and the combined cap being exceeded by simulator
+  memory that tier 2 correctly won't touch. If you're wondering why memcap did
+  or didn't do something, this is where to look.
 - `roots` — the learned sweep roots, one canonicalized path per line.
 - `paused` — present exactly when `memcap off` is in effect; its absence means
   enforcement is active.
