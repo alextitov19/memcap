@@ -25,10 +25,18 @@ mc_ps_snapshot() {
     return 0
   fi
   tmp=$(mktemp)
-  # A trap, not the bare `rm -f "$tmp"` this used to end on: that left the temp
-  # file behind if the function were ever interrupted before reaching its last
-  # line. RETURN fires exactly once, whenever this function returns, by any path.
-  trap 'rm -f "$tmp"' RETURN
+  # Plain rm, not `trap ... RETURN`: bash 3.2 does not scope a RETURN trap to
+  # the function that installed it. Reproduced: it fires correctly here, then
+  # stays registered and fires AGAIN on the CALLER's own return, where $tmp is
+  # gone and `set -u` kills the shell. Disarming it before every possible exit
+  # (including one a future edit might add) is exactly the kind of fragile
+  # discipline this change was meant to avoid needing in the first place -- a
+  # crashed daemon is a worse failure than the one-file leak on interruption
+  # this traded for, and mc_ps_snapshot's only call sites today are all inside
+  # `eval "$(mc_ps_snapshot | mc_classify)"`, a command substitution subshell
+  # that a real interrupt (Ctrl-C, or nothing at all under `brew services`,
+  # which has no terminal) tears down as a whole regardless of what's trapped
+  # inside it.
   top -l 1 -stats pid,mem 2>/dev/null |
     awk '$1 ~ /^[0-9]+$/ { gsub(/[+-]$/, "", $2); print $1, $2 }' > "$tmp"
   ps -Ao pid=,ppid=,rss=,command= | awk -v mf="$tmp" '
@@ -45,6 +53,7 @@ mc_ps_snapshot() {
       }
       printf "%s %s %d %s\n", pid, ppid, kb, cmd
     }'
+  rm -f "$tmp"
 }
 
 # Physical footprint for ONE pid, via the same top-based measurement as

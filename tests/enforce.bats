@@ -136,6 +136,33 @@ setup() {
   assert_not_contains "$output" "would kill"
 }
 
+# --- Final review, residual: a skipped root must not be silent ----------------
+# The three skip cases above used to discard a root with no log line at all,
+# even though the redirect case is exactly a TOCTOU event worth knowing about.
+# Throttled (mc_log_throttled), not mc_log, since a root that fails here can
+# keep failing every pass until mc_record_roots re-registers it.
+@test "a redirected root logs why it was skipped, throttled" {
+  mkdir -p "$HOME/.mc-redirlog-$$/projA" "$HOME/.mc-redirlog-$$/projB"
+  mc_record_root "$HOME/.mc-redirlog-$$/projA"
+  rm -rf "$HOME/.mc-redirlog-$$/projA"
+  ln -sfn "$HOME/.mc-redirlog-$$/projB" "$HOME/.mc-redirlog-$$/projA"
+
+  perl -e 'sleep 600' "$HOME/.mc-redirlog-$$/projA" &
+  victim=$!
+  sleep 0.2
+
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  ORPHANS="$victim"
+  MC_DRY_RUN=1
+  run mc_reap_orphans
+
+  kill "$victim" 2>/dev/null
+  rm -rf "$HOME/.mc-redirlog-$$"
+
+  grep -q "skipping sweep root" "$(mc_state_dir)/actions.log"
+  grep -q "TOCTOU" "$(mc_state_dir)/actions.log"
+}
+
 # --- Final review, residual: root matching must be anchored -------------------
 # grep -qF against the raw command line makes root `~/dev/foo` also match
 # `~/dev/foobar`, and a process that merely names the root somewhere in an
@@ -178,6 +205,36 @@ setup() {
   rm -rf "$HOME/.mc-anchor2-$$"
 
   assert_contains "$output" "would kill"
+}
+
+# --- Final review, residual: mc_sweep_roots must not be word-split ------------
+# `for root in $(mc_sweep_roots)` splits on whitespace, so a recorded root
+# containing a space breaks into fragments. A fragment can be a real, existing,
+# 2-level-under-HOME directory in its own right -- passing canonicalization and
+# the safety check independently of the root it was carved out of -- and then
+# match an unrelated process that merely lives under THAT fragment.
+@test "a sweep root containing a space is not split into a matchable fragment" {
+  mkdir -p "$HOME/.mc-space-$$/foo bar" "$HOME/.mc-space-$$/foo"
+  mc_record_root "$HOME/.mc-space-$$/foo bar"
+
+  # Victim lives under a SIBLING directory ("foo", no " bar") that merely shares
+  # a path prefix with the recorded root. Word-splitting the recorded root on
+  # its embedded space would produce "$HOME/.../foo" as an independent
+  # fragment -- itself a real, existing, 2-level-under-HOME directory that
+  # would pass every check and then match this unrelated victim.
+  perl -e 'sleep 600' "$HOME/.mc-space-$$/foo/server.js" &
+  victim=$!
+  sleep 0.2
+
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  ORPHANS="$victim"
+  MC_DRY_RUN=1
+  run mc_reap_orphans
+
+  kill "$victim" 2>/dev/null
+  rm -rf "$HOME/.mc-space-$$"
+
+  assert_not_contains "$output" "would kill"
 }
 
 # --- Carried finding 2: DEVPIDS has zero test coverage ------------------------

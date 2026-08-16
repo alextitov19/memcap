@@ -97,13 +97,36 @@ mc_etime_secs() {
 # fresh canonical form to what was recorded catches a redirect either way, not just
 # the ones that happen to land somewhere unsafe.
 mc_reap_orphans() {
-  local pid keep="" root real cmd matched
+  local pid keep="" root real cmd matched key
   for pid in $ORPHANS; do
     matched=0
-    for root in $(mc_sweep_roots); do
-      real=$(mc_canonicalize "$root") || continue
-      [ "$real" = "$root" ] || continue
-      mc_root_is_safe "$root" || continue
+    # `while read`, not `for root in $(mc_sweep_roots)`: word-splitting the
+    # command substitution breaks a root containing a space into fragments, and
+    # a fragment like `/Users/x/dev/my` (from `/Users/x/dev/my project`) can
+    # independently pass both mc_canonicalize and mc_root_is_safe and then
+    # match -- for the wrong reason, since it was never the recorded root. This
+    # also makes mc_canonicalize's control-character rejection the belt it was
+    # meant to be: a root can't reach it pre-mangled by IFS first.
+    while IFS= read -r root; do
+      # Throttled, per-root: this is the self-healing path (mc_record_roots
+      # re-registers live agents' cwds every pass, so a root that fails here
+      # once typically starts matching again on its own), but it was previously
+      # invisible while it happened. Keyed on the root itself (slashes swapped
+      # for underscores -- it becomes a filename) so a different root's skip
+      # doesn't share, or get suppressed by, this one's throttle window.
+      key=$(printf '%s' "$root" | tr '/' '_')
+      real=$(mc_canonicalize "$root") || {
+        mc_log_throttled "root-skip-canon-$key" "tier1: skipping sweep root $root -- no longer resolves"
+        continue
+      }
+      if [ "$real" != "$root" ]; then
+        mc_log_throttled "root-skip-redirect-$key" "tier1: skipping sweep root $root -- now resolves to $real, not what was recorded (TOCTOU)"
+        continue
+      fi
+      if ! mc_root_is_safe "$root"; then
+        mc_log_throttled "root-skip-unsafe-$key" "tier1: skipping sweep root $root -- no longer resolves somewhere safe"
+        continue
+      fi
       # Padded with spaces so a root that is the process's ENTIRE command (no
       # trailing path segment) still matches at the boundary, the same trick
       # mc_self_ancestry uses. Matching "$root/" or "$root " -- not a bare
@@ -115,7 +138,7 @@ mc_reap_orphans() {
         *"$root/"*|*"$root "*) matched=1 ;;
       esac
       [ "$matched" = "1" ] && break
-    done
+    done < <(mc_sweep_roots)
     [ "$matched" = "1" ] && keep="$keep $pid"
   done
   [ -n "${keep// /}" ] && mc_kill_pids "$keep" "tier1 orphan"

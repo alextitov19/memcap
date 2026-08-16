@@ -15,6 +15,13 @@ mc_profile_list() {
   done
 }
 
+# /usr/bin/stat, not bare `stat`: with Homebrew coreutils' gnubin ahead of
+# /usr/bin on PATH, `stat -f` means "filesystem status" to GNU stat, not the
+# BSD format-string flag this needs -- it fails, but naming the wrong culprit.
+# A separate function, not inlined, so a test can override it to exercise the
+# failure path without needing to shadow a hardcoded absolute path on PATH.
+mc_stat_mode() { /usr/bin/stat -f '%Lp' "$1" 2>/dev/null; }
+
 mc_profile_set() {
   local name="$1" cap split docker conf tmp mode
   case "$name" in balanced|stacks|mobile) ;; *) echo "unknown profile: $name" >&2; return 1 ;; esac
@@ -29,15 +36,15 @@ mc_profile_set() {
   # the append branch the command would report success and change no bytes.
   # Colocate the temp file with the config so the mv is atomic on the same filesystem,
   # and clean it up if the rewrite fails rather than leaving a stray file beside it.
-  # Fatal, not a fallback default: a stat failure here has no safe guess. 644
-  # could WIDEN a config the user deliberately set to 600; some other default
-  # could narrow one they set wider. Either way the mode restored below would be
-  # a guess, not the file's own mode.
-  mode=$(stat -f '%Lp' "$conf" 2>/dev/null) || {
-    echo "failed to read the mode of $conf" >&2
-    return 1
-  }
   if grep -q '^DOCKER_BUDGET_GB=' "$conf"; then
+    # Fatal, not a fallback default (mode is only needed on this branch; the
+    # append branch below never reads it): a stat failure has no safe guess.
+    # 644 could WIDEN a config the user deliberately set to 600; some other
+    # default could narrow one they set wider.
+    mode=$(mc_stat_mode "$conf") || {
+      echo "failed to read the mode of $conf" >&2
+      return 1
+    }
     tmp=$(mktemp "${conf}.XXXXXX") || return 1
     if sed -e "s/^DOCKER_BUDGET_GB=.*/DOCKER_BUDGET_GB=$docker/" "$conf" > "$tmp"; then
       # mktemp creates the file 0600, and `mv` replaces the config's inode along with

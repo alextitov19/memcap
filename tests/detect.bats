@@ -67,15 +67,33 @@ setup() { setup_common;
   assert_not_contains "$output" "ab"
 }
 
-# --- Final review, residual: mc_ps_snapshot's temp file must use a trap ------
-# The trailing `rm -f "$tmp"` only ran on the one normal fall-through path; any
-# future early `return` added before it -- or an interruption -- would skip it.
-# `trap ... RETURN` fires exactly once whenever the function returns, by
-# whichever path, so an early return can never reintroduce this leak.
+# --- Final review, residual: mc_ps_snapshot's temp file cleanup ---------------
+# A `trap ... RETURN` was tried here and reverted: bash 3.2 does not scope a
+# RETURN trap to the installing function, so it leaked into the CALLER's own
+# return and crashed the shell on the now-gone $tmp under `set -u` (reproduced).
+# Plain `rm -f "$tmp"` at the end of the normal path, guarded by this regression
+# test, is the safer choice for a function whose only call sites today are
+# already inside a command-substitution subshell that a real interrupt tears
+# down entirely regardless of what's trapped inside it.
 @test "mc_ps_snapshot leaves no temp file behind after a normal call" {
   sandbox="$BATS_TEST_TMPDIR/tmpdir-sandbox"
   mkdir -p "$sandbox"
   TMPDIR="$sandbox" bash -c "source '$MEMCAP_ROOT/libexec/measure.sh'; mc_ps_snapshot > /dev/null"
   run bash -c "ls -A '$sandbox'"
   [ -z "$output" ]
+}
+
+# Regression guard for the specific bash-3.2 bug above: calling mc_ps_snapshot
+# from inside another function must not crash THAT function's own return. A
+# `trap ... RETURN` inside mc_ps_snapshot would leak here and die on the
+# now-unset $tmp under `set -u` before "caller-survived" ever prints.
+@test "mc_ps_snapshot does not leak a trap into its caller's return" {
+  run bash -c "
+    source '$MEMCAP_ROOT/libexec/measure.sh'
+    set -u
+    caller_fn() { mc_ps_snapshot >/dev/null; echo caller-survived; }
+    caller_fn
+  "
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "caller-survived"
 }

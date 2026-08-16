@@ -115,24 +115,34 @@ setup() {
 # file is 644", which could WIDEN a config the user deliberately set to 600.
 # There is no safe guess here; a stat failure must be fatal instead.
 @test "a stat failure on the config mode is fatal, not a silent 644 default" {
-  printf 'TOTAL_BUDGET_GB=16\n' > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  # DOCKER_BUDGET_GB must already be present: only the sed/mv (rewrite) branch
+  # reads the mode at all -- the append branch below it never does -- so an
+  # absent key would take that branch instead and never reach mc_stat_mode.
+  printf 'TOTAL_BUDGET_GB=16\nDOCKER_BUDGET_GB=6\n' > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
   chmod 600 "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
-  fakebin="$BATS_TEST_TMPDIR/fakebin"
-  mkdir -p "$fakebin"
-  cat > "$fakebin/stat" <<'SCRIPT'
-#!/usr/bin/env bash
-exit 1
-SCRIPT
-  chmod +x "$fakebin/stat"
 
-  run env PATH="$fakebin:$PATH" "$MEMCAP_ROOT/bin/memcap" profile stacks
+  # mc_profile_set calls /usr/bin/stat directly (not bare `stat`), to sidestep
+  # GNU coreutils shadowing it on PATH -- which also means a PATH-based stub can
+  # no longer intercept it. mc_stat_mode exists specifically so a test can
+  # override the FUNCTION instead, the same pattern docker.bats already uses
+  # for mc_docker_runtime.
+  run bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/profile.sh'
+    mc_stat_mode() { return 1; }
+    mc_profile_set stacks
+  "
   [ "$status" -ne 0 ]
 
   # The config itself must be untouched: still 600, still its original content --
   # not rewritten under a guessed mode.
-  run stat -f '%Lp' "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  run /usr/bin/stat -f '%Lp' "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
   [ "$output" = "600" ]
   run cat "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
   assert_contains "$output" "TOTAL_BUDGET_GB=16"
-  assert_not_contains "$output" "DOCKER_BUDGET_GB"
+  # Original value, unchanged -- not rewritten to whatever `stacks` would have
+  # set DOCKER_BUDGET_GB to.
+  assert_contains "$output" "DOCKER_BUDGET_GB=6"
 }
