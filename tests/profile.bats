@@ -109,3 +109,30 @@ setup() {
   [ "$status" -eq 0 ]
   [ "$output" = "DOCKER_BUDGET_GB=10" ]
 }
+
+# --- Final review, residual: a stat failure must not default to 644 ----------
+# `stat -f '%Lp' "$conf" 2>/dev/null || echo 644` treated a stat failure as "the
+# file is 644", which could WIDEN a config the user deliberately set to 600.
+# There is no safe guess here; a stat failure must be fatal instead.
+@test "a stat failure on the config mode is fatal, not a silent 644 default" {
+  printf 'TOTAL_BUDGET_GB=16\n' > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  chmod 600 "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/stat" <<'SCRIPT'
+#!/usr/bin/env bash
+exit 1
+SCRIPT
+  chmod +x "$fakebin/stat"
+
+  run env PATH="$fakebin:$PATH" "$MEMCAP_ROOT/bin/memcap" profile stacks
+  [ "$status" -ne 0 ]
+
+  # The config itself must be untouched: still 600, still its original content --
+  # not rewritten under a guessed mode.
+  run stat -f '%Lp' "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  [ "$output" = "600" ]
+  run cat "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  assert_contains "$output" "TOTAL_BUDGET_GB=16"
+  assert_not_contains "$output" "DOCKER_BUDGET_GB"
+}

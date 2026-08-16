@@ -81,3 +81,21 @@ fixture() { cat "$MEMCAP_ROOT/tests/fixtures/$1"; }
   [ "$status" -eq 0 ]
   assert_contains "$output" "ok"
 }
+
+# --- Final review, residual: EXTRA_AGENTS must not be exposed to globbing -----
+# `for a in ${EXTRA_AGENTS:-}` word-splits unquoted -- deliberate, it's a
+# space-separated list -- but that also exposes it to pathname expansion. A
+# glob character in the value (the README asks users to avoid one; nothing
+# enforces it) would expand against whatever the current directory happens to
+# contain instead of being used literally.
+@test "EXTRA_AGENTS containing a glob character is not expanded against the cwd" {
+  globdir="$BATS_TEST_TMPDIR/globtest"
+  mkdir -p "$globdir"
+  touch "$globdir/aa" "$globdir/ab"
+  run bash -c "cd '$globdir' && source '$MEMCAP_ROOT/libexec/classify.sh' && EXTRA_AGENTS='a*' mc_extra_agent_pattern"
+  # Unexpanded: one alternation branch for the literal "a*". Expanded (the
+  # pre-fix bug), the loop would iterate "aa" and "ab" as two separate words.
+  assert_contains "$output" "(^|/)a*("
+  assert_not_contains "$output" "aa"
+  assert_not_contains "$output" "ab"
+}

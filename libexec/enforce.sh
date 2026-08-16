@@ -86,18 +86,35 @@ mc_etime_secs() {
 
 # Tier 1: parent is dead, so no live session and no terminal owns it. Provably safe.
 #
-# A root recorded in the state file was safe AT RECORD TIME. It is re-validated with
-# mc_root_is_safe here, immediately before it is used to select a kill target, because
-# the directory it names could have been replaced by a symlink in the meantime (TOCTOU).
-# Trusting the state file blindly would let a since-swapped root match against, and
-# kill, a process it should never have been allowed to touch.
+# A root recorded in the state file was safe AT RECORD TIME. It is re-canonicalized
+# here, immediately before it is used to select a kill target, and matched against
+# the stored string EXACTLY -- not just re-validated as "still resolves somewhere
+# safe" -- because the directory it names could have been replaced by a symlink in
+# the meantime (TOCTOU). mc_root_is_safe alone cannot catch every case: a root
+# swapped to point at a DIFFERENT directory that also happens to be 2+ levels under
+# HOME would still pass that check, letting a since-redirected root match against,
+# and kill, a process it should never have been allowed to touch. Comparing the
+# fresh canonical form to what was recorded catches a redirect either way, not just
+# the ones that happen to land somewhere unsafe.
 mc_reap_orphans() {
-  local pid keep="" root matched
+  local pid keep="" root real cmd matched
   for pid in $ORPHANS; do
     matched=0
     for root in $(mc_sweep_roots); do
+      real=$(mc_canonicalize "$root") || continue
+      [ "$real" = "$root" ] || continue
       mc_root_is_safe "$root" || continue
-      ps -o command= -p "$pid" 2>/dev/null | grep -qF "$root" && matched=1 && break
+      # Padded with spaces so a root that is the process's ENTIRE command (no
+      # trailing path segment) still matches at the boundary, the same trick
+      # mc_self_ancestry uses. Matching "$root/" or "$root " -- not a bare
+      # substring -- keeps root `~/dev/foo` from also matching `~/dev/foobar`,
+      # or a process that merely names the root somewhere in an argument with
+      # no separator after it.
+      cmd=" $(ps -o command= -p "$pid" 2>/dev/null) "
+      case "$cmd" in
+        *"$root/"*|*"$root "*) matched=1 ;;
+      esac
+      [ "$matched" = "1" ] && break
     done
     [ "$matched" = "1" ] && keep="$keep $pid"
   done
@@ -113,7 +130,11 @@ mc_kill_over_budget() {
     age_raw=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')
     age=$(mc_etime_secs "$age_raw") || continue
     [ "$age" -lt "${TIER2_MIN_AGE_SEC:-300}" ] && continue
-    kb=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')
+    # mc_footprint_kb, not ps RSS: the trigger that got tier 2 reached ranks
+    # AGENT_KB by physical footprint (measure.sh), which summed RSS over-counts
+    # by ~2.5x for a process tree sharing pages. Ranking victims by a different
+    # metric than the one that made the decision could select the wrong one.
+    kb=$(mc_footprint_kb "$pid")
     # A candidate that exits between the age check and this read leaves kb empty,
     # turning the ranked line into " $pid" instead of "$kb $pid". sort -rn would
     # then parse that bare pid as the sort key -- and a pid number routinely

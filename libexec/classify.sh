@@ -19,7 +19,12 @@ MC_SIM_SKIP='/(rg|grep|egrep|awk|sed|ps|top|tail|head|cat|sort|cut|tr|xargs|find
 # command line -- so build one alternation branch per name instead.
 mc_extra_agent_pattern() {
   local a alt=""
+  # set -f: word-splitting EXTRA_AGENTS unquoted is deliberate, but leaves it
+  # exposed to pathname expansion -- a glob character in the value would expand
+  # against the current directory's contents instead of being used literally.
+  set -f
   for a in ${EXTRA_AGENTS:-}; do alt="$alt|(^|/)$a([[:space:]]|\$)"; done
+  set +f
   printf '%s' "$alt"
 }
 

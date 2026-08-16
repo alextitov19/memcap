@@ -6,6 +6,8 @@ setup() {
   # shellcheck source=/dev/null
   source "$MEMCAP_ROOT/libexec/roots.sh"
   # shellcheck source=/dev/null
+  source "$MEMCAP_ROOT/libexec/measure.sh"
+  # shellcheck source=/dev/null
   source "$MEMCAP_ROOT/libexec/enforce.sh"
   # Belt: no test in this file may ever send a real kill, whatever else goes wrong.
   # `mc_watch` records real sweep roots from live agent cwds and, if this machine is
@@ -102,6 +104,80 @@ setup() {
   rm -rf "$HOME/.mc-toctou-$$"
 
   assert_not_contains "$output" "would kill"
+}
+
+# --- Final review, residual: mc_root_is_safe alone cannot catch a redirect ----
+# mc_root_is_safe re-validates that the root still resolves somewhere "safe"
+# (2+ levels under HOME), but a root swapped to point at a DIFFERENT directory
+# that also happens to be safe-shaped would pass that check -- it can reject an
+# unsafe redirect but not detect a safe-shaped one. Comparing the fresh
+# canonical form to the exact string that was recorded catches either kind.
+@test "TOCTOU: a root redirected to a different, still-safe-shaped directory is not used to match orphans" {
+  mkdir -p "$HOME/.mc-redirect-$$/projA" "$HOME/.mc-redirect-$$/projB"
+  mc_record_root "$HOME/.mc-redirect-$$/projA"
+  rm -rf "$HOME/.mc-redirect-$$/projA"
+  ln -sfn "$HOME/.mc-redirect-$$/projB" "$HOME/.mc-redirect-$$/projA"
+
+  # Victim's command line contains the ORIGINAL stored root string (projA), but
+  # that path now resolves to projB -- a different directory, still 2+ levels
+  # under HOME, so mc_root_is_safe alone would have accepted it.
+  perl -e 'sleep 600' "$HOME/.mc-redirect-$$/projA" &
+  victim=$!
+  sleep 0.2
+
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  ORPHANS="$victim"
+  MC_DRY_RUN=1
+  run mc_reap_orphans
+
+  kill "$victim" 2>/dev/null
+  rm -rf "$HOME/.mc-redirect-$$"
+
+  assert_not_contains "$output" "would kill"
+}
+
+# --- Final review, residual: root matching must be anchored -------------------
+# grep -qF against the raw command line makes root `~/dev/foo` also match
+# `~/dev/foobar`, and a process that merely names the root somewhere in an
+# argument with nothing after it. Matching "$root/" or "$root " (command padded
+# with spaces, the mc_self_ancestry trick) requires a real path-segment or
+# end-of-token boundary after the root.
+@test "an orphan under a sibling directory that merely starts with the root's name is not matched" {
+  mkdir -p "$HOME/.mc-anchor-$$/foo" "$HOME/.mc-anchor-$$/foobar"
+  mc_record_root "$HOME/.mc-anchor-$$/foo"
+
+  perl -e 'sleep 600' "$HOME/.mc-anchor-$$/foobar/server.js" &
+  victim=$!
+  sleep 0.2
+
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  ORPHANS="$victim"
+  MC_DRY_RUN=1
+  run mc_reap_orphans
+
+  kill "$victim" 2>/dev/null
+  rm -rf "$HOME/.mc-anchor-$$"
+
+  assert_not_contains "$output" "would kill"
+}
+
+@test "an orphan genuinely under the root is still matched after anchoring" {
+  mkdir -p "$HOME/.mc-anchor2-$$/foo"
+  mc_record_root "$HOME/.mc-anchor2-$$/foo"
+
+  perl -e 'sleep 600' "$HOME/.mc-anchor2-$$/foo/node_modules/.bin/vite" &
+  victim=$!
+  sleep 0.2
+
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  ORPHANS="$victim"
+  MC_DRY_RUN=1
+  run mc_reap_orphans
+
+  kill "$victim" 2>/dev/null
+  rm -rf "$HOME/.mc-anchor2-$$"
+
+  assert_contains "$output" "would kill"
 }
 
 # --- Carried finding 2: DEVPIDS has zero test coverage ------------------------
@@ -591,6 +667,68 @@ SCRIPT
   assert_contains "$output" "would kill"
   assert_contains "$output" "123"
   assert_not_contains "$output" "999000"
+}
+
+# --- Final review, residual: tier2 must rank by footprint, not summed RSS -----
+# mc_watch's trigger decision is built on physical footprint (measure.sh) because
+# summed ps RSS over-counts shared pages ~2.5x. Ranking tier-2 victims by RSS
+# instead of the metric that made the decision could select the wrong candidate.
+@test "tier2 ranks victims by physical footprint, not summed ps RSS" {
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/ps" <<'SCRIPT'
+#!/usr/bin/env bash
+pid="" mode=""
+for a in "$@"; do
+  case "$a" in
+    etime=) mode=etime ;;
+    rss=)   mode=rss ;;
+    [0-9]*) pid="$a" ;;
+  esac
+done
+case "$pid:$mode" in
+  5010:etime) echo "  10:00" ;;
+  5010:rss)   echo " 1000" ;;        # tiny RSS -- would lose if ranking used this
+  5020:etime) echo "  10:00" ;;
+  5020:rss)   echo " 50000000" ;;    # huge RSS -- would win if ranking used this
+esac
+exit 0
+SCRIPT
+  chmod +x "$fakebin/ps"
+  cat > "$fakebin/top" <<'SCRIPT'
+#!/usr/bin/env bash
+pid="" prev=""
+for a in "$@"; do
+  [ "$prev" = "-pid" ] && pid="$a"
+  prev="$a"
+done
+case "$pid" in
+  5010) echo "5010  9000M" ;;        # the higher FOOTPRINT of the two
+  5020) echo "5020  500M" ;;
+esac
+exit 0
+SCRIPT
+  chmod +x "$fakebin/top"
+  cat > "$fakebin/pgrep" <<'SCRIPT'
+#!/usr/bin/env bash
+exit 1
+SCRIPT
+  chmod +x "$fakebin/pgrep"
+
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
+  DEVPIDS="5010 5020"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
+  TIER2_MIN_AGE_SEC=0
+  # shellcheck disable=SC2034  # consumed by mc_kill_pids, sourced from enforce.sh
+  MC_DRY_RUN=1
+  PATH="$fakebin:$PATH" run mc_kill_over_budget
+
+  # 5010 has the higher footprint (9000M via top) despite the lower RSS (1000K
+  # via ps); 5020 is the reverse. Ranking by RSS -- the pre-fix behavior -- would
+  # have selected 5020 instead.
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "5010"
+  assert_not_contains "$output" "5020"
 }
 
 @test "tier2: a subtree containing an agent pid kills the server but spares the agent" {

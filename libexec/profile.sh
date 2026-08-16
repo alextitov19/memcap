@@ -29,7 +29,14 @@ mc_profile_set() {
   # the append branch the command would report success and change no bytes.
   # Colocate the temp file with the config so the mv is atomic on the same filesystem,
   # and clean it up if the rewrite fails rather than leaving a stray file beside it.
-  mode=$(stat -f '%Lp' "$conf" 2>/dev/null || echo 644)
+  # Fatal, not a fallback default: a stat failure here has no safe guess. 644
+  # could WIDEN a config the user deliberately set to 600; some other default
+  # could narrow one they set wider. Either way the mode restored below would be
+  # a guess, not the file's own mode.
+  mode=$(stat -f '%Lp' "$conf" 2>/dev/null) || {
+    echo "failed to read the mode of $conf" >&2
+    return 1
+  }
   if grep -q '^DOCKER_BUDGET_GB=' "$conf"; then
     tmp=$(mktemp "${conf}.XXXXXX") || return 1
     if sed -e "s/^DOCKER_BUDGET_GB=.*/DOCKER_BUDGET_GB=$docker/" "$conf" > "$tmp"; then

@@ -25,6 +25,10 @@ mc_ps_snapshot() {
     return 0
   fi
   tmp=$(mktemp)
+  # A trap, not the bare `rm -f "$tmp"` this used to end on: that left the temp
+  # file behind if the function were ever interrupted before reaching its last
+  # line. RETURN fires exactly once, whenever this function returns, by any path.
+  trap 'rm -f "$tmp"' RETURN
   top -l 1 -stats pid,mem 2>/dev/null |
     awk '$1 ~ /^[0-9]+$/ { gsub(/[+-]$/, "", $2); print $1, $2 }' > "$tmp"
   ps -Ao pid=,ppid=,rss=,command= | awk -v mf="$tmp" '
@@ -41,7 +45,37 @@ mc_ps_snapshot() {
       }
       printf "%s %s %d %s\n", pid, ppid, kb, cmd
     }'
-  rm -f "$tmp"
+}
+
+# Physical footprint for ONE pid, via the same top-based measurement as
+# mc_ps_snapshot (the unit-conversion logic below is deliberately identical to
+# the awk block above -- see that function's comment for why footprint, not RSS,
+# is the metric everything downstream is built on). Used by tier 2 to rank kill
+# candidates by the same measure that decided agents were over budget in the
+# first place, rather than summed ps RSS, which over-counts shared pages ~2.5x
+# and can rank the wrong process as the victim. Falls back to ps RSS -- same
+# fallback mc_ps_snapshot itself uses -- when top has no row for the pid.
+mc_footprint_kb() {
+  local pid="$1" v kb
+  if [ "${MC_NO_TOP:-0}" != "1" ]; then
+    v=$(top -l 1 -pid "$pid" -stats pid,mem 2>/dev/null | awk -v p="$pid" '$1==p{print $2}')
+    if [ -n "$v" ]; then
+      kb=$(awk -v v="$v" 'BEGIN{
+        gsub(/[+-]$/, "", v)
+        u=substr(v, length(v)); n=substr(v, 1, length(v)-1)+0
+        if (u=="G") kb=n*1024*1024
+        else if (u=="M") kb=n*1024
+        else if (u=="K") kb=n
+        else kb=v+0
+        printf "%d", kb
+      }')
+      if [ -n "$kb" ]; then
+        printf '%s' "$kb"
+        return 0
+      fi
+    fi
+  fi
+  ps -o rss= -p "$pid" 2>/dev/null | tr -d ' '
 }
 
 mc_free_pct() {

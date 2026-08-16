@@ -53,3 +53,29 @@ setup() { setup_common;
   [ "$output" -ge 0 ]
   [ "$output" -le 100 ]
 }
+
+# --- Final review, residual: EXTRA_AGENTS must not be exposed to globbing -----
+# Same issue as classify.sh's mc_extra_agent_pattern: this loop also word-splits
+# EXTRA_AGENTS unquoted, on purpose, but that exposes it to pathname expansion.
+@test "EXTRA_AGENTS containing a glob character is not expanded against the cwd" {
+  globdir="$BATS_TEST_TMPDIR/globtest"
+  mkdir -p "$globdir"
+  touch "$globdir/aa" "$globdir/ab"
+  run bash -c "cd '$globdir' && source '$MEMCAP_ROOT/libexec/detect.sh' && EXTRA_AGENTS='a*' mc_installed_agents"
+  [ "$status" -eq 0 ]
+  assert_not_contains "$output" "aa"
+  assert_not_contains "$output" "ab"
+}
+
+# --- Final review, residual: mc_ps_snapshot's temp file must use a trap ------
+# The trailing `rm -f "$tmp"` only ran on the one normal fall-through path; any
+# future early `return` added before it -- or an interruption -- would skip it.
+# `trap ... RETURN` fires exactly once whenever the function returns, by
+# whichever path, so an early return can never reintroduce this leak.
+@test "mc_ps_snapshot leaves no temp file behind after a normal call" {
+  sandbox="$BATS_TEST_TMPDIR/tmpdir-sandbox"
+  mkdir -p "$sandbox"
+  TMPDIR="$sandbox" bash -c "source '$MEMCAP_ROOT/libexec/measure.sh'; mc_ps_snapshot > /dev/null"
+  run bash -c "ls -A '$sandbox'"
+  [ -z "$output" ]
+}
