@@ -31,7 +31,7 @@ setup() {
 @test "mc_log appends to the action log" {
   mc_log "hello"
   run cat "$(mc_state_dir)/actions.log"
-  [[ "$output" == *hello* ]]
+  assert_contains "$output" "hello"
 }
 
 # Review round 1, Finding 2: mc_notify interpolates its argument into an AppleScript
@@ -66,7 +66,7 @@ SCRIPT
 # --- Final review, small fix: usage omits docker apply / bare docker ----------
 @test "the usage line mentions docker apply --force and that bare docker works" {
   run "$MEMCAP_ROOT/bin/memcap" help
-  [[ "$output" == *"docker [apply [--force]]"* ]]
+  assert_contains "$output" "docker [apply [--force]]"
 }
 
 # --- Final review follow-up: throttle the per-pass log lines ------------------
@@ -77,7 +77,7 @@ SCRIPT
 @test "mc_log_throttled logs on the first call for a key" {
   mc_log_throttled "k1" "first occurrence"
   run cat "$(mc_state_dir)/actions.log"
-  [[ "$output" == *"first occurrence"* ]]
+  assert_contains "$output" "first occurrence"
 }
 
 @test "mc_log_throttled does not repeat a key within the window" {

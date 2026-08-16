@@ -13,7 +13,7 @@ setup() {
 
 @test "runtime detection returns a known value" {
   run mc_docker_runtime
-  [[ "$output" =~ ^(desktop|orbstack|colima|podman|none)$ ]]
+  assert_matches "$output" '^(desktop|orbstack|colima|podman|none)$'
 }
 
 # Braces: the stub must be defined AFTER sourcing, or `source docker.sh` overwrites it
@@ -22,12 +22,12 @@ setup() {
 @test "apply refuses without Docker Desktop" {
   run bash -c "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/docker.sh'; mc_docker_runtime() { echo none; }; MC_DRY_RUN=1 mc_docker_apply"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"cannot set a VM ceiling"* ]]
+  assert_contains "$output" "cannot set a VM ceiling"
 }
 
 @test "apply is a no-op in dry run" {
   run env MC_DRY_RUN=1 bash -c "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/docker.sh'; mc_docker_apply"
-  [[ "$output" == *would* ]]
+  assert_contains "$output" "would"
 }
 
 # --- Final review, I4: docker apply silently rewrites three undocumented settings
@@ -36,12 +36,11 @@ setup() {
 # behavior, but say so in the command's own output as well as the README.
 @test "the dry-run message names all five settings it would change" {
   run env MC_DRY_RUN=1 bash -c "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/docker.sh'; mc_docker_apply"
-  # One combined [[ ]] rather than five separate ones: under bash 3.2 a non-final
-  # `[[ ]]` that evaluates false does not abort the test (see classify.bats's
-  # EXTRA_AGENTS test for the full explanation), so only the last of five separate
-  # checks would actually be enforced.
-  [[ "$output" == *"GB"* && "$output" == *"cores"* && "$output" == *"swap"* \
-     && "$output" == *"Resource Saver"* && "$output" == *"auto-pause"* ]]
+  assert_contains "$output" "GB"
+  assert_contains "$output" "cores"
+  assert_contains "$output" "swap"
+  assert_contains "$output" "Resource Saver"
+  assert_contains "$output" "auto-pause"
 }
 
 # A typo routed straight to mc_docker_apply must not fall through to the real runtime
@@ -49,12 +48,12 @@ setup() {
 @test "mc_docker_apply rejects an unrecognized argument" {
   run mc_docker_apply bogus
   [ "$status" -eq 2 ]
-  [[ "$output" == *"usage: memcap docker apply"* ]]
+  assert_contains "$output" "usage: memcap docker apply"
 }
 
 @test "mc_docker_apply still accepts --force" {
   run mc_docker_apply --force
-  [[ "$output" == *would* ]]
+  assert_contains "$output" "would"
 }
 
 # --- Final review, small fix: reject trailing arguments -----------------------
@@ -66,31 +65,31 @@ setup() {
 @test "mc_docker_apply rejects a trailing argument after --force" {
   run mc_docker_apply --force rm-everything
   [ "$status" -eq 2 ]
-  [[ "$output" == *"usage: memcap docker apply"* ]]
+  assert_contains "$output" "usage: memcap docker apply"
 }
 
 @test "memcap docker aply (typo) is rejected with usage, before touching Docker" {
   run "$MEMCAP_ROOT/bin/memcap" docker aply
   [ "$status" -eq 2 ]
-  [[ "$output" == *"usage: memcap docker apply"* ]]
+  assert_contains "$output" "usage: memcap docker apply"
 }
 
 @test "memcap docker apply still works" {
   run "$MEMCAP_ROOT/bin/memcap" docker apply
   [ "$status" -eq 0 ]
-  [[ "$output" == *would* ]]
+  assert_contains "$output" "would"
 }
 
 @test "bare memcap docker still works" {
   run "$MEMCAP_ROOT/bin/memcap" docker
   [ "$status" -eq 0 ]
-  [[ "$output" == *would* ]]
+  assert_contains "$output" "would"
 }
 
 @test "memcap docker apply --force still parses" {
   run "$MEMCAP_ROOT/bin/memcap" docker apply --force
   [ "$status" -eq 0 ]
-  [[ "$output" == *would* ]]
+  assert_contains "$output" "would"
 }
 
 # --- Final review, I3: a failed settings write must not report success -------
@@ -128,9 +127,9 @@ SCRIPT
     mc_docker_apply
   "
   [ "$status" -eq 1 ]
-  # Combined into one [[ ]] so bash 3.2's non-final-[[ ]] quirk (see classify.bats)
-  # cannot let an earlier check silently pass without being enforced.
-  [[ "$output" == *"failed to write"* && "$output" == *jq* && "$output" != *OPEN_CALLED* ]]
+  assert_contains "$output" "failed to write"
+  assert_contains "$output" "jq"
+  assert_not_contains "$output" "OPEN_CALLED"
   [ "$(cat "$store")" = '{"MemoryMiB":2048,"Cpus":4}' ]
 }
 
@@ -140,6 +139,11 @@ SCRIPT
   # for real, `osascript`, or `jq`, so this is safe despite MC_DRY_RUN=0.
   run bash -c "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/docker.sh'; docker() { echo fakecontainerid; }; MC_DRY_RUN=0 mc_docker_apply"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"not restarting Docker"* ]]
-  [[ "$output" != *"Settings saved"* ]]
+  assert_contains "$output" "not restarting Docker"
+  # Final review: the old assertion checked for "Settings saved", a string that
+  # exists nowhere in the codebase -- vacuous, it could never have failed. The
+  # deferral branch returns before mc_docker_apply ever reaches "Waiting for the
+  # Docker engine" (printed right after the real `open -a Docker` call), so that
+  # absence is what actually proves the write/restart path was never reached.
+  assert_not_contains "$output" "Waiting for the Docker engine"
 }

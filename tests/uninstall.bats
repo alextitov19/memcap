@@ -15,7 +15,7 @@ setup() {
   [ ! -d "$MEMCAP_STATE_HOME/memcap" ]
   [ -f "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" ]
   run cat "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
-  [[ "$output" == *"TOTAL_BUDGET_GB=16"* ]]
+  assert_contains "$output" "TOTAL_BUDGET_GB=16"
 }
 
 @test "uninstall tells the user where the kept config lives" {
@@ -23,7 +23,7 @@ setup() {
   echo "TOTAL_BUDGET_GB=16" > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
 
   run "$MEMCAP_ROOT/bin/memcap" uninstall
-  [[ "$output" == *"$MEMCAP_CONFIG_HOME/memcap/memcap.conf"* ]]
+  assert_contains "$output" "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
 }
 
 # A typo or stray flag must not be able to reach the rm -rf. This is the same lesson
@@ -35,7 +35,7 @@ setup() {
 
   run "$MEMCAP_ROOT/bin/memcap" uninstall now
   [ "$status" -eq 2 ]
-  [[ "$output" == *"usage: memcap uninstall"* ]]
+  assert_contains "$output" "usage: memcap uninstall"
   [ -f "$MEMCAP_STATE_HOME/memcap/paused" ]
 }
 

@@ -7,15 +7,15 @@ setup() {
 
 @test "listing shows the three profiles" {
   run "$MEMCAP_ROOT/bin/memcap" profile
-  [[ "$output" == *balanced* ]]
-  [[ "$output" == *stacks* ]]
-  [[ "$output" == *mobile* ]]
+  assert_contains "$output" "balanced"
+  assert_contains "$output" "stacks"
+  assert_contains "$output" "mobile"
 }
 
 @test "switching to stacks raises the docker slice" {
   "$MEMCAP_ROOT/bin/memcap" profile stacks
   run grep DOCKER_BUDGET_GB "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
-  [[ "$output" == *=10* ]]
+  assert_contains "$output" "=10"
 }
 
 @test "switching preserves unrelated settings" {
@@ -52,7 +52,7 @@ setup() {
 @test "an unknown profile is rejected" {
   run "$MEMCAP_ROOT/bin/memcap" profile bogus
   [ "$status" -ne 0 ]
-  [[ "$output" == *"unknown profile"* ]]
+  assert_contains "$output" "unknown profile"
 }
 
 @test "switching adds the key when the config lacks it" {
@@ -82,7 +82,9 @@ setup() {
   "
   # cap for 32 GB is 21 (budget.bats); stacks is 65% -> 14 GB docker / 7 GB agents.
   # The old hardcoded fallback would show 16's split (10 GB / 6 GB) instead.
-  [[ "$(echo "$output" | grep stacks)" == *"14 GB"*"7 GB"* ]]
+  # assert_matches, not assert_contains: the original ordered-substring check
+  # (14 GB appearing before 7 GB on the row) is preserved via `.*` between them.
+  assert_matches "$(echo "$output" | grep stacks)" "14 GB.*7 GB"
 }
 
 @test "profile set writes a DOCKER_BUDGET_GB sized for the computed cap, not 16" {

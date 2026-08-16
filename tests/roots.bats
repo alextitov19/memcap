@@ -10,7 +10,7 @@ setup() {
 @test "recording a root makes it readable back" {
   mc_record_root "$HOME/code/projectA"
   run mc_sweep_roots
-  [[ "$output" == *"$HOME/code/projectA"* ]]
+  assert_contains "$output" "$HOME/code/projectA"
 }
 
 @test "roots are deduplicated" {
@@ -81,8 +81,8 @@ setup() {
   mc_record_root "$HOME/.memcap-link-$$/proj"
   run mc_sweep_roots
   rm -rf "$HOME/.memcap-real-$$" "$HOME/.memcap-link-$$"
-  [[ "$output" == *".memcap-real-$$/proj"* ]]
-  [[ "$output" != *".memcap-link-$$"* ]]
+  assert_contains "$output" ".memcap-real-$$/proj"
+  assert_not_contains "$output" ".memcap-link-$$"
 }
 
 @test "a path containing a carriage return is rejected" {

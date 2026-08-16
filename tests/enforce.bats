@@ -27,7 +27,7 @@ setup() {
 @test "paused state blocks all enforcement" {
   "$MEMCAP_ROOT/bin/memcap" off
   run "$MEMCAP_ROOT/bin/memcap" watch
-  [[ "$output" == *paused* ]]
+  assert_contains "$output" "paused"
   "$MEMCAP_ROOT/bin/memcap" on
 }
 
@@ -40,7 +40,7 @@ setup() {
   run bash -c "yes '' | '$MEMCAP_ROOT/bin/memcap' init --no-service --no-docker"
   [ "$status" -eq 0 ]
   run cat "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
-  [[ "$output" == *TOTAL_BUDGET_GB=* ]]
+  assert_contains "$output" "TOTAL_BUDGET_GB="
 }
 
 # --- Final review, small fix: init must validate numeric answers -------------
@@ -53,25 +53,27 @@ setup() {
 @test "init re-prompts on a non-numeric total cap instead of writing it" {
   run bash -c "printf 'sixteen\n16\n0\nno\n' | '$MEMCAP_ROOT/bin/memcap' init --no-service"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"whole number"* ]]
+  assert_contains "$output" "whole number"
   run cat "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
-  [[ "$output" == *"TOTAL_BUDGET_GB=16"* && "$output" == *"DOCKER_BUDGET_GB=0"* ]]
+  assert_contains "$output" "TOTAL_BUDGET_GB=16"
+  assert_contains "$output" "DOCKER_BUDGET_GB=0"
 }
 
 @test "init re-prompts on a total cap of 0 instead of writing a degenerate config" {
   run bash -c "printf '0\n16\n0\nno\n' | '$MEMCAP_ROOT/bin/memcap' init --no-service"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"at least 1"* ]]
+  assert_contains "$output" "at least 1"
   run cat "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
-  [[ "$output" == *"TOTAL_BUDGET_GB=16"* ]]
+  assert_contains "$output" "TOTAL_BUDGET_GB=16"
 }
 
 @test "init accepts a Docker ceiling of exactly 0 (skip Docker) without re-prompting" {
   run bash -c "printf '16\n0\nno\n' | '$MEMCAP_ROOT/bin/memcap' init --no-service"
   [ "$status" -eq 0 ]
-  [[ "$output" != *"whole number"* && "$output" != *"at least"* ]]
+  assert_not_contains "$output" "whole number"
+  assert_not_contains "$output" "at least"
   run cat "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
-  [[ "$output" == *"DOCKER_BUDGET_GB=0"* ]]
+  assert_contains "$output" "DOCKER_BUDGET_GB=0"
 }
 
 # --- Carried finding 1: TOCTOU on sweep roots ---------------------------------
@@ -99,25 +101,45 @@ setup() {
   kill "$victim" 2>/dev/null
   rm -rf "$HOME/.mc-toctou-$$"
 
-  [[ "$output" != *"would kill"* ]]
+  assert_not_contains "$output" "would kill"
 }
 
 # --- Carried finding 2: DEVPIDS has zero test coverage ------------------------
 # DEVPIDS is tier 2's input. Both branches need a real, non-empty list: candidates
 # that are too young to touch, and a candidate old enough to be selected.
 @test "tier2: DEVPIDS candidates younger than TIER2_MIN_AGE_SEC are left alone" {
+  # Genuine finding from this conversion pass, not a cosmetic one: the ranked-
+  # empty branch of mc_kill_over_budget logs "not touching active work" via
+  # mc_log, which writes only to actions.log -- never to stdout. The ORIGINAL
+  # `[[ "$output" == *"not touching active work"* ]]` checked the function's
+  # captured stdout, which never contains that text, so this assertion was
+  # always false. It was never enforced because it wasn't this test's last
+  # command (the bash-3.2 non-final-`[[ ]]` issue this whole pass exists to
+  # fix) -- converting it to a real assertion surfaced a test that had silently
+  # never checked its own stated premise. osascript is stubbed because the real
+  # mc_notify call in this branch had also never been stubbed here, and would
+  # otherwise fire a real desktop notification on every run of this suite.
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/osascript" <<'SCRIPT'
+#!/usr/bin/env bash
+exit 0
+SCRIPT
+  chmod +x "$fakebin/osascript"
+
   sleep 600 & victim=$!
   sleep 0.2
   # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
   DEVPIDS="$victim"
   MC_DRY_RUN=1
-  run mc_kill_over_budget
+  PATH="$fakebin:$PATH" run mc_kill_over_budget
 
   kill -0 "$victim"
   kill "$victim" 2>/dev/null
 
-  [[ "$output" == *"not touching active work"* ]]
-  [[ "$output" != *"would kill"* ]]
+  assert_not_contains "$output" "would kill"
+  run cat "$(mc_state_dir)/actions.log"
+  assert_contains "$output" "not touching active work"
 }
 
 @test "tier2: an old-enough DEVPIDS candidate is selected as the kill target" {
@@ -134,8 +156,8 @@ setup() {
   kill -0 "$victim"
   kill "$victim" 2>/dev/null
 
-  [[ "$output" == *"would kill"* ]]
-  [[ "$output" == *"$victim"* ]]
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "$victim"
 }
 
 # --- Carried finding 5: a negative agent budget must not be actionable --------
@@ -146,9 +168,9 @@ setup() {
   run bash -c "printf '10\n20\nno\n' | '$MEMCAP_ROOT/bin/memcap' init --no-service"
   [ "$status" -eq 0 ]
   run cat "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
-  [[ "$output" == *"TOTAL_BUDGET_GB=10"* ]]
-  [[ "$output" != *"DOCKER_BUDGET_GB=20"* ]]
-  [[ "$output" == *"DOCKER_BUDGET_GB=4"* ]]
+  assert_contains "$output" "TOTAL_BUDGET_GB=10"
+  assert_not_contains "$output" "DOCKER_BUDGET_GB=20"
+  assert_contains "$output" "DOCKER_BUDGET_GB=4"
 }
 
 # --- mc_etime_secs: macOS `ps` has no `etimes`, only formatted `etime` -------
@@ -199,7 +221,7 @@ setup() {
     mc_record_roots() { :; }
     mc_watch
   "
-  [[ "$output" != *TIER2_FIRED* ]]
+  assert_not_contains "$output" "TIER2_FIRED"
 }
 
 @test "C1: tier2 still fires when agents are genuinely over budget on their own" {
@@ -217,7 +239,7 @@ setup() {
     mc_record_roots() { :; }
     mc_watch
   "
-  [[ "$output" == *TIER2_FIRED* ]]
+  assert_contains "$output" "TIER2_FIRED"
 }
 
 # --- Final review follow-up, SILENT-GAP: memcap must not go quiet when sims blow
@@ -261,17 +283,17 @@ SCRIPT
     mc_record_roots() { :; }
     mc_watch
   "
-  # `case ... ) false ;; esac`, not `[[ ]]`, for every check that is not this
-  # test's last command: bash 3.2 (this session's /bin/bash, and what `bats`
+  # assert_not_contains/assert_contains, not `[[ ]]`, for every check that is not
+  # this test's last command: bash 3.2 (this session's /bin/bash, and what `bats`
   # itself runs under absent a newer bash on PATH) does not fail a test on a
   # non-final `[[ ]]` that evaluates false -- confirmed empirically and fixed
-  # throughout this branch's earlier tests. `false` on the mismatching branch is a
-  # plain simple command, which correctly participates in bash 3.2's error
-  # handling regardless of position.
-  case "$output" in *TIER2_FIRED*) false ;; esac
+  # throughout this branch's earlier tests. These are real function calls, so
+  # they correctly participate in bash 3.2's error handling regardless of
+  # position, and print what was expected/seen on failure.
+  assert_not_contains "$output" "TIER2_FIRED"
   run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
-  case "$output" in *"combined"*) : ;; *) false ;; esac
-  case "$output" in *"cap"*) : ;; *) false ;; esac
+  assert_contains "$output" "combined"
+  assert_contains "$output" "cap"
   run cat "$capture"
   [ -n "$output" ]
 }
@@ -302,8 +324,8 @@ SCRIPT
     mc_watch
   "
   run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
-  # case, not [[ ]]: see the comment in the previous test for why.
-  case "$output" in *"combined"*"exceeds"*) false ;; esac
+  # assert_not_contains, not [[ ]]: see the comment in the previous test for why.
+  assert_not_contains "$output" "combined"
   [ ! -s "$capture" ]
 }
 
@@ -336,9 +358,9 @@ SCRIPT
     mc_watch
   "
   run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
-  # case, not [[ ]]: see the comment in the first SILENT-GAP test for why.
-  case "$output" in *"combined"*) : ;; *) false ;; esac
-  case "$output" in *"cap"*) : ;; *) false ;; esac
+  # assert_contains, not [[ ]]: see the comment in the first SILENT-GAP test.
+  assert_contains "$output" "combined"
+  assert_contains "$output" "cap"
   [ ! -s "$capture" ]
 }
 
@@ -472,7 +494,7 @@ SCRIPT
 	EOF
   run "$MEMCAP_ROOT/bin/memcap" watch
   [ "$status" -ne 0 ]
-  [[ "$output" == *misconfigured* ]]
+  assert_contains "$output" "misconfigured"
 }
 
 # --- Review round 1, Finding 1 (CRITICAL): never kill an agent CLI via a subtree
@@ -515,11 +537,8 @@ SCRIPT
   run mc_kill_pids "$victim" "test"
   kill -0 "$victim"
   kill "$victim" 2>/dev/null
-  # Combined into one [[ ]]: bash 3.2 (this session's /bin/bash, and what `bats`
-  # itself runs under absent a newer bash on PATH) does not abort on a non-final
-  # `[[ ]]` that evaluates false, so a separate, non-last check here would not
-  # actually be enforced.
-  [[ "$output" == *"would kill"* && "$output" == *"$victim"* ]]
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "$victim"
 }
 
 # --- Final review, small fix: an empty rss reading must not corrupt tier2 ranking
@@ -569,9 +588,9 @@ SCRIPT
   MC_DRY_RUN=1
   PATH="$fakebin:$PATH" run mc_kill_over_budget
 
-  # Combined into one [[ ]]: see classify.bats's EXTRA_AGENTS test for why a
-  # non-final `[[ ]]` cannot be trusted to fail this test under bash 3.2.
-  [[ "$output" == *"would kill"* && "$output" == *"123"* && "$output" != *"999000"* ]]
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "123"
+  assert_not_contains "$output" "999000"
 }
 
 @test "tier2: a subtree containing an agent pid kills the server but spares the agent" {
@@ -595,9 +614,9 @@ SCRIPT
   kill "$agent_child" 2>/dev/null
   kill "$server" 2>/dev/null
 
-  [[ "$output" == *"would kill"* ]]
-  [[ "$output" == *"$server"* ]]
-  [[ "$output" != *"$agent_child"* ]]
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "$server"
+  assert_not_contains "$output" "$agent_child"
 }
 
 # --- Review round 1, Finding 3: `clean` must honour the pause file too. `memcap
@@ -605,7 +624,7 @@ SCRIPT
 @test "clean refuses while paused" {
   "$MEMCAP_ROOT/bin/memcap" off
   run "$MEMCAP_ROOT/bin/memcap" clean
-  [[ "$output" == *paused* ]]
+  assert_contains "$output" "paused"
   "$MEMCAP_ROOT/bin/memcap" on
 }
 
@@ -652,9 +671,8 @@ SCRIPT
 
   kill "$victim" 2>/dev/null
 
-  # Combined into one [[ ]]: bash 3.2 (see classify.bats's EXTRA_AGENTS test) does
-  # not fail a test on a non-final `[[ ]]` that evaluates false.
-  [[ "$output" == *"would kill"* && "$output" == *"$victim"* ]]
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "$victim"
   [ ! -f "$stamp" ]
 }
 
@@ -685,9 +703,8 @@ SCRIPT
 
   kill "$old" "$fresh" 2>/dev/null
 
-  # One combined [[ ]] (it supports -f file tests too): under bash 3.2 a non-final
-  # `[[ ]]` that evaluates false does not fail the test (see classify.bats).
-  [[ "$output" != *"would kill"* && -f "$(mc_sims_idle_stamp "$fresh")" ]]
+  assert_not_contains "$output" "would kill"
+  [ -f "$(mc_sims_idle_stamp "$fresh")" ]
 }
 
 @test "I6: once every tracked sim pid has individually cleared the grace, the reap proceeds" {
@@ -700,12 +717,12 @@ SCRIPT
   mkdir -p "$(mc_sims_idle_dir)"
   echo 1 > "$(mc_sims_idle_stamp "$old")"
   run mc_reap_sims
-  # A `case`, not a standalone `[[ ]]`: this check's own $output is about to be
-  # overwritten by the next `run` below, so it cannot be folded into a later
-  # combined [[ ]] the way the other fixes in this file are. `case ... ) false ;;`
-  # is a plain simple command on the failing branch, so it correctly participates
-  # in bash 3.2's error handling where a bare `[[ ]]` would not (see classify.bats).
-  case "$output" in *"would kill"*) false ;; esac
+  # assert_not_contains, not a standalone `[[ ]]`: this check's own $output is
+  # about to be overwritten by the next `run` below, so it can't share a single
+  # combined [[ ]] with the checks after it -- but it's still a real function
+  # call, so it correctly participates in bash 3.2's error handling where a bare
+  # `[[ ]]` would not (see classify.bats).
+  assert_not_contains "$output" "would kill"
 
   # Grace set to 0 rather than sleeping for real, same trick as the single-pid test
   # above: $fresh's own stamp (written on the poll just above) now also counts as
@@ -716,7 +733,8 @@ SCRIPT
 
   kill "$old" "$fresh" 2>/dev/null
 
-  [[ "$output" == *"would kill"* && "$output" == *"$old"* ]]
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "$old"
 }
 
 @test "I6: mc_hands_on_mobile also treats Simulator.app itself as hands-on" {
@@ -756,9 +774,8 @@ SCRIPT
 
   kill "$victim" 2>/dev/null
 
-  # One combined [[ ]] (it supports negated file tests too): see classify.bats for
-  # why a non-final `[[ ]]` cannot be trusted under bash 3.2.
-  [[ "$output" == *"would kill"* && ! -f "$capture" ]]
+  assert_contains "$output" "would kill"
+  [ ! -f "$capture" ]
 }
 
 @test "I2: a tier2 pass where protection removed every candidate does not notify either" {

@@ -18,7 +18,7 @@ setup() { setup_common;
 
 @test "snapshot emits pid ppid kb command lines" {
   run bash -c "source '$MEMCAP_ROOT/libexec/measure.sh'; mc_ps_snapshot | head -1"
-  [[ "$output" =~ ^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+[0-9]+[[:space:]]+ ]]
+  assert_matches "$output" '^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+[0-9]+[[:space:]]+'
 }
 
 # Merging two data sources must not silently drop processes: a lost row is a process
@@ -45,7 +45,7 @@ setup() { setup_common;
 @test "snapshot falls back to ps RSS when top is disabled" {
   run bash -c "source '$MEMCAP_ROOT/libexec/measure.sh'; MC_NO_TOP=1 mc_ps_snapshot | head -1"
   [ "$status" -eq 0 ]
-  [[ "$output" =~ ^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+[0-9]+[[:space:]]+ ]]
+  assert_matches "$output" '^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+[0-9]+[[:space:]]+'
 }
 
 @test "free percentage is between 0 and 100" {

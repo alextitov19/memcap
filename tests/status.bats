@@ -4,12 +4,12 @@ setup() { setup_common; }
 @test "status runs and reports a budget line" {
   run "$MEMCAP_ROOT/bin/memcap" status
   [ "$status" -eq 0 ]
-  [[ "$output" == *budget* ]]
+  assert_contains "$output" "budget"
 }
 
 @test "status names the config file it used" {
   run "$MEMCAP_ROOT/bin/memcap" status
-  [[ "$output" == *memcap.conf* ]]
+  assert_contains "$output" "memcap.conf"
 }
 
 @test "status is read-only: it never logs an enforcement action" {
@@ -28,6 +28,6 @@ setup() { setup_common; }
 	DOCKER_BUDGET_GB=0
 	EOF
   run "$MEMCAP_ROOT/bin/memcap" status
-  [[ "$output" == *"unmanaged"* ]]
-  [[ "$output" != *"0 GB ceiling"* ]]
+  assert_contains "$output" "unmanaged"
+  assert_not_contains "$output" "0 GB ceiling"
 }
