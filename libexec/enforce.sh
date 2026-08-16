@@ -176,16 +176,25 @@ mc_reap_sims() {
   local pid targets="" dir stamp first now grace all_ready=1
   dir="$(mc_sims_idle_dir)"
 
+  # Throttled, not mc_log: this fires on every single pass for as long as the
+  # tool's normal operating state holds (an agent session alive is the premise
+  # the whole tool runs under), and unthrottled it drowned the actual kill
+  # records -- see mc_log_throttled in common.sh. Each reason's key is cleared
+  # the moment its own condition stops holding, so a state change -- the agent
+  # session ending and a later one starting, say -- still gets its own line
+  # rather than silently reusing a window left over from the last occurrence.
   if ! mc_no_live_session; then
-    mc_log "tier3: declining -- an agent session is alive"
+    mc_log_throttled "tier3-agent-alive" "tier3: declining -- an agent session is alive"
     rm -rf "$dir"
     return 0
   fi
+  mc_log_throttle_clear "tier3-agent-alive"
   if mc_hands_on_mobile; then
-    mc_log "tier3: declining -- hands-on mobile work detected (Xcode, Android Studio, or Simulator.app open)"
+    mc_log_throttled "tier3-hands-on-mobile" "tier3: declining -- hands-on mobile work detected (Xcode, Android Studio, or Simulator.app open)"
     rm -rf "$dir"
     return 0
   fi
+  mc_log_throttle_clear "tier3-hands-on-mobile"
 
   # Prune stamps for pids no longer alive or no longer sim-classified, so a reused
   # pid number cannot inherit a stale idle clock and an exited sim does not leave a
@@ -277,17 +286,22 @@ mc_watch() {
     # (tier 2 killed a dev server that could never fix it, every pass); post-C1 it
     # is correct but was entirely silent -- no log line, no notification -- which
     # reads as broken for the one state this tool exists to handle. Log it
-    # unconditionally (an accurate description of current state regardless of dry
-    # run) and notify once, gated on MC_DRY_RUN the same way I2 gated tier 2's
-    # "killed" notification; mc_notify's own 5-minute rate limiter is what keeps
-    # this from nagging on every 60-second poll, so no new machinery is needed.
+    # throttled -- unthrottled, this line alone was 47% of a day's real
+    # actions.log, burying the kill records the file exists for -- and notify
+    # once, gated on MC_DRY_RUN the same way I2 gated tier 2's "killed"
+    # notification; mc_notify's own 5-minute rate limiter is separate machinery
+    # and untouched. Clearing the key the moment the machine drops back under the
+    # combined cap means a later re-entry logs immediately rather than being
+    # swallowed by a window left over from the last time.
     agent_gb=$(mc_gb "$AGENT_KB")
     docker_gb=$(mc_gb "$DOCKER_KB")
     combined_gb=$(awk -v a="$agent_gb" -v d="$docker_gb" 'BEGIN{printf "%.2f", a+d}')
     gross_over=$(awk -v c="$combined_gb" -v cap="$cap" 'BEGIN{print (c > cap) ? 1 : 0}')
     if [ "$gross_over" = "1" ]; then
-      mc_log "watch: combined ${combined_gb} GB exceeds the ${cap} GB cap, but agents net of sims are ${agent_net_gb} GB / ${agents_budget} GB budget -- the excess is simulator/browser memory tier 2 cannot reclaim by killing a dev server; tier 3 will reclaim it once no agent session is alive"
+      mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the ${cap} GB cap, but agents net of sims are ${agent_net_gb} GB / ${agents_budget} GB budget -- the excess is simulator/browser memory tier 2 cannot reclaim by killing a dev server; tier 3 will reclaim it once no agent session is alive"
       [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over your ${cap} GB combined budget from simulator/browser memory -- tier 2 won't kill a dev server for it, and tier 3 will reclaim it once no agent session is alive."
+    else
+      mc_log_throttle_clear "combined-over-cap"
     fi
   fi
   return 0

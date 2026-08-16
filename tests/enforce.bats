@@ -342,6 +342,128 @@ SCRIPT
   [ ! -s "$capture" ]
 }
 
+# --- Final review follow-up, THROTTLE: the log must not drown its own signal --
+# 24 hours of real running showed two per-pass status lines -- tier3 declining,
+# and the combined-cap line above -- making up 94% of actions.log, burying the
+# 210 kill records the file exists for. mc_log_throttled (common.sh) must gate
+# those two lines; kill records must stay unthrottled.
+@test "THROTTLE: kill records remain unthrottled -- two consecutive tier1 reaps both log" {
+  mkdir -p "$HOME/.mc-throttle-$$/proj"
+  mc_record_root "$HOME/.mc-throttle-$$/proj"
+
+  perl -e 'sleep 600' "$HOME/.mc-throttle-$$/proj" &
+  victim1=$!
+  sleep 0.2
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  ORPHANS="$victim1"
+  # A REAL (non-dry) kill, unlike the rest of this file: this is exactly what is
+  # under test -- mc_log's kill-record line must fire every time, unthrottled --
+  # and both victims are dummy perl processes this test owns and spawned itself,
+  # never anything reachable from a real snapshot.
+  MC_DRY_RUN=0
+  mc_reap_orphans
+
+  perl -e 'sleep 600' "$HOME/.mc-throttle-$$/proj" &
+  victim2=$!
+  sleep 0.2
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  ORPHANS="$victim2"
+  MC_DRY_RUN=0
+  mc_reap_orphans
+
+  rm -rf "$HOME/.mc-throttle-$$"
+
+  run grep -c "tier1 orphan" "$MEMCAP_STATE_HOME/memcap/actions.log"
+  [ "$output" = "2" ]
+}
+
+@test "THROTTLE: the tier3-decline and combined-cap keys throttle independently" {
+  sleep 600 & agent=$!
+  sleep 0.2
+  run env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=1 bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/measure.sh'
+    source '$MEMCAP_ROOT/libexec/classify.sh'
+    source '$MEMCAP_ROOT/libexec/roots.sh'
+    source '$MEMCAP_ROOT/libexec/status.sh'
+    source '$MEMCAP_ROOT/libexec/enforce.sh'
+    mc_ps_snapshot() { printf '$agent 1 3000000 /usr/local/bin/claude\n9002 1 9000000 /path/ms-playwright/chromium/chrome\n'; }
+    mc_kill_over_budget() { echo TIER2_FIRED; }
+    mc_record_roots() { :; }
+    mc_watch
+  "
+  kill "$agent" 2>/dev/null
+
+  # A real, alive pid for the agent (not the C1 tests' fake 9001) so
+  # mc_no_live_session genuinely sees a live session and tier3 actually declines
+  # through that branch in the same pass the combined-cap line fires, proving one
+  # key firing does not suppress the other.
+  log="$MEMCAP_STATE_HOME/memcap/actions.log"
+  grep -q "declining -- an agent session is alive" "$log"
+  grep -q "combined.*exceeds" "$log"
+}
+
+@test "THROTTLE: dropping under the combined cap and back over it re-logs despite the window" {
+  over='
+    mc_ps_snapshot() { printf "9001 1 3000000 /usr/local/bin/claude\n9002 1 9000000 /path/ms-playwright/chromium/chrome\n"; }
+  '
+  under='
+    mc_ps_snapshot() { printf "9001 1 2000000 /usr/local/bin/claude\n"; }
+  '
+  common="
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/measure.sh'
+    source '$MEMCAP_ROOT/libexec/classify.sh'
+    source '$MEMCAP_ROOT/libexec/roots.sh'
+    source '$MEMCAP_ROOT/libexec/status.sh'
+    source '$MEMCAP_ROOT/libexec/enforce.sh'
+    mc_kill_over_budget() { :; }
+    mc_record_roots() { :; }
+  "
+  # Pass 1: over cap -- logs. Pass 2: under cap -- clears the key. Pass 3: over
+  # cap again, well within the default 1800s window -- must log AGAIN, because
+  # pass 2 cleared it. All three run under the SAME MEMCAP_STATE_HOME, so the
+  # throttle stamp genuinely persists across these three separate invocations,
+  # same as it would across real 60-second polls.
+  env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=1 bash -c "$common $over mc_watch" >/dev/null
+  env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=1 bash -c "$common $under mc_watch" >/dev/null
+  env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=1 bash -c "$common $over mc_watch" >/dev/null
+
+  run grep -c "combined.*exceeds" "$MEMCAP_STATE_HOME/memcap/actions.log"
+  [ "$output" = "2" ]
+}
+
+@test "THROTTLE: two consecutive over-cap passes with no drop between them log only once" {
+  # The contrast case for the test above: without an intervening under-cap pass
+  # to clear the key, back-to-back over-cap passes must throttle to a single log
+  # line. This is the assertion that actually distinguishes throttled from
+  # unthrottled behavior -- the state-change test above would pass even with no
+  # throttling at all, since both its over-cap passes are separated by a clear.
+  over="
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/measure.sh'
+    source '$MEMCAP_ROOT/libexec/classify.sh'
+    source '$MEMCAP_ROOT/libexec/roots.sh'
+    source '$MEMCAP_ROOT/libexec/status.sh'
+    source '$MEMCAP_ROOT/libexec/enforce.sh'
+    mc_ps_snapshot() { printf '9001 1 3000000 /usr/local/bin/claude\n9002 1 9000000 /path/ms-playwright/chromium/chrome\n'; }
+    mc_kill_over_budget() { :; }
+    mc_record_roots() { :; }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=1 bash -c "$over" >/dev/null
+  env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=1 bash -c "$over" >/dev/null
+
+  run grep -c "combined.*exceeds" "$MEMCAP_STATE_HOME/memcap/actions.log"
+  [ "$output" = "1" ]
+}
+
 @test "watch refuses to act when DOCKER_BUDGET_GB leaves no room for agents" {
   mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
   cat > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" <<-'EOF'
