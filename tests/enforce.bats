@@ -190,9 +190,17 @@ setup() {
 
 @test "an orphan genuinely under the root is still matched after anchoring" {
   mkdir -p "$HOME/.mc-anchor2-$$/foo"
+  # Canonicalized once and reused for the victim's own command line, not the raw
+  # "$HOME/..." string: mc_record_root stores mc_canonicalize's resolved form,
+  # and on a $HOME that is itself a symlink (macOS's /tmp -> /private/tmp, /var
+  # -> /private/var -- exactly what `mktemp -d`-based test runs, and sandboxed
+  # CI environments, produce), the raw and resolved forms are different strings.
+  # Matching against the raw one would fail for a reason that has nothing to do
+  # with anchoring, the thing this test exists to verify.
+  real_root=$(mc_canonicalize "$HOME/.mc-anchor2-$$/foo")
   mc_record_root "$HOME/.mc-anchor2-$$/foo"
 
-  perl -e 'sleep 600' "$HOME/.mc-anchor2-$$/foo/node_modules/.bin/vite" &
+  perl -e 'sleep 600' "$real_root/node_modules/.bin/vite" &
   victim=$!
   sleep 0.2
 
@@ -504,9 +512,14 @@ SCRIPT
 # those two lines; kill records must stay unthrottled.
 @test "THROTTLE: kill records remain unthrottled -- two consecutive tier1 reaps both log" {
   mkdir -p "$HOME/.mc-throttle-$$/proj"
+  # Canonicalized once and reused for both victims' command lines -- see the
+  # anchoring test above for why matching against the raw "$HOME/..." string
+  # breaks whenever $HOME is itself a symlink, as `mktemp -d`-based test runs
+  # produce on macOS.
+  real_root=$(mc_canonicalize "$HOME/.mc-throttle-$$/proj")
   mc_record_root "$HOME/.mc-throttle-$$/proj"
 
-  perl -e 'sleep 600' "$HOME/.mc-throttle-$$/proj" &
+  perl -e 'sleep 600' "$real_root" &
   victim1=$!
   sleep 0.2
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
@@ -518,7 +531,7 @@ SCRIPT
   MC_DRY_RUN=0
   mc_reap_orphans
 
-  perl -e 'sleep 600' "$HOME/.mc-throttle-$$/proj" &
+  perl -e 'sleep 600' "$real_root" &
   victim2=$!
   sleep 0.2
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
