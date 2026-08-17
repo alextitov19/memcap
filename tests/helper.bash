@@ -55,3 +55,33 @@ assert_matches() {
   } >&2
   return 1
 }
+
+# Wait until each spawned fixture process is actually visible to `ps` with its
+# own command line, or give up after ~5s and let the test's own assertion report
+# the real problem.
+#
+# Replaces a fixed `sleep 0.2` after `cmd & pid=$!`. That raced: between the
+# shell's fork and the exec, `ps -o command=` still shows the forking shell, so
+# a fixture that a test needs matched against a sim or dev-server pattern is not
+# yet matchable. At 0.2s it was reliable when run alone and intermittently short
+# under full-suite load -- `tier3: once the idle stamp is past
+# SIM_IDLE_GRACE_SEC the reap proceeds` failed one full-suite run in three while
+# passing 6/6 in isolation, because the fixture had not exec'd in time to be
+# stamped.
+#
+# Every fixture in this suite is either `sleep 600` or `perl -e 'sleep 600'
+# <marker>`, so both carry the literal "sleep 600" once exec'd -- one predicate
+# covers all of them without each call site naming its own marker.
+wait_spawned() {
+  local pid i
+  for pid in "$@"; do
+    i=0
+    while [ "$i" -lt 250 ]; do
+      case "$(ps -o command= -p "$pid" 2>/dev/null)" in
+        *"sleep 600"*) break ;;
+      esac
+      sleep 0.02
+      i=$((i + 1))
+    done
+  done
+}

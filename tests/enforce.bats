@@ -93,7 +93,7 @@ setup() {
   # target. perl keeps the argument visible in `ps -o command=`.
   perl -e 'sleep 600' "$HOME/.mc-toctou-$$/proj" &
   victim=$!
-  sleep 0.2
+  wait_spawned "$victim"
 
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim"
@@ -123,7 +123,7 @@ setup() {
   # under HOME, so mc_root_is_safe alone would have accepted it.
   perl -e 'sleep 600' "$HOME/.mc-redirect-$$/projA" &
   victim=$!
-  sleep 0.2
+  wait_spawned "$victim"
 
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim"
@@ -149,7 +149,7 @@ setup() {
 
   perl -e 'sleep 600' "$HOME/.mc-redirlog-$$/projA" &
   victim=$!
-  sleep 0.2
+  wait_spawned "$victim"
 
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim"
@@ -175,7 +175,7 @@ setup() {
 
   perl -e 'sleep 600' "$HOME/.mc-anchor-$$/foobar/server.js" &
   victim=$!
-  sleep 0.2
+  wait_spawned "$victim"
 
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim"
@@ -202,7 +202,7 @@ setup() {
 
   perl -e 'sleep 600' "$real_root/node_modules/.bin/vite" &
   victim=$!
-  sleep 0.2
+  wait_spawned "$victim"
 
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim"
@@ -247,7 +247,7 @@ setup() {
   # cannot.
   ( cd "$HOME/.mc-symlink-$$/foo" 2>/dev/null && exec perl -e 'sleep 600' "$HOME/.mc-symlink-$$/foo/node_modules/.bin/vite" ) &
   victim=$!
-  sleep 0.2
+  wait_spawned "$victim"
 
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim"
@@ -277,7 +277,7 @@ setup() {
   # would pass every check and then match this unrelated victim.
   perl -e 'sleep 600' "$HOME/.mc-space-$$/foo/server.js" &
   victim=$!
-  sleep 0.2
+  wait_spawned "$victim"
 
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim"
@@ -314,7 +314,7 @@ SCRIPT
   chmod +x "$fakebin/osascript"
 
   sleep 600 & victim=$!
-  sleep 0.2
+  wait_spawned "$victim"
   # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
   DEVPIDS="$victim"
   MC_DRY_RUN=1
@@ -330,7 +330,7 @@ SCRIPT
 
 @test "tier2: an old-enough DEVPIDS candidate is selected as the kill target" {
   sleep 600 & victim=$!
-  sleep 0.2
+  wait_spawned "$victim"
   # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
   DEVPIDS="$victim"
   # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
@@ -566,7 +566,7 @@ SCRIPT
 
   perl -e 'sleep 600' "$real_root" &
   victim1=$!
-  sleep 0.2
+  wait_spawned "$victim1"
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim1"
   # A REAL (non-dry) kill, unlike the rest of this file: this is exactly what is
@@ -578,7 +578,7 @@ SCRIPT
 
   perl -e 'sleep 600' "$real_root" &
   victim2=$!
-  sleep 0.2
+  wait_spawned "$victim2"
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim2"
   MC_DRY_RUN=0
@@ -592,7 +592,7 @@ SCRIPT
 
 @test "THROTTLE: the tier3-decline and combined-cap keys throttle independently" {
   sleep 600 & agent=$!
-  sleep 0.2
+  wait_spawned "$agent"
   run env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=1 bash -c "
     source '$MEMCAP_ROOT/libexec/common.sh'
     source '$MEMCAP_ROOT/libexec/budget.sh'
@@ -848,8 +848,15 @@ SCRIPT
 
 @test "tier2: a subtree containing an agent pid kills the server but spares the agent" {
   bash -c 'sleep 600 & wait' >/dev/null 2>&1 & server=$!
-  sleep 0.3
-  agent_child=$(pgrep -P "$server" | head -1)
+  # Poll for the child rather than sleeping a fixed 0.3s: this waits on a
+  # grandchild being forked, which under full-suite load can outlast any
+  # constant anyone picks. Same race wait_spawned exists for.
+  agent_child=""
+  for _ in $(seq 1 250); do
+    agent_child=$(pgrep -P "$server" | head -1)
+    [ -n "$agent_child" ] && break
+    sleep 0.02
+  done
   [ -n "$agent_child" ]
 
   # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
@@ -906,7 +913,7 @@ SCRIPT
   # keeps the marker argument visible in `ps -o command=`.
   perl -e 'sleep 600' "ms-playwright-fixture" &
   victim=$!
-  sleep 0.2
+  wait_spawned "$victim"
   AGENTPIDS=""
   SIMPIDS="$victim"
   MC_DRY_RUN=1
@@ -939,7 +946,7 @@ SCRIPT
 @test "I6: a freshly-tracked sim pid blocks the reap even though another tracked sim already cleared its own grace" {
   perl -e 'sleep 600' "ms-playwright-fixture" & old=$!
   sleep 600 & fresh=$!
-  sleep 0.2
+  wait_spawned "$old" "$fresh"
   AGENTPIDS=""
   SIMPIDS="$old $fresh"
   MC_DRY_RUN=1
@@ -963,7 +970,7 @@ SCRIPT
 @test "I6: once every tracked sim pid has individually cleared the grace, the reap proceeds" {
   perl -e 'sleep 600' "ms-playwright-fixture" & old=$!
   sleep 600 & fresh=$!
-  sleep 0.2
+  wait_spawned "$old" "$fresh"
   AGENTPIDS=""
   SIMPIDS="$old $fresh"
   MC_DRY_RUN=1
@@ -993,7 +1000,7 @@ SCRIPT
 @test "I6: mc_hands_on_mobile also treats Simulator.app itself as hands-on" {
   perl -e 'sleep 600' "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator" &
   victim=$!
-  sleep 0.2
+  wait_spawned "$victim"
   run mc_hands_on_mobile
   kill "$victim" 2>/dev/null
   [ "$status" -eq 0 ]
@@ -1016,7 +1023,7 @@ SCRIPT
   chmod +x "$fakebin/osascript"
 
   sleep 600 & victim=$!
-  sleep 0.2
+  wait_spawned "$victim"
   # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
   DEVPIDS="$victim"
   # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
@@ -1042,7 +1049,7 @@ SCRIPT
   chmod +x "$fakebin/osascript"
 
   sleep 600 & victim=$!
-  sleep 0.2
+  wait_spawned "$victim"
   # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
   DEVPIDS="$victim"
   # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
@@ -1094,7 +1101,7 @@ SCRIPT
 @test "tier3: hands-on mobile work (Simulator.app) declines and logs why" {
   perl -e 'sleep 600' "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator" &
   sim=$!
-  sleep 0.2
+  wait_spawned "$sim"
   # shellcheck disable=SC2034  # consumed by mc_no_live_session, sourced from enforce.sh
   AGENTPIDS=""
   # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
@@ -1128,7 +1135,7 @@ SCRIPT
   mkdir -p "$HOME/.mc-cost-other-$$/proj"
   ( cd "$HOME/.mc-cost-other-$$/proj" && exec perl -e 'sleep 600' ) &
   victim=$!
-  sleep 0.2
+  wait_spawned "$victim"
 
   # Counting stub, defined AFTER enforce.sh was sourced in setup() so sourcing
   # cannot clobber it. Delegates to nothing -- the return value is irrelevant
