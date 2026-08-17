@@ -97,9 +97,21 @@ mc_etime_secs() {
 # fresh canonical form to what was recorded catches a redirect either way, not just
 # the ones that happen to land somewhere unsafe.
 mc_reap_orphans() {
-  local pid keep="" root real cmd matched key pid_cwd pid_cwd_real
+  local pid keep="" root real cmd matched key pid_cwd pid_cwd_real pid_cwd_tried
   for pid in $ORPHANS; do
     matched=0
+    # Both of this pid's identifying facts are resolved ONCE, out here, not per
+    # root: neither depends on $root, and both cost a process spawn. Inside the
+    # loop they would run orphans x roots times -- 388 orphans against this
+    # machine's 12 recorded roots is 4,656 spawns, and at lsof's measured 35.8ms
+    # that is a 167-second pass against a 60-second service interval. memcap
+    # would be at its slowest in exactly the leak it exists to clean up.
+    cmd=" $(ps -o command= -p "$pid" 2>/dev/null) "
+    # cwd is resolved lazily -- only the first time a root's argv match has
+    # failed -- so the common case (argv matches, usually on the first root)
+    # never pays for lsof at all.
+    pid_cwd_real=""
+    pid_cwd_tried=0
     # `while read`, not `for root in $(mc_sweep_roots)`: word-splitting the
     # command substitution breaks a root containing a space into fragments, and
     # a fragment like `/Users/x/dev/my` (from `/Users/x/dev/my project`) can
@@ -133,7 +145,6 @@ mc_reap_orphans() {
       # substring -- keeps root `~/dev/foo` from also matching `~/dev/foobar`,
       # or a process that merely names the root somewhere in an argument with
       # no separator after it.
-      cmd=" $(ps -o command= -p "$pid" 2>/dev/null) "
       case "$cmd" in
         *"$root/"*|*"$root "*) matched=1 ;;
       esac
@@ -151,9 +162,14 @@ mc_reap_orphans() {
       # safety gates above, for a pid that classify.sh already restricted to
       # ppid==1 plus the dev-server pattern.
       if [ "$matched" != "1" ]; then
-        pid_cwd=$(mc_pid_cwd "$pid")
-        if [ -n "$pid_cwd" ]; then
-          pid_cwd_real=$(mc_canonicalize "$pid_cwd") || pid_cwd_real=""
+        if [ "$pid_cwd_tried" != "1" ]; then
+          pid_cwd_tried=1
+          pid_cwd=$(mc_pid_cwd "$pid")
+          if [ -n "$pid_cwd" ]; then
+            pid_cwd_real=$(mc_canonicalize "$pid_cwd") || pid_cwd_real=""
+          fi
+        fi
+        if [ -n "$pid_cwd_real" ]; then
           case "$pid_cwd_real" in
             "$root"|"$root"/*) matched=1 ;;
           esac

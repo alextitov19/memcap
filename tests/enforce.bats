@@ -1107,3 +1107,50 @@ SCRIPT
 
   grep -q "declining -- hands-on mobile work" "$(mc_state_dir)/actions.log"
 }
+
+# --- mc_pid_cwd must be resolved once per orphan, never per (orphan x root) ---
+# mc_pid_cwd spawns lsof, measured at 35.8ms on the author's machine. The cwd
+# fallback that catches symlinked project roots was first written inside the
+# per-root loop, where it runs orphans x roots times: 388 orphans (the leak that
+# motivated this tool) against 12 recorded roots is 4,656 spawns and a 167-second
+# pass, against a 60-second service interval. Neither the cwd nor the argv line
+# depends on $root, so both are hoisted. This test pins that: it counts calls and
+# fails if either is moved back inside the loop.
+@test "mc_pid_cwd is called at most once per orphan, not once per root" {
+  local i
+  for i in 1 2 3 4 5; do
+    mkdir -p "$HOME/.mc-cost-$$/r$i"
+    mc_record_root "$HOME/.mc-cost-$$/r$i"
+  done
+
+  # Victim lives under NONE of the roots, so every root misses and the cwd
+  # fallback is reached on all five -- the worst case for call count.
+  mkdir -p "$HOME/.mc-cost-other-$$/proj"
+  ( cd "$HOME/.mc-cost-other-$$/proj" && exec perl -e 'sleep 600' ) &
+  victim=$!
+  sleep 0.2
+
+  # Counting stub, defined AFTER enforce.sh was sourced in setup() so sourcing
+  # cannot clobber it. Delegates to nothing -- the return value is irrelevant
+  # here, only how many times it is asked.
+  MC_CWD_CALLS="$BATS_TEST_TMPDIR/cwd-calls"
+  : > "$MC_CWD_CALLS"
+  mc_pid_cwd() { echo x >> "$MC_CWD_CALLS"; printf '%s' ""; }
+
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  ORPHANS="$victim"
+  MC_DRY_RUN=1
+  run mc_reap_orphans
+
+  calls=$(wc -l < "$MC_CWD_CALLS" | tr -d ' ')
+
+  kill "$victim" 2>/dev/null
+  rm -rf "$HOME/.mc-cost-$$" "$HOME/.mc-cost-other-$$"
+
+  # One orphan, five roots. Hoisted: at most 1. Inside the loop: 5.
+  [ "$calls" -le 1 ] || {
+    echo "mc_pid_cwd called $calls times for 1 orphan across 5 roots" >&2
+    echo "it must be resolved once per orphan, not once per (orphan x root)" >&2
+    return 1
+  }
+}
