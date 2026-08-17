@@ -5,6 +5,17 @@ MC_DOCKER_STORE="$HOME/Library/Group Containers/group.com.docker/settings-store.
 MC_DRY_RUN="${MC_DRY_RUN:-0}"
 
 mc_docker_runtime() {
+  # Escape hatch, same pattern as MC_NO_TOP: this check depends entirely on what
+  # is installed on the host, with no way to make it deterministic in an
+  # environment (CI, a machine with no Docker runtime at all) that doesn't have
+  # any of these actually present. A function-level test stub can't reach this
+  # once bin/memcap's own `. "$LIB/docker.sh"` has run for a real invocation --
+  # sourcing redefines the function again, clobbering an override set beforehand
+  # -- but a plain environment variable survives into any subprocess normally.
+  if [ -n "${MC_DOCKER_RUNTIME:-}" ]; then
+    printf '%s' "$MC_DOCKER_RUNTIME"
+    return 0
+  fi
   if [ -f "$MC_DOCKER_STORE" ] && [ -d "/Applications/Docker.app" ]; then echo desktop; return; fi
   command -v orbctl  >/dev/null 2>&1 && { echo orbstack; return; }
   command -v colima  >/dev/null 2>&1 && { echo colima;   return; }

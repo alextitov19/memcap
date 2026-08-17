@@ -35,13 +35,26 @@ mc_canonicalize() {
   printf '%s\n' "$real"
 }
 
+# $HOME itself must be compared in its own canonical form, not the raw value: on
+# macOS, /tmp and /var are symlinks (to /private/tmp, /private/var), so a HOME
+# that lives under either -- as `mktemp -d` produces, and as CI/sandboxed test
+# runs commonly use -- differs from mc_canonicalize's fully-resolved output for
+# anything underneath it. Comparing against the raw $HOME then rejects every
+# root as "not under HOME" even though it plainly is. Falls back to the raw
+# value if $HOME itself cannot be resolved, matching mc_canonicalize's own
+# posture of failing closed rather than crashing.
+mc_home_real() {
+  (cd "$HOME" 2>/dev/null && pwd -P) || printf '%s' "$HOME"
+}
+
 # Refuse anything broad enough to sweep unrelated work: at least two levels below
 # $HOME, judged on the canonical path.
 mc_root_is_safe() {
-  local real
+  local real home_real
   real=$(mc_canonicalize "$1") || return 1
+  home_real=$(mc_home_real)
   case "$real" in
-    "$HOME"/*/*) return 0 ;;
+    "$home_real"/*/*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -49,9 +62,10 @@ mc_root_is_safe() {
 # Persists the CANONICAL path, not the caller's string: what gets stored must be what
 # was validated, or a later sweep acts on a path nobody checked.
 mc_record_root() {
-  local real f
+  local real home_real f
   real=$(mc_canonicalize "$1") || return 0
-  case "$real" in "$HOME"/*/*) : ;; *) return 0 ;; esac
+  home_real=$(mc_home_real)
+  case "$real" in "$home_real"/*/*) : ;; *) return 0 ;; esac
   f="$(mc_roots_file)"; mkdir -p "$(dirname "$f")"; touch "$f"
   grep -qxF "$real" "$f" 2>/dev/null || printf '%s\n' "$real" >> "$f"
 }

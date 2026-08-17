@@ -16,17 +16,28 @@ setup() {
   assert_matches "$output" '^(desktop|orbstack|colima|podman|none)$'
 }
 
-# Braces: the stub must be defined AFTER sourcing, or `source docker.sh` overwrites it
-# and this runs against the real runtime -- which on a Docker Desktop machine with no
-# running containers would fall through to the actual quit-and-rewrite path.
+# --- Final review follow-up: CI has no Docker Desktop -------------------------
+# GitHub's macOS runners have no Docker Desktop, no orbctl/colima/podman -- real
+# mc_docker_runtime returns "none" there, and every test below that expects the
+# apply path (dry-run "would set..." etc.) would fail on a clean checkout with
+# nothing further installed. MC_DOCKER_RUNTIME is the fix: an escape-hatch env
+# var, the same pattern as MC_NO_TOP, checked before mc_docker_runtime's real
+# detection. A function-level stub (`mc_docker_runtime() { echo desktop; }`,
+# defined after sourcing docker.sh) works for the tests that source docker.sh
+# directly, but NOT for the ones below that invoke the real `bin/memcap`
+# binary as a subprocess -- bin/memcap's own `. "$LIB/docker.sh"` redefines the
+# function again, clobbering any override a parent shell set beforehand. A
+# plain environment variable has no such problem: it survives into any
+# subprocess normally, so it is used uniformly below regardless of which form
+# the test invokes.
 @test "apply refuses without Docker Desktop" {
-  run bash -c "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/docker.sh'; mc_docker_runtime() { echo none; }; MC_DRY_RUN=1 mc_docker_apply"
+  run env MC_DOCKER_RUNTIME=none MC_DRY_RUN=1 bash -c "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/docker.sh'; mc_docker_apply"
   [ "$status" -ne 0 ]
   assert_contains "$output" "cannot set a VM ceiling"
 }
 
 @test "apply is a no-op in dry run" {
-  run env MC_DRY_RUN=1 bash -c "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/docker.sh'; mc_docker_apply"
+  run env MC_DOCKER_RUNTIME=desktop MC_DRY_RUN=1 bash -c "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/docker.sh'; mc_docker_apply"
   assert_contains "$output" "would"
 }
 
@@ -35,7 +46,7 @@ setup() {
 # memory and CPU, but only memory/CPU were ever mentioned to the user. Keep the
 # behavior, but say so in the command's own output as well as the README.
 @test "the dry-run message names all five settings it would change" {
-  run env MC_DRY_RUN=1 bash -c "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/docker.sh'; mc_docker_apply"
+  run env MC_DOCKER_RUNTIME=desktop MC_DRY_RUN=1 bash -c "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/docker.sh'; mc_docker_apply"
   assert_contains "$output" "GB"
   assert_contains "$output" "cores"
   assert_contains "$output" "swap"
@@ -52,6 +63,8 @@ setup() {
 }
 
 @test "mc_docker_apply still accepts --force" {
+  # shellcheck disable=SC2034  # consumed by mc_docker_runtime, sourced from docker.sh
+  MC_DOCKER_RUNTIME=desktop
   run mc_docker_apply --force
   assert_contains "$output" "would"
 }
@@ -75,19 +88,19 @@ setup() {
 }
 
 @test "memcap docker apply still works" {
-  run "$MEMCAP_ROOT/bin/memcap" docker apply
+  run env MC_DOCKER_RUNTIME=desktop "$MEMCAP_ROOT/bin/memcap" docker apply
   [ "$status" -eq 0 ]
   assert_contains "$output" "would"
 }
 
 @test "bare memcap docker still works" {
-  run "$MEMCAP_ROOT/bin/memcap" docker
+  run env MC_DOCKER_RUNTIME=desktop "$MEMCAP_ROOT/bin/memcap" docker
   [ "$status" -eq 0 ]
   assert_contains "$output" "would"
 }
 
 @test "memcap docker apply --force still parses" {
-  run "$MEMCAP_ROOT/bin/memcap" docker apply --force
+  run env MC_DOCKER_RUNTIME=desktop "$MEMCAP_ROOT/bin/memcap" docker apply --force
   [ "$status" -eq 0 ]
   assert_contains "$output" "would"
 }
@@ -115,10 +128,9 @@ SCRIPT
   store="$BATS_TEST_TMPDIR/settings-store.json"
   printf '{"MemoryMiB":2048,"Cpus":4}' > "$store"
 
-  run env PATH="$fakebin:$PATH" bash -c "
+  run env PATH="$fakebin:$PATH" MC_DOCKER_RUNTIME=desktop bash -c "
     source '$MEMCAP_ROOT/libexec/common.sh'
     source '$MEMCAP_ROOT/libexec/docker.sh'
-    mc_docker_runtime() { echo desktop; }
     pgrep() { return 1; }
     docker() { return 0; }
     open() { echo OPEN_CALLED; }
@@ -137,7 +149,7 @@ SCRIPT
   # Fakes `docker ps -q` so the containers-running branch is reached without any real
   # Docker call; the branch returns before mc_docker_apply ever shells out to `docker`
   # for real, `osascript`, or `jq`, so this is safe despite MC_DRY_RUN=0.
-  run bash -c "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/docker.sh'; docker() { echo fakecontainerid; }; MC_DRY_RUN=0 mc_docker_apply"
+  run env MC_DOCKER_RUNTIME=desktop bash -c "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/docker.sh'; docker() { echo fakecontainerid; }; MC_DRY_RUN=0 mc_docker_apply"
   [ "$status" -eq 1 ]
   assert_contains "$output" "not restarting Docker"
   # Final review: the old assertion checked for "Settings saved", a string that
