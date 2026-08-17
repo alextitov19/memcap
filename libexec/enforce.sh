@@ -97,7 +97,7 @@ mc_etime_secs() {
 # fresh canonical form to what was recorded catches a redirect either way, not just
 # the ones that happen to land somewhere unsafe.
 mc_reap_orphans() {
-  local pid keep="" root real cmd matched key
+  local pid keep="" root real cmd matched key pid_cwd pid_cwd_real
   for pid in $ORPHANS; do
     matched=0
     # `while read`, not `for root in $(mc_sweep_roots)`: word-splitting the
@@ -137,6 +137,28 @@ mc_reap_orphans() {
       case "$cmd" in
         *"$root/"*|*"$root "*) matched=1 ;;
       esac
+      # Second, independent way to be "under" the root: the orphan's own
+      # CANONICAL cwd, compared against the canonical root. Argv alone misses a
+      # project sitting behind a symlink (a HOME on /tmp or /var, ~/dev pointed
+      # at an external volume) -- mc_record_roots stores the kernel's resolved
+      # cwd, always canonical, but argv holds whatever string launched the
+      # process, which is that path's UNRESOLVED form and so never textually
+      # contains the canonical root. This is not a looser check than the argv
+      # one: cwd is the kernel's own record of where the process actually
+      # lives, not text the process chose to pass itself, so it cannot draw in
+      # something that merely NAMES the root without living under it -- and it
+      # only runs at all for a root that already passed the canonical-match and
+      # safety gates above, for a pid that classify.sh already restricted to
+      # ppid==1 plus the dev-server pattern.
+      if [ "$matched" != "1" ]; then
+        pid_cwd=$(mc_pid_cwd "$pid")
+        if [ -n "$pid_cwd" ]; then
+          pid_cwd_real=$(mc_canonicalize "$pid_cwd") || pid_cwd_real=""
+          case "$pid_cwd_real" in
+            "$root"|"$root"/*) matched=1 ;;
+          esac
+        fi
+      fi
       [ "$matched" = "1" ] && break
     done < <(mc_sweep_roots)
     [ "$matched" = "1" ] && keep="$keep $pid"

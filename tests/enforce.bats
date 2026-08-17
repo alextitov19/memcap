@@ -215,6 +215,51 @@ setup() {
   assert_contains "$output" "would kill"
 }
 
+# --- CI-portability review: tier1 must catch an orphan behind a symlink ------
+# mc_record_roots stores the kernel's resolved (canonical) cwd; the argv match
+# above compares that canonical root against the orphan's own argv, which is
+# whatever string launched it. When a project sits behind a symlink -- a HOME
+# under /tmp or /var (what `mktemp -d`-based test runs, and some sandboxed CI
+# environments, produce), ~/dev pointed at an external volume, any symlinked
+# ancestor -- argv carries the UNRESOLVED path and never textually contains the
+# canonical root, so the argv-only match missed it. mc_reap_orphans now also
+# compares the orphan's own canonical cwd against the canonical root. This test
+# constructs that scenario directly (a symlinked ancestor directory) so it does
+# not depend on the outer test invocation's own $HOME happening to be
+# symlinked, and drives the victim's argv AND cwd through the raw, unresolved
+# path -- exactly what 6af291e's fixture-canonicalization stopped exercising.
+#
+# The symlink's TARGET must stay under $HOME (a sibling directory, not a
+# mktemp(1) path under /tmp or /var): mc_root_is_safe requires a root to
+# resolve to 2+ levels under $HOME, and a target outside $HOME entirely would
+# be rejected for that reason alone -- correctly so, but that rejection has
+# nothing to do with the symlink-matching behavior this test exists to check.
+@test "an orphan behind a symlinked ancestor directory is matched via its own canonical cwd" {
+  mkdir -p "$HOME/.mc-symlink-target-$$/foo"
+  ln -sfn "$HOME/.mc-symlink-target-$$" "$HOME/.mc-symlink-$$"
+  mc_record_root "$HOME/.mc-symlink-$$/foo"
+
+  # Both argv and cwd use the RAW, symlinked path -- mc_record_root stored the
+  # resolved form ("$HOME/.mc-symlink-target-$$/foo"), a different string. The
+  # kernel-reported cwd (via lsof, inside mc_pid_cwd) resolves through the
+  # symlink regardless of which path was used to `cd` there, which is exactly
+  # what makes the new cwd-based match work here where the argv-only match
+  # cannot.
+  ( cd "$HOME/.mc-symlink-$$/foo" 2>/dev/null && exec perl -e 'sleep 600' "$HOME/.mc-symlink-$$/foo/node_modules/.bin/vite" ) &
+  victim=$!
+  sleep 0.2
+
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  ORPHANS="$victim"
+  MC_DRY_RUN=1
+  run mc_reap_orphans
+
+  kill "$victim" 2>/dev/null
+  rm -rf "$HOME/.mc-symlink-$$" "$HOME/.mc-symlink-target-$$"
+
+  assert_contains "$output" "would kill"
+}
+
 # --- Final review, residual: mc_sweep_roots must not be word-split ------------
 # `for root in $(mc_sweep_roots)` splits on whitespace, so a recorded root
 # containing a space breaks into fragments. A fragment can be a real, existing,
