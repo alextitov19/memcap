@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Something is being killed right now
+    url: https://github.com/alextitov19/memcap#memcap-off-the-panic-switch
+    about: Run `memcap off` to halt all enforcement immediately, then file a bug report.

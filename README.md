@@ -1,11 +1,83 @@
 # memcap
 
+[![CI](https://github.com/alextitov19/memcap/actions/workflows/ci.yml/badge.svg)](https://github.com/alextitov19/memcap/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#requirements)
+
+**Keep AI coding agents from eating your Mac.**
+
 memcap is a macOS command-line tool and background service that keeps AI coding
 agents, and the processes they spawn, inside a memory budget. It measures actual
 physical footprint on a roughly 60-second cycle and, when agents drift over budget,
 reaps processes in three narrowly-scoped tiers rather than a blanket sweep. It also
 sets Docker Desktop's VM memory as a hard ceiling, since that is the one limit macOS
 will actually enforce; everything else it does is a soft policy it polices itself.
+
+## Why this exists
+
+Agents leak processes. A session that restarts a dev server on every retry leaves
+the old ones orphaned; simulators and Playwright browsers outlive a crashed test
+run; Docker Desktop's VM balloons and never gives the memory back.
+
+memcap was written after a 24 GB Mac hard-shut-down mid-workday with **388 orphaned
+`tsx` dev servers** holding 2.9 GB, Docker's VM ceiling set to 12 GB — half the
+machine — and 20.3 GB of 21.5 GB swap in use. Nothing had crashed. Two coding
+sessions had simply been left to accumulate.
+
+The point is not to make your machine slower or your agents weaker. It is to
+guarantee that when you join a video call, there is RAM left to join it with.
+
+```
+$ memcap status
+memcap — /Users/you/.config/memcap/memcap.conf
+
+  agents + everything they spawn   6.93 GB / 10 GB budget
+    of which leaked/orphaned       0.00 GB
+    of which sims/playwright       0.93 GB
+    net of sims (drives tier 2)    6.00 GB
+  docker VM + helpers              6.47 GB / 6 GB ceiling
+  ---------------------------------------------------------
+  combined                        13.40 GB / 16 GB budget
+  system memory available          25%
+```
+
+## Requirements
+
+- **macOS** (Apple Silicon or Intel). Linux is explicitly out of scope — the
+  mechanics differ entirely, and a port would share almost no code.
+- **Homebrew**, for install and for the background service.
+- **`jq`**, installed automatically as a formula dependency.
+- **Docker Desktop is optional.** Without it, memcap skips the Docker module and
+  budgets agents only. OrbStack, Colima, and Podman are measured but cannot be
+  capped — no VM ceiling exists to set.
+
+Only the system `bash` (3.2) is required at runtime; no newer shell is needed.
+
+## Install
+
+```bash
+brew install alextitov19/memcap/memcap
+memcap init
+```
+
+`memcap init` detects your total RAM, core count, and which coding agents are
+installed, proposes a budget split, and writes `~/.config/memcap/memcap.conf`. It
+will offer to start the background service (`brew services start memcap`), which
+is what calls `memcap watch` on a recurring cycle; you can decline and start it
+later, or skip enforcement entirely by answering "no" to the enforce prompt, which
+leaves memcap paused from the start.
+
+Everything is accept-by-Enter. The proposed defaults scale with the machine:
+
+| Machine | Reserved for you | Total cap | Docker slice |
+| ------- | ---------------- | --------- | ------------ |
+| 16 GB   | 6 GB             | 10 GB     | 4 GB         |
+| 24 GB   | 8 GB             | 16 GB     | 6 GB         |
+| 32 GB   | 11 GB            | 21 GB     | 8 GB         |
+| 64 GB   | 16 GB            | 48 GB     | 12 GB        |
+
+Once the service is running it persists across reboots. There is nothing to
+re-initialize.
 
 ## What it kills, and why that is safe
 
@@ -109,20 +181,6 @@ memcap on
 `off`/`on` just toggle a marker file (`~/.local/state/memcap/paused`); they don't
 touch your config or uninstall anything.
 
-## Install
-
-```bash
-brew install alextitov19/memcap/memcap
-memcap init
-```
-
-`memcap init` detects your total RAM, core count, and which coding agents are
-installed, proposes a budget split, and writes `~/.config/memcap/memcap.conf`. It
-will offer to start the background service (`brew services start memcap`), which
-is what calls `memcap watch` on a recurring cycle; you can decline and start it
-later, or skip enforcement entirely by answering "no" to the enforce prompt, which
-leaves memcap paused from the start.
-
 ## Commands
 
 | Command                         | What it does                                                                                                                                                                                                                                                      |
@@ -209,20 +267,32 @@ brew uninstall memcap
 
 ## Development
 
-Requires `bats-core` and `shellcheck`:
-
 ```bash
 brew install bats-core shellcheck
+git clone https://github.com/alextitov19/memcap.git && cd memcap
+bats tests/            # the full suite
+shellcheck bin/memcap libexec/*.sh tests/*.bats tests/*.bash
 ```
 
-Run the tests:
+CI runs exactly three checks on a macOS runner, and a pull request must pass all
+three: `shellcheck`, a `bash -n` parse check against the system bash 3.2, and
+`bats tests/`.
 
-```bash
-bats tests/*.bats
-```
+Three constraints are easy to trip over and are enforced by those checks:
 
-Lint every shell file before committing:
+- **bash 3.2 only.** macOS ships bash 3.2 and memcap targets it directly, so no
+  `mapfile`, `readarray`, `declare -A`, `local -n`, `${var,,}`, or `&>>`.
+- **The suite must pass with no Docker Desktop installed.** CI runners have none.
+  Verify with `env HOME="$(mktemp -d)" bats tests/`, and use the
+  `MC_DOCKER_RUNTIME` escape hatch rather than depending on the host.
+- **Never let a test reach a real kill.** Enforcement tests set `MC_DRY_RUN=1` in
+  `setup()`; keep it that way. A test run must not be able to terminate a
+  developer's dev server or quit their Docker.
 
-```bash
-shellcheck bin/memcap libexec/*.sh
-```
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the
+workflow, and [AGENTS.md](AGENTS.md) if you are pointing a coding agent at this
+repository.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

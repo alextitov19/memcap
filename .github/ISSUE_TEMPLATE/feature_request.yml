@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest a change or addition
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        memcap intends to stay small. It deliberately does not support Linux, does not
+        cap processes you started yourself, and does not offer user-defined process
+        groups — see [Scope](https://github.com/alextitov19/memcap/blob/main/CONTRIBUTING.md#scope).
+
+        Support for a new agent CLI is always in scope and always welcome.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What goes wrong today? Describe the situation, not the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like it to do
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Including whether an existing setting (a profile, `EXTRA_AGENTS`, `TIER2_MIN_AGE_SEC`) already gets you most of the way.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: enforcement
+    attributes:
+      label: Does this change what gets killed?
+      options:
+        - label: This would widen or narrow what memcap terminates
+          required: false

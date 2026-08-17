@@ -1,0 +1,83 @@
+name: Bug report
+description: Something memcap did, or failed to do
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **If memcap is killing something right now, run `memcap off`.** That halts
+        all enforcement immediately, including a manual `memcap clean`. You can
+        file this issue afterward.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did memcap do, or fail to do? If it killed something you needed, include that process's command line.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: actions-log
+    attributes:
+      label: Relevant lines from actions.log
+      description: |
+        From `~/.local/state/memcap/actions.log`. memcap logs why it did or did not act,
+        not only what it killed — this is usually where the answer is.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: status
+    attributes:
+      label: memcap status
+      description: Output of `memcap status`.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Your config
+      description: Contents of `~/.config/memcap/memcap.conf`.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: machine
+    attributes:
+      label: Machine
+      description: Total RAM, chip, and macOS version — e.g. "24 GB, M2 Pro, macOS 15.3".
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: memcap version
+      description: Output of `brew list --versions memcap`, or the commit SHA if running from a checkout.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: docker
+    attributes:
+      label: Container runtime
+      options:
+        - Docker Desktop
+        - OrbStack
+        - Colima
+        - Podman
+        - None installed
+    validations:
+      required: true

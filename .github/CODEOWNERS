@@ -1,0 +1,8 @@
+# Every pull request requests a review from the maintainer automatically.
+* @alextitov19
+
+# Enforcement decides what gets killed on someone else's machine. Listed
+# separately so a change here is never merged without the owner seeing it.
+/libexec/enforce.sh @alextitov19
+/libexec/classify.sh @alextitov19
+/libexec/roots.sh @alextitov19
