@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **memcap now installs and owns its own LaunchAgent**, instead of Homebrew
+  managing it via the formula's `service do` block. `brew upgrade` was found to
+  _remove_ that plist outright, not just unload it — confirmed twice, including
+  a 28-hour outage on the author's own machine with no paused marker, no crash
+  evidence, and uptime of 5 days. Because `RunAtLoad` lived in a plist that no
+  longer existed, the service did not come back at login either. The v0.1.4
+  heartbeat reported this correctly, which is how it was caught, but reporting
+  a dead daemon isn't the same as having one.
+
+  New commands: `memcap service install`, `memcap service uninstall`, `memcap
+service status`. `memcap init` installs the service as part of setup;
+  `memcap uninstall` removes it. The label (`com.alextitov19.memcap`) is never
+  `homebrew.mxcl.memcap` — a plist Homebrew never created is one it cannot
+  delete. An existing Homebrew-owned plist from an older install is detected
+  and migrated away from automatically (`brew services stop`, then the plist
+  removed) so a machine is never left with both agents loaded racing separate
+  `watch` passes every 60 seconds. Plist content is unchanged: `RunAtLoad`
+  true, `StartInterval` 60, and `ProgramArguments` resolved via `brew --prefix`
+  at write time so it works on both Apple Silicon and Intel and always points
+  at the stable `opt/memcap` symlink, never a versioned Cellar path.
+
+  `status`'s stale/absent remedy text now says `memcap service install`
+  instead of `brew services start` accordingly.
+
+  `brew services start/stop memcap` is no longer part of the supported
+  workflow — the formula's `service do` block is being dropped in the tap.
+
+### Fixed
+
+- **`memcap uninstall` called `brew services stop memcap` for real,
+  unsandboxed, in every test run.** `tests/uninstall.bats` invokes the real
+  `bin/memcap uninstall`, so every `bats tests/` run on a machine with memcap
+  actually installed via Homebrew was quietly attempting to stop that
+  machine's real enforcement. Both `launchctl` and `brew` invocations are now
+  routed through `MC_LAUNCHCTL_BIN`/`MC_BREW_BIN` (same escape-hatch pattern as
+  `MC_DOCKER_RUNTIME`), stubbed to fake binaries for every test via
+  `MEMCAP_LAUNCHAGENT_DIR` and the test harness, not only the new
+  service-specific tests.
+
 ## v0.1.4 — 2026-08-18
 
 ### Added

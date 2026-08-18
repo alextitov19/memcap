@@ -54,7 +54,7 @@ setup() { setup_common; }
   echo "$(( $(date +%s) - 120 ))" > "$MEMCAP_STATE_HOME/memcap/last-pass"
   run "$MEMCAP_ROOT/bin/memcap" status
   assert_contains "$output" "PROBABLY NOT RUNNING"
-  assert_contains "$output" "brew services start alextitov19/memcap/memcap"
+  assert_contains "$output" "memcap service install"
 }
 
 @test "status does not warn when the last pass is within STALE_PASS_SEC" {
@@ -69,7 +69,7 @@ setup() { setup_common; }
   run "$MEMCAP_ROOT/bin/memcap" status
   assert_contains "$output" "NEVER"
   assert_contains "$output" "NOT RUN SINCE INSTALL"
-  assert_contains "$output" "brew services start alextitov19/memcap/memcap"
+  assert_contains "$output" "memcap service install"
 }
 
 # A paused-but-recently-ticked service is a meaningfully different state from a

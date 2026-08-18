@@ -104,11 +104,12 @@ EOF
   echo
   echo "  Wrote $(mc_config_file)"
   if [ "$no_service" = "0" ]; then
-    start_svc=$(mc_ask "Start the background service now? (yes/no)" "yes")
-    if [ "$start_svc" = "yes" ]; then
-      brew services start memcap 2>/dev/null || \
-        echo "  (not installed via brew yet — run 'brew services start memcap' after installing)"
-    fi
+    start_svc=$(mc_ask "Install and start the background service now? (yes/no)" "yes")
+    # memcap owns and installs its own LaunchAgent (see service.sh) rather than
+    # going through `brew services start` -- Homebrew's own copy of this job is
+    # what `brew upgrade` was found to silently remove. mc_service_install also
+    # migrates away from an existing Homebrew-owned plist if one is found.
+    [ "$start_svc" = "yes" ] && mc_service_install
   fi
   return 0
 }

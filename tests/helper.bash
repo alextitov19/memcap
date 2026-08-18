@@ -5,6 +5,49 @@ setup_common() {
   MEMCAP_STATE_HOME="$BATS_TEST_TMPDIR/state"
   export MEMCAP_CONFIG_HOME MEMCAP_STATE_HOME
   mkdir -p "$MEMCAP_CONFIG_HOME" "$MEMCAP_STATE_HOME"
+
+  # Sandbox for the LaunchAgent feature (service.sh): this machine has a real,
+  # live, enforcing memcap install. `memcap uninstall` already called
+  # `brew services stop memcap` for real, unsandboxed, before this existed --
+  # every bats run of tests/uninstall.bats was quietly attempting to stop this
+  # machine's actual enforcement. A real ~/Library/LaunchAgents write, or a real
+  # launchctl/brew invocation from ANY test (not just service.bats), risks
+  # unloading or deleting memcap's own plist -- the exact bug this feature
+  # exists to fix. Every test gets its own fake LaunchAgent directory and fake
+  # launchctl/brew binaries that log their invocation (for tests that want to
+  # assert on it) instead of touching the real launchd or Homebrew.
+  MEMCAP_LAUNCHAGENT_DIR="$BATS_TEST_TMPDIR/launchagents"
+  FAKE_LAUNCHCTL_LOG="$BATS_TEST_TMPDIR/launchctl.calls"
+  FAKE_LAUNCHCTL_LIST_OUTPUT="$BATS_TEST_TMPDIR/launchctl.list-output"
+  FAKE_BREW_LOG="$BATS_TEST_TMPDIR/brew.calls"
+  FAKE_BREW_PREFIX="${FAKE_BREW_PREFIX:-/opt/homebrew}"
+  export MEMCAP_LAUNCHAGENT_DIR FAKE_LAUNCHCTL_LOG FAKE_LAUNCHCTL_LIST_OUTPUT FAKE_BREW_LOG FAKE_BREW_PREFIX
+  : > "$FAKE_LAUNCHCTL_LOG"
+  : > "$FAKE_BREW_LOG"
+  : > "$FAKE_LAUNCHCTL_LIST_OUTPUT"
+
+  MC_LAUNCHCTL_BIN="$BATS_TEST_TMPDIR/fake-launchctl"
+  cat > "$MC_LAUNCHCTL_BIN" <<'SCRIPT'
+#!/bin/sh
+echo "$@" >> "$FAKE_LAUNCHCTL_LOG"
+case "$1" in
+  list) cat "$FAKE_LAUNCHCTL_LIST_OUTPUT" 2>/dev/null ;;
+esac
+exit 0
+SCRIPT
+  chmod +x "$MC_LAUNCHCTL_BIN"
+
+  MC_BREW_BIN="$BATS_TEST_TMPDIR/fake-brew"
+  cat > "$MC_BREW_BIN" <<'SCRIPT'
+#!/bin/sh
+echo "$@" >> "$FAKE_BREW_LOG"
+case "$1" in
+  --prefix) printf '%s\n' "$FAKE_BREW_PREFIX" ;;
+esac
+exit 0
+SCRIPT
+  chmod +x "$MC_BREW_BIN"
+  export MC_LAUNCHCTL_BIN MC_BREW_BIN
 }
 
 # Bash 3.2 -- the shipped macOS /bin/bash, and what `bats` itself runs under

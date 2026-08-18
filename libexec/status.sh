@@ -46,7 +46,7 @@ mc_render_status() {
   case "$heartbeat_ts" in
     ''|*[!0-9]*)
       heartbeat_line="  last enforcement pass            NEVER"
-      remedy_line="  MEMCAP HAS NOT RUN SINCE INSTALL -- brew services start alextitov19/memcap/memcap"
+      remedy_line="  MEMCAP HAS NOT RUN SINCE INSTALL -- memcap service install"
       ;;
     *)
       age=$((now - heartbeat_ts))
@@ -58,7 +58,7 @@ mc_render_status() {
         heartbeat_line="  last enforcement pass            $(mc_format_age "$age") ago"
       else
         heartbeat_line="  last enforcement pass            $(mc_format_age "$age") ago"
-        remedy_line="  MEMCAP IS PROBABLY NOT RUNNING -- brew services start alextitov19/memcap/memcap"
+        remedy_line="  MEMCAP IS PROBABLY NOT RUNNING -- memcap service install"
       fi
       ;;
   esac

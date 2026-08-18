@@ -32,14 +32,14 @@ packages it so other people can install it in one command.
 
 ## Decisions
 
-| Question | Decision |
-|---|---|
-| Audience | Public, any Mac dev |
-| Scope | AI coding agents and what they spawn (plus the Docker VM and simulators they drive) |
-| Default posture | Full enforcement on install — all three tiers |
-| Docker | Opt-in at init; deferred if containers are running; other runtimes counted but not capped |
-| Integration | Daemon only. No edits to shell rc files or agent config files. |
-| Implementation | Bash, packaged; command surface designed to survive a later Go rewrite |
+| Question        | Decision                                                                                  |
+| --------------- | ----------------------------------------------------------------------------------------- |
+| Audience        | Public, any Mac dev                                                                       |
+| Scope           | AI coding agents and what they spawn (plus the Docker VM and simulators they drive)       |
+| Default posture | Full enforcement on install — all three tiers                                             |
+| Docker          | Opt-in at init; deferred if containers are running; other runtimes counted but not capped |
+| Integration     | Daemon only. No edits to shell rc files or agent config files.                            |
+| Implementation  | Bash, packaged; command surface designed to survive a later Go rewrite                    |
 
 ## Architecture
 
@@ -48,22 +48,41 @@ Two repos:
 - `alextitov19/memcap` — `bin/memcap` (dispatcher) and `libexec/*.sh` (logic).
 - `alextitov19/homebrew-memcap` — the formula.
 
-The formula installs scripts into `libexec`, symlinks `bin/memcap`, and declares a
-service block:
+> **Reversed 2026-08-17 (service ownership).** This section originally read: the
+> formula declares a `service do` block, `brew services start memcap` generates
+> `~/Library/LaunchAgents/homebrew.mxcl.memcap.plist`, and "Homebrew owns the
+> daemon lifecycle; memcap does not hand-write a plist." That was a deliberate
+> choice at the time (see "Why daemon-only" below) to avoid managing plists on
+> other people's machines.
+>
+> **`brew upgrade` was found to remove that plist outright**, not just unload
+> it — confirmed twice, including a 28-hour outage on the author's own machine
+> with no paused marker, no crash evidence, and the plist simply gone. Because
+> `RunAtLoad` lived in a plist that no longer existed, the daemon did not come
+> back at login either. Reporting that correctly (the v0.1.4 heartbeat) is not
+> the same as having a daemon.
+>
+> memcap now installs and owns its own LaunchAgent (`libexec/service.sh`,
+> `memcap service install|uninstall|status`), under a label Homebrew never
+> created and therefore cannot delete (`com.alextitov19.memcap`, never
+> `homebrew.mxcl.memcap`). `memcap init` installs it; `memcap uninstall` removes
+> it. The formula's `service do` block is dropped, so `brew services
+start/stop memcap` is no longer part of the supported workflow — leaving it
+> in would let a user re-arm the exact mechanism this replaces, and running
+> both at once means two `watch` passes racing every 60 seconds against
+> separate snapshots. An existing Homebrew-owned plist from a v0.1.x install is
+> detected and migrated away from (`brew services stop`, then the plist file
+> removed) the first time `memcap service install` runs.
+>
+> The plist content itself was already correct and is unchanged: `RunAtLoad`
+> true, `StartInterval` 60, `ProgramArguments` pointing at the stable
+> `$(brew --prefix)/opt/memcap/bin/memcap` symlink (never a versioned Cellar
+> path) so it survives `brew upgrade` swapping the binary underneath it, and
+> logs at `$(brew --prefix)/var/log/memcap.{log,err}`. Only who owns the file
+> changed.
 
-```ruby
-service do
-  run [opt_bin/"memcap", "watch"]
-  run_type :interval
-  interval 60
-  log_path var/"log/memcap.log"
-  error_log_path var/"log/memcap.err"
-end
-```
-
-`brew services start memcap` generates `~/Library/LaunchAgents/homebrew.mxcl.memcap.plist`,
-which persists across reboots. Homebrew owns the daemon lifecycle; memcap does not
-hand-write a plist.
+The formula installs scripts into `libexec` and symlinks `bin/memcap`. It no
+longer declares a `service do` block — see the reversal note above.
 
 ### Why daemon-only
 
@@ -76,25 +95,28 @@ and budget overruns on its next poll.
 
 ## Components
 
-| Component | Responsibility |
-|---|---|
-| `memcap init` | Detect machine, propose defaults, write config, optionally apply Docker cap, start service |
-| `memcap watch` | One enforcement pass. Invoked by the service every 60s. |
-| `memcap status` | Report current usage against budget; `--log` tails the action log |
-| `memcap clean` | Sweep leftovers immediately |
-| `memcap profile [name]` | List or switch Docker/agent splits |
-| `memcap docker apply` | Apply the VM ceiling when convenient |
-| `memcap off` / `on` | Pause/resume enforcement without uninstalling |
+| Component                                   | Responsibility                                                                                         |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `memcap init`                               | Detect machine, propose defaults, write config, optionally apply Docker cap, install its own service   |
+| `memcap watch`                              | One enforcement pass. Invoked by the service every 60s.                                                |
+| `memcap status`                             | Report current usage against budget, and whether the service itself is running (see `last-pass` above) |
+| `memcap clean`                              | Sweep leftovers immediately                                                                            |
+| `memcap profile [name]`                     | List or switch Docker/agent splits                                                                     |
+| `memcap docker apply`                       | Apply the VM ceiling when convenient                                                                   |
+| `memcap service install\|uninstall\|status` | Install, remove, or check memcap's own LaunchAgent -- see the reversal note above                      |
+| `memcap off` / `on`                         | Pause/resume enforcement without uninstalling                                                          |
 
 ### Files on disk
 
-| Path | Contents |
-|---|---|
-| `~/.config/memcap/memcap.conf` | Config. Shell-sourceable `KEY=value`, hand-editable, never touched by `brew upgrade`. |
-| `~/.local/state/memcap/actions.log` | Every kill, with pid, RSS and full command. What `memcap status --log` tails. |
-| `~/.local/state/memcap/roots` | Learned sweep roots (see below). |
-| `~/.local/state/memcap/paused` | Presence of this file means `memcap off`. Checked first on every pass. |
-| `$(brew --prefix)/var/log/memcap.{log,err}` | Daemon stdout/stderr, owned by Homebrew's service block. |
+| Path                                                  | Contents                                                                                                                                      |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `~/.config/memcap/memcap.conf`                        | Config. Shell-sourceable `KEY=value`, hand-editable, never touched by `brew upgrade`.                                                         |
+| `~/.local/state/memcap/actions.log`                   | Every kill, with pid, RSS and full command. What `memcap status --log` tails.                                                                 |
+| `~/.local/state/memcap/roots`                         | Learned sweep roots (see below).                                                                                                              |
+| `~/.local/state/memcap/last-pass`                     | Epoch seconds of the last completed `watch` pass. What `status` reads to report the service as running, stale, or never started.              |
+| `~/.local/state/memcap/paused`                        | Presence of this file means `memcap off`. Checked first on every pass.                                                                        |
+| `~/Library/LaunchAgents/com.alextitov19.memcap.plist` | memcap's own LaunchAgent, written and owned by `memcap service install` -- see the reversal note above.                                       |
+| `$(brew --prefix)/var/log/memcap.{log,err}`           | Daemon stdout/stderr, still at the same path Homebrew's `service do` block used to configure, now written because memcap's own plist says so. |
 
 State lives under `~/.local/state` rather than beside the config so that deleting state
 never destroys settings.
@@ -113,11 +135,11 @@ idles, which is the correct failure mode.
 
 Named Docker/agent splits of the same total cap, switched with `memcap profile <name>`:
 
-| Profile | Docker | Agents | For |
-|---|---|---|---|
-| `balanced` (default) | 40% of cap | 60% | One stack plus a simulator and dev servers |
-| `stacks` | 65% | 35% | Several container stacks at once |
-| `mobile` | 25% | 75% | Simulators, emulators, Playwright |
+| Profile              | Docker     | Agents | For                                        |
+| -------------------- | ---------- | ------ | ------------------------------------------ |
+| `balanced` (default) | 40% of cap | 60%    | One stack plus a simulator and dev servers |
+| `stacks`             | 65%        | 35%    | Several container stacks at once           |
+| `mobile`             | 25%        | 75%    | Simulators, emulators, Playwright          |
 
 Percentages, not absolute GB, so profiles work on any machine size. Switching only
 rewrites the config; the Docker ceiling needs `memcap docker apply` (or a prompt to run
@@ -140,11 +162,11 @@ the agent budget is negative and the watchdog treats agents as permanently over 
 killing a dev server on every pass. It does not affect 16 GB and larger.
 
 | Machine | Reserve | Cap | Docker slice |
-|---|---|---|---|
-| 16 GB | 6 | 10 | 4 |
-| 24 GB | 8 | 16 | 6 |
-| 32 GB | 11 | 21 | 8 |
-| 64 GB | 16 | 48 | 12 |
+| ------- | ------- | --- | ------------ |
+| 16 GB   | 6       | 10  | 4            |
+| 24 GB   | 8       | 16  | 6            |
+| 32 GB   | 11      | 21  | 8            |
+| 64 GB   | 16      | 48  | 12           |
 
 The 24 GB row reproduces the author's hand-tuned configuration exactly, which is the
 validation case for the formula.
@@ -203,15 +225,15 @@ prototype:
 
 ## Degradation
 
-| Condition | Behavior |
-|---|---|
-| No Docker installed | Docker module skipped; budget covers agents only |
-| OrbStack / Colima / Podman | Usage counted, no ceiling possible; stated once at init |
-| Docker busy at init | Restart deferred, prints `memcap docker apply`. Nothing is written: Docker rewrites its own settings file on quit, so a write made while it runs is clobbered by the very restart that would apply it. |
-| Engine slow after restart | Wait loop, then an explicit message that an empty `docker images` is a slow image-store load and **not** data loss |
-| Intel Mac | Docker VM is hyperkit, not Virtualization.framework; match both |
-| No agents detected | Installs fine; daemon idles until one appears |
-| `top` fails | Fall back to `ps` RSS, log the caveat |
+| Condition                  | Behavior                                                                                                                                                                                               |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| No Docker installed        | Docker module skipped; budget covers agents only                                                                                                                                                       |
+| OrbStack / Colima / Podman | Usage counted, no ceiling possible; stated once at init                                                                                                                                                |
+| Docker busy at init        | Restart deferred, prints `memcap docker apply`. Nothing is written: Docker rewrites its own settings file on quit, so a write made while it runs is clobbered by the very restart that would apply it. |
+| Engine slow after restart  | Wait loop, then an explicit message that an empty `docker images` is a slow image-store load and **not** data loss                                                                                     |
+| Intel Mac                  | Docker VM is hyperkit, not Virtualization.framework; match both                                                                                                                                        |
+| No agents detected         | Installs fine; daemon idles until one appears                                                                                                                                                          |
+| `top` fails                | Fall back to `ps` RSS, log the caveat                                                                                                                                                                  |
 
 The "engine slow after restart" row is a real incident: quitting Docker Desktop to apply
 a new ceiling left `docker images` and `docker ps -a` returning empty for several

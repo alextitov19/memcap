@@ -62,10 +62,16 @@ memcap init
 
 `memcap init` detects your total RAM, core count, and which coding agents are
 installed, proposes a budget split, and writes `~/.config/memcap/memcap.conf`. It
-will offer to start the background service (`brew services start memcap`), which
-is what calls `memcap watch` on a recurring cycle; you can decline and start it
-later, or skip enforcement entirely by answering "no" to the enforce prompt, which
-leaves memcap paused from the start.
+will offer to install and start the background service (`memcap service
+install`), which writes and loads memcap's own LaunchAgent — the thing that
+calls `memcap watch` on a recurring cycle — at
+`~/Library/LaunchAgents/com.alextitov19.memcap.plist`. You can decline and
+install it later with `memcap service install`, or skip enforcement entirely by
+answering "no" to the enforce prompt, which leaves memcap paused from the
+start. (Earlier versions had Homebrew manage this via `brew services start
+memcap`; `brew upgrade` was found to remove that plist outright, so memcap now
+installs and owns it directly — `brew services start/stop memcap` is no longer
+part of the supported workflow.)
 
 Everything is accept-by-Enter. The proposed defaults scale with the machine:
 
@@ -183,8 +189,12 @@ interval) with no `memcap off` in effect, or if it has never run since install,
 
 ```
   last enforcement pass            3d ago
-  MEMCAP IS PROBABLY NOT RUNNING -- brew services start alextitov19/memcap/memcap
+  MEMCAP IS PROBABLY NOT RUNNING -- memcap service install
 ```
+
+`memcap service install` is idempotent — safe to run whether the LaunchAgent
+was never installed, was unloaded somehow, or is fine already — see "Install"
+above and `memcap service status` below.
 
 A paused service with a fresh heartbeat still reads as paused, not dead — the
 heartbeat answers "is the daemon ticking," a different question from "is it
@@ -192,9 +202,9 @@ enforcing," which the `ENFORCEMENT PAUSED` line already covers on its own. Note
 that a fresh heartbeat only means a pass _ran_, not that anything needed doing
 — silence in `actions.log` during a genuinely idle stretch is still normal;
 it's a stale heartbeat spanning time you know you were working that indicates
-a problem. `brew services list | grep memcap` and `tail`ing `actions.log`
-remain useful for a deeper look, but you shouldn't need them just to answer
-"is this running."
+a problem. `memcap service status` and `tail`ing `actions.log` remain useful
+for a deeper look, but you shouldn't need them just to answer "is this
+running."
 
 ## `memcap off`: the panic switch
 
@@ -227,7 +237,10 @@ touch your config or uninstall anything.
 | `memcap on`                     | Resume enforcement.                                                                                                                                                                                                                                               |
 | `memcap profile [name]`         | List the budget profiles (`balanced`, `stacks`, `mobile`), or switch to one — rewrites `DOCKER_BUDGET_GB` in the config.                                                                                                                                          |
 | `memcap docker apply [--force]` | Push `DOCKER_BUDGET_GB`/`DOCKER_CPUS` to the Docker Desktop VM ceiling, plus swap/Resource Saver/auto-pause — see Docker section above; restarts Docker Desktop to do it. Normally refuses while containers are running; `--force` overrides that and stops them. |
-| `memcap uninstall`              | Stop the service and remove memcap's state. Keeps your config. See Uninstall below.                                                                                                                                                                               |
+| `memcap service install`        | Write and load memcap's own LaunchAgent. Idempotent — safe to re-run after a config change or just to confirm it's loaded. Migrates away from an older Homebrew-owned LaunchAgent if one is found.                                                                |
+| `memcap service uninstall`      | Unload and remove memcap's own LaunchAgent (and a lingering Homebrew-owned one, if present). A no-op if nothing is installed.                                                                                                                                     |
+| `memcap service status`         | Report whether memcap's LaunchAgent is installed and loaded.                                                                                                                                                                                                      |
+| `memcap uninstall`              | Remove memcap's own LaunchAgent and state. Keeps your config. See Uninstall below.                                                                                                                                                                                |
 | `memcap help`                   | Usage summary.                                                                                                                                                                                                                                                    |
 
 ## Configuration
@@ -285,6 +298,13 @@ State, at `~/.local/state/memcap/` (override with `MEMCAP_STATE_HOME`):
   stamp before reaping, and every stamp is cleared whenever that condition
   stops holding, or a reap happens.
 
+LaunchAgent, at `~/Library/LaunchAgents/com.alextitov19.memcap.plist` (override
+the directory with `MEMCAP_LAUNCHAGENT_DIR`): written and owned by `memcap
+service install`, which is what `memcap init` calls. Never
+`homebrew.mxcl.memcap.plist` — that label and file belong to Homebrew's own
+copy from older versions, which `memcap service install` detects and migrates
+away from.
+
 All of the above is removed by `memcap uninstall`.
 
 ## Uninstall
@@ -293,12 +313,15 @@ All of the above is removed by `memcap uninstall`.
 memcap uninstall
 ```
 
-This stops the background service and deletes everything under
-`~/.local/state/memcap/` — the action log, the learned sweep roots, and the pause
-marker. It deliberately leaves your config at `~/.config/memcap/memcap.conf` in
-place; it prints that path so you know where it is, and does not delete it for
-you, because you may be about to reinstall rather than leave for good. Remove it
-yourself if you want a clean slate, then:
+This unloads and removes memcap's own LaunchAgent
+(`~/Library/LaunchAgents/com.alextitov19.memcap.plist`) — and a lingering
+Homebrew-owned one from an older install, if it finds one — then deletes
+everything under `~/.local/state/memcap/`: the action log, the learned sweep
+roots, the heartbeat, and the pause marker. It deliberately leaves your config
+at `~/.config/memcap/memcap.conf` in place; it prints that path so you know
+where it is, and does not delete it for you, because you may be about to
+reinstall rather than leave for good. Remove it yourself if you want a clean
+slate, then:
 
 ```bash
 brew uninstall memcap
