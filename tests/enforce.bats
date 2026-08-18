@@ -38,6 +38,35 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+# --- Heartbeat: mc_watch must stamp every path that completes -----------------
+# `status`'s only way to tell "not running" from "nothing to do" is this stamp.
+# It has to land on the paused and misconfigured-budget early returns too, not
+# just the normal completion at the bottom -- those are exactly the states
+# where a real user is most likely to be looking at `status` wondering whether
+# the silence means the daemon died.
+@test "watch stamps a heartbeat on a normal completed pass" {
+  run "$MEMCAP_ROOT/bin/memcap" watch
+  [ -f "$MEMCAP_STATE_HOME/memcap/last-pass" ]
+}
+
+@test "watch stamps a heartbeat on the paused early return" {
+  "$MEMCAP_ROOT/bin/memcap" off
+  run "$MEMCAP_ROOT/bin/memcap" watch
+  [ -f "$MEMCAP_STATE_HOME/memcap/last-pass" ]
+  "$MEMCAP_ROOT/bin/memcap" on
+}
+
+@test "watch stamps a heartbeat on the misconfigured-budget early return" {
+  mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
+  cat > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" <<-'EOF'
+	TOTAL_BUDGET_GB=10
+	DOCKER_BUDGET_GB=10
+	EOF
+  run "$MEMCAP_ROOT/bin/memcap" watch
+  [ "$status" -eq 1 ]
+  [ -f "$MEMCAP_STATE_HOME/memcap/last-pass" ]
+}
+
 @test "init writes a config with a cap matching this machine" {
   run bash -c "yes '' | '$MEMCAP_ROOT/bin/memcap' init --no-service --no-docker"
   [ "$status" -eq 0 ]

@@ -165,27 +165,36 @@ your own swap size, `memcap docker apply` overwrites it to 2 GB.
 ## Checking it is actually running
 
 memcap is a background service, and a stopped service looks exactly like a quiet
-one: `memcap status` still prints a budget, nothing errors, and no notification
-appears. The author's own machine went 28 hours without enforcement before this
-was noticed. Until `status` reports service health itself, check it directly:
+one: `memcap status` used to still print a budget, nothing errored, and no
+notification appeared. The author's own machine went 28 hours without
+enforcement before this was noticed, by chance.
 
-```bash
-brew services list | grep memcap        # want: started, or scheduled between ticks
-tail -3 ~/.local/state/memcap/actions.log
+`status` now reports this itself. Every completed `watch` pass — including a
+paused one, and one that declined to run because `memcap.conf` is misconfigured
+— stamps a heartbeat, and `status` renders how long ago that was:
+
+```
+  last enforcement pass            12s ago
 ```
 
-`scheduled` and `started` are both healthy — an interval service reads as
-`scheduled` while waiting for its next tick. `none` means it is not running:
+Past `STALE_PASS_SEC` (default 300, five ticks of the 60-second service
+interval) with no `memcap off` in effect, or if it has never run since install,
+`status` says so plainly and gives the exact command to fix it:
 
-```bash
-brew services start alextitov19/memcap/memcap
+```
+  last enforcement pass            3d ago
+  MEMCAP IS PROBABLY NOT RUNNING -- brew services start alextitov19/memcap/memcap
 ```
 
-The action log is the better signal, because it shows whether passes are
-actually happening. A last entry from days ago, with no `memcap off` in effect,
-means enforcement stopped. Note that memcap only writes when it acts or
-declines, so silence during genuinely idle periods is normal — it is a long gap
-spanning time you know you were working that indicates a problem.
+A paused service with a fresh heartbeat still reads as paused, not dead — the
+heartbeat answers "is the daemon ticking," a different question from "is it
+enforcing," which the `ENFORCEMENT PAUSED` line already covers on its own. Note
+that a fresh heartbeat only means a pass _ran_, not that anything needed doing
+— silence in `actions.log` during a genuinely idle stretch is still normal;
+it's a stale heartbeat spanning time you know you were working that indicates
+a problem. `brew services list | grep memcap` and `tail`ing `actions.log`
+remain useful for a deeper look, but you shouldn't need them just to answer
+"is this running."
 
 ## `memcap off`: the panic switch
 
@@ -238,6 +247,7 @@ computed default if it is absent or commented out.
 | `SIM_IDLE_GRACE_SEC` | `600`             | How long simulators, emulators, and Playwright browsers must sit idle — no agent session alive, Xcode/Android Studio/Simulator.app all closed — before tier 3 will shut them down. Each tracked process earns its own clock, starting the moment memcap first sees it idle, not a single clock shared by every simulator on the machine — booting a second simulator by hand does not inherit however long an unrelated, already-idle process has been sitting there. Tier 3 only acts once every currently-tracked process has individually cleared the grace, so one freshly-booted simulator holds the whole pass back rather than being swept in early alongside an older one. The clock for a process restarts if an agent session reappears or one of those apps opens, and every clock clears once a reap happens. |
 | `EXTRA_AGENTS`       | empty             | Extra agent binary names to recognize, beyond the built-in list (`claude codex cursor-agent aider gemini amp opencode goose crush`). Also spliced into the process-classification regex, so avoid regex metacharacters in the names you add.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `LOG_THROTTLE_SEC`   | `1800`            | How long a repeating per-pass status line (tier 3 declining, or the combined cap being exceeded) is suppressed after it first logs, so a condition that holds across many consecutive polls doesn't drown `actions.log`'s kill records. Killed-process records are never throttled. Set to `0` to log every occurrence, e.g. while debugging. A state change — the condition stopping and later holding again — always gets its own line even inside the window.                                                                                                                                                                                                                                                                                                                                                          |
+| `STALE_PASS_SEC`     | `300`             | How long since the last completed `watch` pass before `status` reports the service as probably not running, rather than just "quiet." Five ticks of the default 60-second service interval — long enough to absorb one missed tick without a false alarm.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## Files on disk
 
@@ -261,6 +271,10 @@ State, at `~/.local/state/memcap/` (override with `MEMCAP_STATE_HOME`):
   above), cleared the moment that key's condition stops holding so the next
   occurrence logs immediately rather than waiting out a stale window.
 - `roots` — the learned sweep roots, one canonicalized path per line.
+- `last-pass` — epoch seconds of the last completed `watch` pass, written on
+  every path through `watch` including paused and misconfigured-budget early
+  returns. What `status` reads to report the service as running, stale, or
+  never started — see "Checking it is actually running" above.
 - `paused` — present exactly when `memcap off` is in effect; its absence means
   enforcement is active.
 - `.notified` — a timestamp used to rate-limit desktop notifications to at most

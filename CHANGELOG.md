@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`status` now reports whether memcap is actually running.** A stopped
+  service looked exactly like a quiet one: `status` still printed a full
+  budget, nothing errored, and no notification fired. The author's own machine
+  went 28 hours without enforcement before this was noticed, by chance — no
+  paused marker, no crash evidence, nothing but a stale `actions.log`.
+
+  `watch` now stamps `last-pass` with epoch seconds on every pass it
+  completes, including the paused and misconfigured-budget early returns, and
+  `status` renders how long ago that was: fresh ("`12s ago`"), stale past
+  `STALE_PASS_SEC` (default 300) with the exact command to restart the
+  service, or never run since install. A paused service with a fresh
+  heartbeat still reads as paused, not dead. `status`'s exit code is
+  unchanged either way — it stays an informational command.
+
+### Configuration
+
+- Added `STALE_PASS_SEC` (default `300`).
+
 ## v0.1.3 — 2026-08-17
 
 **The first release with passing CI.** Use this one. Every earlier tag ships at

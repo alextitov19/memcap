@@ -324,7 +324,7 @@ mc_reap_sims() {
 }
 
 mc_watch() {
-  if mc_is_paused; then echo "memcap is paused (memcap on to resume)"; return 0; fi
+  if mc_is_paused; then echo "memcap is paused (memcap on to resume)"; mc_stamp_heartbeat; return 0; fi
   local total cap docker_budget agents_budget agent_net_gb over free
   local agent_gb docker_gb combined_gb gross_over
   eval "$(mc_ps_snapshot | mc_classify)"
@@ -341,6 +341,7 @@ mc_watch() {
   if [ "$agents_budget" -lt 1 ]; then
     mc_log "watch: refusing to act -- DOCKER_BUDGET_GB ($docker_budget) leaves no room in TOTAL_BUDGET_GB ($cap)"
     echo "memcap.conf is misconfigured: DOCKER_BUDGET_GB ($docker_budget) >= TOTAL_BUDGET_GB ($cap). Fix memcap.conf; not enforcing."
+    mc_stamp_heartbeat
     return 1
   fi
   # Net of sims, not the gross AGENT_KB: sims still count toward the combined cap and
@@ -386,5 +387,6 @@ mc_watch() {
       mc_log_throttle_clear "combined-over-cap"
     fi
   fi
+  mc_stamp_heartbeat
   return 0
 }

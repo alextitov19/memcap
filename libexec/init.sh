@@ -96,6 +96,7 @@ SOFT_TRIGGER=0.80
 MIN_FREE_PCT=15
 TIER2_MIN_AGE_SEC=300
 SIM_IDLE_GRACE_SEC=600
+STALE_PASS_SEC=300
 EXTRA_AGENTS=""
 EOF
   [ "$enforce" = "no" ] && touch "$(mc_state_dir)/paused"

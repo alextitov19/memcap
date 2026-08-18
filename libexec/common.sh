@@ -14,6 +14,19 @@ mc_log() {
 
 mc_is_paused() { [ -f "$(mc_state_dir)/paused" ]; }
 
+# A stopped service looks exactly like a quiet one: `status` still prints a full
+# budget, nothing errors, no notification fires. Only the author noticing 28
+# hours of silence caught it -- not paused, not rebooted, no evidence of a
+# cause. This stamp is `status`'s only way to tell "not running" from "nothing
+# to do". Written on every mc_watch invocation that completes, including the
+# paused and misconfigured-budget early returns -- it answers "is the daemon
+# ticking", a different question from "is it enforcing", which those paths
+# already report on their own.
+mc_stamp_heartbeat() {
+  mkdir -p "$(mc_state_dir)"
+  date +%s > "$(mc_state_dir)/last-pass"
+}
+
 # For status lines that would otherwise repeat on every single pass -- "an agent
 # session is alive", "combined exceeds the cap" -- rather than a discrete event
 # like a kill. Unthrottled, these drowned the actual audit trail: on the author's
