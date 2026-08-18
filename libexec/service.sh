@@ -84,8 +84,15 @@ PLIST
 # passes race every 60 seconds -- two processes making kill decisions off two
 # separate snapshots. `brew services stop` is best-effort: it can fail if brew
 # itself no longer tracks the formula as a service, or isn't on PATH in this
-# shell, which is reported but not fatal, since removing the plist file a few
-# lines later is what actually neutralizes it either way.
+# shell, which is reported but not fatal, since removing the plist file is
+# what actually neutralizes it. That removal is NOT best-effort, though: it is
+# verified, not assumed. `rm -f` can fail silently for reasons that have
+# nothing to do with brew -- an immutable flag, permissions, a read-only
+# filesystem -- and letting install proceed anyway would leave the machine
+# with BOTH agents loaded: the exact double-agent race this migration exists
+# to prevent, arriving through the code written to prevent it. Failing closed
+# here costs the user one manual `rm`; failing open costs them two processes
+# racing to kill things.
 mc_migrate_homebrew_launchagent() {
   local old; old="$(mc_homebrew_launchagent_plist)"
   [ -f "$old" ] || return 0
@@ -94,6 +101,10 @@ mc_migrate_homebrew_launchagent() {
     echo "  (brew services stop memcap found nothing to stop -- continuing)" >&2
   "$(mc_launchctl_bin)" unload "$old" >/dev/null 2>&1 || true
   rm -f "$old"
+  if [ -f "$old" ]; then
+    echo "Failed to remove $old -- refusing to install memcap's own LaunchAgent alongside it, which would leave both loaded and racing. Remove $old by hand (check permissions and the immutable/uchg flag: 'chflags nouchg \"$old\"'), then re-run 'memcap service install'." >&2
+    return 1
+  fi
 }
 
 # Idempotent: safe to run again after a config change, a brew prefix change, or
@@ -101,12 +112,34 @@ mc_migrate_homebrew_launchagent() {
 # takes effect immediately rather than waiting for the next login; unloading
 # something not currently loaded is a harmless no-op error, suppressed.
 mc_service_install() {
-  mc_migrate_homebrew_launchagent
-  local dir plist
+  mc_migrate_homebrew_launchagent || return 1
+  local dir plist tmp
   dir="$(mc_launchagent_dir)"
   plist="$(mc_launchagent_plist)"
   mkdir -p "$dir"
-  mc_launchagent_plist_content > "$plist"
+  # Written to a temp file IN THE SAME DIRECTORY (not /tmp -- `mv` across
+  # filesystems is not atomic) and verified before it ever replaces a working
+  # plist. `mc_launchagent_plist_content > "$plist"` directly would truncate
+  # the target immediately: a content-generation failure partway through, or
+  # the process being interrupted mid-write, leaves a truncated plist on disk
+  # having already destroyed a working one. This way, an interrupt leaves the
+  # temp file orphaned and the old plist (if any) untouched.
+  tmp=$(mktemp "$dir/.${MC_LAUNCHAGENT_LABEL}.XXXXXX") || {
+    echo "Failed to create a temp file in $dir -- not touching $plist" >&2
+    return 1
+  }
+  mc_launchagent_plist_content > "$tmp"
+  if [ ! -s "$tmp" ]; then
+    rm -f "$tmp"
+    echo "Failed to generate plist content -- not touching $plist" >&2
+    return 1
+  fi
+  if command -v plutil >/dev/null 2>&1 && ! plutil -lint "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    echo "Generated plist failed validation -- not touching $plist" >&2
+    return 1
+  fi
+  mv "$tmp" "$plist"
   "$(mc_launchctl_bin)" unload "$plist" >/dev/null 2>&1 || true
   if "$(mc_launchctl_bin)" load -w "$plist" >/dev/null 2>&1; then
     echo "Installed and loaded $plist"

@@ -1,6 +1,16 @@
 load helper
 setup() { setup_common; }
 
+# A test below makes MEMCAP_LAUNCHAGENT_DIR read-only to force `rm -f` to fail
+# closed. This runs regardless of whether the test that did it passed or
+# failed, so a stuck permission bit never survives into bats' own tmp-dir
+# cleanup for this or any later test.
+teardown() {
+  if [ -d "$MEMCAP_LAUNCHAGENT_DIR" ]; then
+    chmod -R u+w "$MEMCAP_LAUNCHAGENT_DIR" 2>/dev/null || true
+  fi
+}
+
 # --- Plist content -------------------------------------------------------
 
 @test "service install writes a plist with the right label, RunAtLoad, and StartInterval" {
@@ -143,6 +153,68 @@ setup() { setup_common; }
 
   [ -f "$MEMCAP_LAUNCHAGENT_DIR/com.alextitov19.memcap.plist" ]
   [ ! -f "$MEMCAP_LAUNCHAGENT_DIR/homebrew.mxcl.memcap.plist" ]
+}
+
+# --- Fail-closed: a migration that cannot actually remove the old plist ------
+# must abort the install, not proceed. `rm -f` can fail silently for reasons
+# unrelated to brew -- permissions, an immutable flag, a read-only filesystem
+# -- and installing memcap's own agent anyway would leave BOTH loaded: the
+# double-agent race this migration exists to prevent, arriving through the
+# code written to prevent it. Forced here by making the LaunchAgent directory
+# itself read-only, which makes `rm -f` on a file inside it fail regardless of
+# the file's own permissions -- `teardown()` above restores it afterward.
+@test "a migration that fails to remove the old plist aborts the install" {
+  mkdir -p "$MEMCAP_LAUNCHAGENT_DIR"
+  old="$MEMCAP_LAUNCHAGENT_DIR/homebrew.mxcl.memcap.plist"
+  echo "<plist/>" > "$old"
+  chmod 555 "$MEMCAP_LAUNCHAGENT_DIR"
+
+  run "$MEMCAP_ROOT/bin/memcap" service install
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Failed to remove $old"
+  assert_contains "$output" "$old"
+
+  # The old plist is still there (removal genuinely failed) and no new plist
+  # was written alongside it -- not two agents, not zero, but the one that was
+  # already there, untouched, with a message telling the user what to do.
+  [ -f "$old" ]
+  [ ! -f "$MEMCAP_LAUNCHAGENT_DIR/com.alextitov19.memcap.plist" ]
+}
+
+# --- Atomic write: a failed generation must not destroy a working plist -----
+# `mc_launchagent_plist_content > "$plist"` directly would truncate the target
+# immediately, before any content lands -- a generation failure or an
+# interrupt partway through leaves a truncated plist where a working one used
+# to be. The fix writes to a temp file in the same directory first and checks
+# it is non-empty before ever replacing the real plist. Forced here with a
+# function-level override of mc_launchagent_plist_content -- valid in this
+# form because the override is defined in the same subshell that sources
+# service.sh and calls mc_service_install directly, so nothing re-sources the
+# file afterward to clobber it (unlike a real `bin/memcap` invocation).
+@test "a failed plist generation does not touch an existing working plist, and install fails" {
+  "$MEMCAP_ROOT/bin/memcap" service install >/dev/null
+  plist="$MEMCAP_LAUNCHAGENT_DIR/com.alextitov19.memcap.plist"
+  before=$(cat "$plist")
+
+  run env MEMCAP_LAUNCHAGENT_DIR="$MEMCAP_LAUNCHAGENT_DIR" MC_LAUNCHCTL_BIN="$MC_LAUNCHCTL_BIN" MC_BREW_BIN="$MC_BREW_BIN" bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/service.sh'
+    mc_launchagent_plist_content() { :; }
+    mc_service_install
+  "
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Failed to generate plist content"
+
+  after=$(cat "$plist")
+  [ "$before" = "$after" ]
+}
+
+# No leftover temp file after a normal install -- the mktemp'd file is always
+# either renamed into place or removed, never abandoned.
+@test "service install leaves no orphaned temp file behind" {
+  "$MEMCAP_ROOT/bin/memcap" service install >/dev/null
+  run bash -c "ls -A '$MEMCAP_LAUNCHAGENT_DIR'"
+  assert_not_contains "$output" ".com.alextitov19.memcap."
 }
 
 @test "service install with no Homebrew plist present does not touch brew services" {
