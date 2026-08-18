@@ -162,6 +162,31 @@ down when nothing is running, and auto-pause suspends it during inactivity —
 they just were not previously mentioned anywhere. If you had deliberately set
 your own swap size, `memcap docker apply` overwrites it to 2 GB.
 
+## Checking it is actually running
+
+memcap is a background service, and a stopped service looks exactly like a quiet
+one: `memcap status` still prints a budget, nothing errors, and no notification
+appears. The author's own machine went 28 hours without enforcement before this
+was noticed. Until `status` reports service health itself, check it directly:
+
+```bash
+brew services list | grep memcap        # want: started, or scheduled between ticks
+tail -3 ~/.local/state/memcap/actions.log
+```
+
+`scheduled` and `started` are both healthy — an interval service reads as
+`scheduled` while waiting for its next tick. `none` means it is not running:
+
+```bash
+brew services start alextitov19/memcap/memcap
+```
+
+The action log is the better signal, because it shows whether passes are
+actually happening. A last entry from days ago, with no `memcap off` in effect,
+means enforcement stopped. Note that memcap only writes when it acts or
+declines, so silence during genuinely idle periods is normal — it is a long gap
+spanning time you know you were working that indicates a problem.
+
 ## `memcap off`: the panic switch
 
 If memcap ever does something you don't want, or you just want it out of the way:
