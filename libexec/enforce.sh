@@ -221,14 +221,81 @@ mc_kill_over_budget() {
   return 0
 }
 
-# Tier 3: only when no agent session is alive, and never during hands-on mobile work.
+# `ps -o time=` (accumulated CPU) is NOT the same shape as `ps -o etime=`
+# (mc_etime_secs above), despite looking similar at a glance -- confirmed
+# empirically, not assumed: a process at 6 days' uptime showed `time` as
+# "2960:52.31", never rolling into an hour or day segment the way `etime`
+# does ("06-06:50:15" for the same process, same instant). `time` is plain
+# MINUTES:SECONDS(.hundredths), with minutes growing unbounded. The
+# fractional part is dropped -- sub-second precision doesn't matter against a
+# multi-minute grace window.
+mc_cputime_secs() {
+  local raw="${1//[[:space:]]/}" m s
+  [ -z "$raw" ] && return 1
+  case "$raw" in
+    *:*) m="${raw%%:*}"; s="${raw#*:}" ;;
+    *)   return 1 ;;
+  esac
+  s="${s%%.*}"
+  case "$m$s" in *[!0-9]*) return 1 ;; esac
+  echo $(( (10#$m * 60) + 10#$s ))
+}
+
+# Tier 3: reclaims idle simulators/browsers. Vetoed by hands-on mobile work
+# (below, unchanged) and by active mobile tooling actually driving a
+# simulator -- xcodebuild and detox are distinctive process names on their
+# own (matched on argv[0]/comm via `pgrep -x`, the same "argv[0], not the
+# whole command line" rule as everywhere else in this file); expo and
+# react-native are commonly launched through node, so argv[0] alone ("node")
+# would be too broad, matched instead on the tool name followed by a
+# subcommand a casual mention cannot produce; maestro runs as a JVM process,
+# identified by the same narrow argv pattern MC_SIM_ARG-equivalent matching
+# already uses for it elsewhere.
+#
+# Escape hatches, same pattern as MC_DOCKER_RUNTIME (docker.sh): both checks
+# depend entirely on what's running on the host, with no way to make them
+# deterministic in an environment that happens to have one of these processes
+# alive for an unrelated reason. Discovered empirically, not hypothetically:
+# this development machine runs a maestro MCP server in the background (`java
+# ... maestro.cli.AppKt mcp`, unrelated to any simulator use), which matched
+# the maestro pattern below and made tier 3's own test suite non-deterministic
+# depending on which MCP servers or IDEs happen to be running wherever `bats
+# tests/` executes -- the same class of portability bug as an unavailable
+# Docker Desktop or a symlinked $HOME in earlier rounds. A plain environment
+# variable survives into any subprocess normally, unlike a function-level
+# stub, which a real `bin/memcap` invocation's own re-sourcing would clobber.
+mc_active_mobile_tooling() {
+  if [ -n "${MC_ACTIVE_MOBILE_TOOLING:-}" ]; then
+    [ "$MC_ACTIVE_MOBILE_TOOLING" = "1" ]
+    return
+  fi
+  pgrep -qx xcodebuild 2>/dev/null && return 0
+  pgrep -qx detox 2>/dev/null && return 0
+  pgrep -qf '(^|/| )expo[[:space:]]+(start|run:ios|run:android)' 2>/dev/null && return 0
+  pgrep -qf '(^|/| )react-native[[:space:]]+(run-ios|run-android|start)' 2>/dev/null && return 0
+  pgrep -qf '\.maestro/lib|maestro\.cli' 2>/dev/null && return 0
+  return 1
+}
+
 mc_hands_on_mobile() {
+  if [ -n "${MC_HANDS_ON_MOBILE:-}" ]; then
+    [ "$MC_HANDS_ON_MOBILE" = "1" ]
+    return
+  fi
   pgrep -qf '/Xcode\.app/Contents/MacOS/Xcode' 2>/dev/null && return 0
   pgrep -qf 'Android Studio\.app/Contents/MacOS' 2>/dev/null && return 0
   pgrep -qf '/Simulator\.app/Contents/MacOS/Simulator' 2>/dev/null && return 0
   return 1
 }
 
+# Restores the pre-v0.3.0 behavior for TIER3_REQUIRE_NO_SESSION=1: tier 3
+# never reaps while any agent session is alive, full stop. That was the
+# original design -- a conservative stand-in chosen because sims can't be
+# attributed to a session by process tree (CoreSimulatorService owns them),
+# not a deliberate "only when idle AND alone" rule. In 1,643 real passes on a
+# machine that always has a session open it fired zero times: tier 3 was both
+# dead and load-bearing for the sim memory the budget keeps counting. Kept as
+# an opt-in for anyone who wants the old, maximally conservative posture.
 mc_no_live_session() {
   local pid
   for pid in $AGENTPIDS; do kill -0 "$pid" 2>/dev/null && return 1; done
@@ -255,32 +322,14 @@ mc_sims_idle_dir() { printf '%s/sims-idle\n' "$(mc_state_dir)"; }
 mc_sims_idle_stamp() { printf '%s/%s\n' "$(mc_sims_idle_dir)" "$1"; }
 
 mc_reap_sims() {
-  local pid targets="" dir stamp first now grace all_ready=1
-  dir="$(mc_sims_idle_dir)"
+  local pid targets="" dir stamp first cpu_baseline cpu_now cpu_delta now grace active_cpu_sec all_ready=1
 
-  # Throttled, not mc_log: this fires on every single pass for as long as the
-  # tool's normal operating state holds (an agent session alive is the premise
-  # the whole tool runs under), and unthrottled it drowned the actual kill
-  # records -- see mc_log_throttled in common.sh. Each reason's key is cleared
-  # the moment its own condition stops holding, so a state change -- the agent
-  # session ending and a later one starting, say -- still gets its own line
-  # rather than silently reusing a window left over from the last occurrence.
-  if ! mc_no_live_session; then
-    mc_log_throttled "tier3-agent-alive" "tier3: declining -- an agent session is alive"
-    rm -rf "$dir"
-    return 0
-  fi
-  mc_log_throttle_clear "tier3-agent-alive"
-  if mc_hands_on_mobile; then
-    mc_log_throttled "tier3-hands-on-mobile" "tier3: declining -- hands-on mobile work detected (Xcode, Android Studio, or Simulator.app open)"
-    rm -rf "$dir"
-    return 0
-  fi
-  mc_log_throttle_clear "tier3-hands-on-mobile"
+  dir="$(mc_sims_idle_dir)"
 
   # Prune stamps for pids no longer alive or no longer sim-classified, so a reused
   # pid number cannot inherit a stale idle clock and an exited sim does not leave a
-  # stray file behind forever.
+  # stray file behind forever. Runs unconditionally, ahead of every veto below --
+  # pure garbage collection, unrelated to whether a reap is currently permitted.
   if [ -d "$dir" ]; then
     for stamp in "$dir"/*; do
       [ -e "$stamp" ] || continue
@@ -292,22 +341,93 @@ mc_reap_sims() {
     done
   fi
 
-  if [ -z "${SIMPIDS// /}" ]; then
-    return 0
+  # Idle/CPU bookkeeping runs BEFORE the veto checks below (when there is
+  # anything to track at all), and no veto ever deletes it -- contrast the old
+  # `rm -rf "$dir"` on every decline, which reset every sim's clock to zero on
+  # every single pass under continuous agent use, so tier 3 could not fire
+  # even in principle. A veto still blocks the kill a few lines down; it just
+  # no longer erases the evidence that a sim has been idle while the veto was
+  # in effect, so idle time keeps accumulating honestly regardless of which
+  # gate currently blocks the actual reap. A no-op when SIMPIDS is empty --
+  # the vetoes below are still checked and logged in that case, matching the
+  # pre-existing behavior of logging why tier 3 declined even on a pass with
+  # nothing currently tracked.
+  if [ -n "${SIMPIDS// /}" ]; then
+    mkdir -p "$dir"
+    now=$(date +%s)
+    grace="${SIM_IDLE_GRACE_SEC:-600}"
+    active_cpu_sec="${SIM_ACTIVE_CPU_SEC:-2}"
+    for pid in $SIMPIDS; do
+      stamp="$(mc_sims_idle_stamp "$pid")"
+      # Reset explicitly before the read, not just defaulted after: a `read
+      # ... < "$stamp"` against a stamp that doesn't exist yet fails the
+      # REDIRECTION itself (before `read` ever runs), which both prints a
+      # "No such file or directory" straight past a trailing `2>/dev/null`
+      # (confirmed empirically -- that redirects read's own stderr, not the
+      # shell's redirection-setup failure) AND, worse, leaves $first and
+      # $cpu_baseline holding whatever the PREVIOUS pid in this loop set them
+      # to, since a command that never ran cannot have assigned anything.
+      # Without this reset, a freshly-seen pid silently inherited an earlier
+      # pid's clock instead of starting its own.
+      first=""; cpu_baseline=""
+      if [ -f "$stamp" ]; then
+        # shellcheck disable=SC2162
+        read -r first cpu_baseline < "$stamp"
+      fi
+      first="${first:-0}"
+      cpu_now=$(mc_cputime_secs "$(ps -o time= -p "$pid" 2>/dev/null)") || cpu_now=""
+
+      if [ "$first" = "0" ]; then
+        # Never tracked before: start the clock now. Nothing to compare CPU
+        # against yet on this very pass, so the starting baseline is simply
+        # whatever it already has.
+        first="$now"
+        cpu_baseline="${cpu_now:-0}"
+        printf '%s %s\n' "$first" "$cpu_baseline" > "$stamp"
+      elif [ -z "$cpu_now" ]; then
+        # Could not sample CPU this pass (pid raced between snapshot and
+        # check, ps failed). A measurement gap is not evidence of activity,
+        # but it is not evidence of idleness either -- hold the reap without
+        # resetting the clock over it.
+        all_ready=0
+      else
+        cpu_delta=$(( cpu_now - ${cpu_baseline:-0} ))
+        if [ "$cpu_delta" -ge "$active_cpu_sec" ]; then
+          # Real CPU work happened since the clock started -- this is what
+          # "in use" actually looks like, unlike merely having a session
+          # open. A booted-but-unused simulator burns approximately zero
+          # CPU; this is the signal that replaces the blanket session veto.
+          first="$now"
+          cpu_baseline="$cpu_now"
+          printf '%s %s\n' "$first" "$cpu_baseline" > "$stamp"
+        fi
+      fi
+      [ $((now - first)) -lt "$grace" ] && all_ready=0
+    done
   fi
 
-  mkdir -p "$dir"
-  now=$(date +%s)
-  grace="${SIM_IDLE_GRACE_SEC:-600}"
-  for pid in $SIMPIDS; do
-    stamp="$(mc_sims_idle_stamp "$pid")"
-    first=$(cat "$stamp" 2>/dev/null || echo 0)
-    if [ "$first" = "0" ]; then
-      first="$now"
-      echo "$first" > "$stamp"
-    fi
-    [ $((now - first)) -lt "$grace" ] && all_ready=0
-  done
+  # Vetoes, checked after the bookkeeping above so idle/CPU evidence keeps
+  # accumulating even while one is in effect. Throttled, not mc_log: each can
+  # hold for as long as the tool's normal operating state does, and unthrottled
+  # they drowned the actual kill records -- see mc_log_throttled in common.sh.
+  # Each reason's key clears the moment its own condition stops holding, so a
+  # state change still gets its own line rather than reusing a stale window.
+  if [ "${TIER3_REQUIRE_NO_SESSION:-0}" = "1" ] && ! mc_no_live_session; then
+    mc_log_throttled "tier3-agent-alive" "tier3: declining -- an agent session is alive (TIER3_REQUIRE_NO_SESSION=1)"
+    return 0
+  fi
+  mc_log_throttle_clear "tier3-agent-alive"
+  if mc_active_mobile_tooling; then
+    mc_log_throttled "tier3-active-tooling" "tier3: declining -- active mobile tooling detected (maestro, xcodebuild, expo, react-native, or detox)"
+    return 0
+  fi
+  mc_log_throttle_clear "tier3-active-tooling"
+  if mc_hands_on_mobile; then
+    mc_log_throttled "tier3-hands-on-mobile" "tier3: declining -- hands-on mobile work detected (Xcode, Android Studio, or Simulator.app open)"
+    return 0
+  fi
+  mc_log_throttle_clear "tier3-hands-on-mobile"
+
   [ "$all_ready" = "0" ] && return 0
 
   if [ "$MC_DRY_RUN" != "1" ] && xcrun simctl list devices booted 2>/dev/null | grep -q Booted; then
@@ -317,9 +437,19 @@ mc_reap_sims() {
   for pid in $SIMPIDS; do
     ps -o command= -p "$pid" 2>/dev/null | grep -Eq "$MC_SIM_KILL_PATTERN" || continue
     targets="$targets $pid"
+    # Audit detail beyond mc_kill_pids' own log line: which pid, why it was
+    # judged idle, and how long it had been flat -- what makes a reclaim
+    # reviewable after the fact rather than just a bare kill record.
+    stamp="$(mc_sims_idle_stamp "$pid")"
+    first=""; cpu_baseline=""
+    if [ -f "$stamp" ]; then
+      # shellcheck disable=SC2162
+      read -r first cpu_baseline < "$stamp"
+    fi
+    [ -z "$first" ] && first="$now"
+    mc_log "tier3: reclaiming pid $pid -- idle $((now - first))s, CPU flat at ~${cpu_baseline:-0}s accumulated"
   done
   [ -n "${targets// /}" ] && mc_kill_pids "$targets" "tier3 idle simulator"
-  rm -rf "$dir"
   return 0
 }
 

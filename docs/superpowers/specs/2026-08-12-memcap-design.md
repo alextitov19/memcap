@@ -183,8 +183,29 @@ Escalating, and no tier ever touches an agent CLI itself:
    what keeps builds from ever being the victim. If every candidate is too young,
    memcap warns instead of killing.
 3. **Idle simulators** — iOS Simulators, Android emulators, Playwright browsers and
-   Maestro, but only when no agent session is alive, and never while Xcode or Android
-   Studio is open.
+   Maestro, reclaimed once genuinely idle, and never while Xcode, Android Studio,
+   or Simulator.app is open.
+
+   > **Reversed 2026-08-18 (idleness signal).** This originally read "only when
+   > no agent session is alive" -- "an agent session is alive" was chosen as a
+   > conservative stand-in for "a simulator is in use," because a simulator
+   > can't be attributed to a session by process tree (CoreSimulatorService
+   > owns it, not the session that booted it). Production data showed the
+   > proxy never released: tier 3 fired zero times in 1,643 real
+   > opportunities on a machine that always has an agent session open, while
+   > `rm -rf` on every decline reset every sim's idle clock to zero on every
+   > single pass -- tier 3 could not fire even in principle. Idleness is now
+   > measured directly: each tracked sim's own accumulated CPU time is
+   > sampled, and a pid that stays flat for the full grace period is
+   > reclaimed regardless of whether a session is open, since a
+   > booted-but-unused simulator burns approximately zero CPU either way.
+   > Active mobile tooling actually driving a simulator (`maestro`,
+   > `xcodebuild`, `expo`, `react-native`, `detox`) and hands-on mobile work
+   > (Xcode/Android Studio/Simulator.app open, kept exactly as it was) remain
+   > independent vetoes -- both are stronger, more certain evidence than a CPU
+   > sample and block a reap outright. `TIER3_REQUIRE_NO_SESSION=1` restores
+   > the original behavior for anyone who wants the maximally conservative
+   > posture back.
 
 ### Sweep roots are learned, not configured
 

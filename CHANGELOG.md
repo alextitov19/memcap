@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Tier 3 no longer declines just because an agent session is alive.**
+  Production data: it fired zero times in 1,643 real opportunities on a
+  machine that always has a session open, while `rm -rf` on every decline
+  reset every tracked simulator's idle clock to zero on every single pass —
+  tier 3 could not fire even in principle, despite simulator memory counting
+  against the budget the whole time. "An agent session is alive" was chosen
+  as a conservative stand-in because a simulator can't be attributed to a
+  session by process tree, not because it was ever the right proxy for "a
+  simulator is in use."
+
+  Idleness is now measured directly: each tracked simulator's own accumulated
+  CPU time is sampled (`ps -o time=`, parsed by a new `mc_cputime_secs` —
+  confirmed empirically that this is a different shape than `etime`, never
+  rolling into an hour/day segment). A pid whose CPU stays flat for the full
+  `SIM_IDLE_GRACE_SEC` grace period is reclaimed; real CPU work resets its
+  clock. Two vetoes still block a reap outright, independent of CPU
+  idleness — active mobile tooling actually driving a simulator (`maestro`,
+  `xcodebuild`, `expo`, `react-native`, `detox`) and hands-on mobile work
+  (Xcode, Android Studio, or Simulator.app open, unchanged from before) — and
+  neither a veto nor an unready pass erases accumulated idle history anymore;
+  only an actual reclaim does. A reclaim now logs which pid, how long it was
+  idle, and its flat CPU baseline, for auditing after the fact.
+
+  `TIER3_REQUIRE_NO_SESSION=1` restores the original, maximally conservative
+  behavior for anyone who wants it back.
+
+### Fixed
+
+- **Discovered while building the above:** two of tier 3's mobile-tooling
+  patterns depend entirely on the real process table, with no way to make
+  them deterministic in an environment that happens to run one of those
+  processes for an unrelated reason — confirmed on this very development
+  machine, whose maestro MCP server (`java ... maestro.cli.AppKt mcp`,
+  unrelated to any simulator) matched the maestro veto pattern and made the
+  test suite's result depend on which MCP servers or IDEs happen to be
+  running. Added `MC_ACTIVE_MOBILE_TOOLING`/`MC_HANDS_ON_MOBILE` escape
+  hatches (same pattern as `MC_DOCKER_RUNTIME`), forced to a known value for
+  every test.
+
+### Configuration
+
+- Added `SIM_ACTIVE_CPU_SEC` (default `2`) and `TIER3_REQUIRE_NO_SESSION`
+  (default `0`).
+
 ## v0.2.0 — 2026-08-18
 
 ### Changed

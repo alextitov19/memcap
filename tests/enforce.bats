@@ -1,4 +1,5 @@
 load helper
+bats_require_minimum_version 1.5.0
 setup() {
   setup_common
   # shellcheck source=/dev/null
@@ -622,7 +623,13 @@ SCRIPT
 @test "THROTTLE: the tier3-decline and combined-cap keys throttle independently" {
   sleep 600 & agent=$!
   wait_spawned "$agent"
-  run env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=1 bash -c "
+  # TIER3_REQUIRE_NO_SESSION=1 restores the pre-v0.3.0 blanket session veto --
+  # a live agent session no longer declines tier 3 by itself otherwise. What
+  # this test actually verifies (two throttle keys firing in the same pass
+  # don't suppress each other) doesn't depend on which reason tier 3 declined
+  # for; the escape hatch is the simplest way to still exercise the
+  # tier3-agent-alive key specifically.
+  run env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=1 TIER3_REQUIRE_NO_SESSION=1 bash -c "
     source '$MEMCAP_ROOT/libexec/common.sh'
     source '$MEMCAP_ROOT/libexec/budget.sh'
     source '$MEMCAP_ROOT/libexec/detect.sh'
@@ -962,7 +969,11 @@ SCRIPT
 
   assert_contains "$output" "would kill"
   assert_contains "$output" "$victim"
-  [ ! -f "$stamp" ]
+  # v0.3.0: mc_reap_sims no longer wipes the stamp dir/file itself -- a dry
+  # run changes nothing for real, so the pid is still alive and its stamp
+  # still exists. Stale stamps are pruned on a LATER pass once the pid is
+  # genuinely gone (kill -0 fails), not unconditionally at kill time.
+  [ -f "$stamp" ]
 }
 
 # --- Final review, I6: the idle grace stamp must be per-pid, not machine-wide -
@@ -986,7 +997,12 @@ SCRIPT
   # have applied to $fresh too, and $old (a real kill-pattern match) would have been
   # reaped immediately -- taking $fresh's grace away from it in the process.
   mkdir -p "$(mc_sims_idle_dir)"
-  echo 1 > "$(mc_sims_idle_stamp "$old")"
+  # Second field is the CPU-time baseline (v0.3.0: tier 3 now tracks CPU
+  # alongside the timestamp) -- set absurdly high so $old's real, near-zero
+  # CPU usage can never look like it "advanced" past this baseline and reset
+  # the clock, regardless of how much wall-clock time this test happens to
+  # take to run.
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$old")"
 
   run mc_reap_sims
 
@@ -1004,7 +1020,12 @@ SCRIPT
   SIMPIDS="$old $fresh"
   MC_DRY_RUN=1
   mkdir -p "$(mc_sims_idle_dir)"
-  echo 1 > "$(mc_sims_idle_stamp "$old")"
+  # Second field is the CPU-time baseline (v0.3.0: tier 3 now tracks CPU
+  # alongside the timestamp) -- set absurdly high so $old's real, near-zero
+  # CPU usage can never look like it "advanced" past this baseline and reset
+  # the clock, regardless of how much wall-clock time this test happens to
+  # take to run.
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$old")"
   run mc_reap_sims
   # assert_not_contains, not a standalone `[[ ]]`: this check's own $output is
   # about to be overwritten by the next `run` below, so it can't share a single
@@ -1027,6 +1048,12 @@ SCRIPT
 }
 
 @test "I6: mc_hands_on_mobile also treats Simulator.app itself as hands-on" {
+  # setup_common forces MC_HANDS_ON_MOBILE=0 suite-wide (an ambient real
+  # Xcode/Simulator.app/Android Studio on whatever machine runs the suite
+  # would otherwise make this and every other tier-3 test non-deterministic).
+  # This test exists specifically to exercise the real pgrep pattern, so it
+  # unsets the override for its own safe, synthetic fixture.
+  unset MC_HANDS_ON_MOBILE
   perl -e 'sleep 600' "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator" &
   victim=$!
   wait_spawned "$victim"
@@ -1103,23 +1130,57 @@ SCRIPT
 # work blocked it, so a wedge (a broken mc_hands_on_mobile pattern, say) would leave
 # actions.log with nothing to diagnose it, despite the README promising the log
 # records enforcement decisions.
-@test "tier3: a live agent session clears every existing idle stamp, and logs why it declined" {
-  dir="$(mc_sims_idle_dir)"
-  mkdir -p "$dir"
-  echo "1" > "$(mc_sims_idle_stamp 99999)"
 
+# --- v0.3.0: tier 3 must not decline, or wipe idle history, on a live session
+# alone --------------------------------------------------------------------
+# Production data: tier 3 fired zero times in 1,643 opportunities on a machine
+# that always has an agent session open, and the `rm -rf "$dir"` on every
+# decline reset every sim's idle clock to zero on every single pass -- tier 3
+# could not fire even in principle under continuous agent use. "An agent
+# session is alive" is no longer sufficient reason to decline by itself, and
+# a decline for any OTHER reason must not erase idle history that was
+# genuinely accumulating.
+@test "a live agent session alone no longer declines tier 3 or clears idle stamps" {
+  # A real, currently-tracked sim pid, not a fabricated one: mc_reap_sims's own
+  # pruning step (unrelated to any veto -- it always runs first) removes any
+  # stamp whose pid isn't both alive AND in $SIMPIDS, so a fake never-alive
+  # pid's stamp would be pruned regardless of what this test is actually
+  # trying to verify.
+  perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!
   sleep 600 & agent=$!
+  wait_spawned "$sim" "$agent"
+  # shellcheck disable=SC2034  # consumed by mc_no_live_session, sourced from enforce.sh
+  AGENTPIDS="$agent"
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$sim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_pids, sourced from enforce.sh
+  MC_DRY_RUN=1
+  run mc_reap_sims
+
+  kill "$sim" "$agent" 2>/dev/null
+
+  assert_not_contains "$output" "declining"
+  [ -f "$(mc_sims_idle_stamp "$sim")" ]
+  run ! grep -q "declining -- an agent session is alive" "$(mc_state_dir)/actions.log"
+}
+
+# The escape hatch restores the OLD, pre-v0.3.0 behavior exactly, for anyone
+# who wants the maximally conservative posture back.
+@test "TIER3_REQUIRE_NO_SESSION=1 restores the blanket session veto and logs why" {
+  sleep 600 & agent=$!
+  wait_spawned "$agent"
   # shellcheck disable=SC2034  # consumed by mc_no_live_session, sourced from enforce.sh
   AGENTPIDS="$agent"
   # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
   SIMPIDS=""
   # shellcheck disable=SC2034  # consumed by mc_kill_pids, sourced from enforce.sh
   MC_DRY_RUN=1
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  TIER3_REQUIRE_NO_SESSION=1
   run mc_reap_sims
 
   kill "$agent" 2>/dev/null
 
-  [ ! -d "$dir" ]
   # grep -q, not [[ ]]: a real external command's failure correctly trips bash
   # 3.2's error handling regardless of position, unlike a bare `[[ ]]` (see the
   # SILENT-GAP tests above for the full explanation) -- moot here since this is
@@ -1128,6 +1189,9 @@ SCRIPT
 }
 
 @test "tier3: hands-on mobile work (Simulator.app) declines and logs why" {
+  # See I6's mc_hands_on_mobile test above for why this override exists and
+  # is unset here.
+  unset MC_HANDS_ON_MOBILE
   perl -e 'sleep 600' "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator" &
   sim=$!
   wait_spawned "$sim"
@@ -1142,6 +1206,164 @@ SCRIPT
   kill "$sim" 2>/dev/null
 
   grep -q "declining -- hands-on mobile work" "$(mc_state_dir)/actions.log"
+}
+
+# --- v0.3.0: mc_cputime_secs must parse `ps -o time=`'s actual shape --------
+# Confirmed empirically (not assumed) that `ps -o time=` is NOT the same shape
+# as `ps -o etime=`: it never rolls into an hour/day segment -- a process at 6
+# days' uptime showed "2960:52.31", not "49:15:52" or "2-01:15:52". Plain
+# MINUTES:SECONDS(.hundredths), minutes unbounded.
+@test "mc_cputime_secs parses ps -o time='s actual MM:SS(.ff) shape, unbounded minutes" {
+  run mc_cputime_secs "0:00.02"
+  [ "$output" = "0" ]
+  run mc_cputime_secs "1:05.99"
+  [ "$output" = "65" ]
+  # A process running for days: minutes alone exceed 999, never rolling into
+  # an hour or day segment the way etime does.
+  run mc_cputime_secs "2960:52.31"
+  [ "$output" = "177652" ]
+}
+
+@test "mc_cputime_secs fails closed on empty or malformed input" {
+  run mc_cputime_secs ""
+  [ "$status" -ne 0 ]
+  run mc_cputime_secs "not-a-time"
+  [ "$status" -ne 0 ]
+}
+
+# --- v0.3.0: the CPU-flat idleness test itself -------------------------------
+# "An agent session is alive" was a bad proxy for "a simulator is in use" --
+# it never released. A booted-but-unused simulator burns approximately zero
+# CPU; that is the signal that replaces the blanket veto. These pre-seed the
+# stamp file directly with a controlled epoch and CPU baseline rather than
+# waiting out a real SIM_IDLE_GRACE_SEC or sleeping for real CPU to accrue.
+@test "a sim with flat CPU across the grace is reclaimed" {
+  perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!
+  wait_spawned "$sim"
+  AGENTPIDS=""
+  SIMPIDS="$sim"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  # Timestamp far enough in the past to have cleared any real-world grace;
+  # baseline set absurdly high so the fixture's own real (near-zero) CPU
+  # usage can never look like it "advanced" past it, regardless of how long
+  # this test happens to take to run.
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
+
+  run mc_reap_sims
+
+  kill "$sim" 2>/dev/null
+
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "$sim"
+}
+
+@test "a sim whose CPU advanced is not reclaimed, and its clock resets" {
+  # A tight loop actually burns CPU, unlike sleep -- this is what "in use"
+  # looks like. SIM_ACTIVE_CPU_SEC=0 makes any nonzero advance count as
+  # activity, so the test doesn't need to wait out a multi-second threshold
+  # for a deterministic result.
+  perl -e 'my $e=time()+2; while(time()<$e){1+1} sleep 600' "ms-playwright-fixture" & sim=$!
+  wait_spawned "$sim"
+  AGENTPIDS=""
+  SIMPIDS="$sim"
+  MC_DRY_RUN=1
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIM_ACTIVE_CPU_SEC=0
+  mkdir -p "$(mc_sims_idle_dir)"
+  # Old timestamp (already past any real grace) but a baseline of 0 -- any
+  # CPU the busy loop has accumulated by the time this runs looks like an
+  # advance against that baseline.
+  printf '1 0\n' > "$(mc_sims_idle_stamp "$sim")"
+
+  run mc_reap_sims
+
+  kill "$sim" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+  # The clock reset: read the stamp back and confirm its timestamp moved off
+  # the deliberately-ancient "1" this test seeded it with.
+  read -r new_first _ < "$(mc_sims_idle_stamp "$sim")"
+  [ "$new_first" != "1" ]
+}
+
+# --- v0.3.0: each veto blocks independently, and none of them wipe stamps ---
+@test "active mobile tooling (via the override) blocks the reap and preserves its stamp" {
+  perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!
+  wait_spawned "$sim"
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$sim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_pids, sourced from enforce.sh
+  MC_DRY_RUN=1
+  # shellcheck disable=SC2034  # consumed by mc_active_mobile_tooling, sourced from enforce.sh
+  MC_ACTIVE_MOBILE_TOOLING=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
+
+  run mc_reap_sims
+
+  kill "$sim" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+  [ -f "$(mc_sims_idle_stamp "$sim")" ]
+  grep -q "declining -- active mobile tooling detected" "$(mc_state_dir)/actions.log"
+}
+
+# Spot-checks the real pattern match itself (not just the override plumbing)
+# for one representative case -- maestro, since it runs as a JVM process and
+# is matched by argv, the least "obviously correct at a glance" of the five.
+# Unsets the suite-wide override (see the mc_hands_on_mobile test above for
+# why it exists) so this fixture exercises the actual regex.
+@test "mc_active_mobile_tooling's real pattern matches a maestro-shaped fixture" {
+  unset MC_ACTIVE_MOBILE_TOOLING
+  perl -e 'sleep 600' ".maestro/lib/fake.jar" & victim=$!
+  wait_spawned "$victim"
+  run mc_active_mobile_tooling
+  kill "$victim" 2>/dev/null
+  [ "$status" -eq 0 ]
+}
+
+@test "hands-on mobile work blocks the reap and preserves its stamp" {
+  unset MC_HANDS_ON_MOBILE
+  perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!
+  perl -e 'sleep 600' "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator" & hands_on=$!
+  wait_spawned "$sim" "$hands_on"
+  AGENTPIDS=""
+  SIMPIDS="$sim"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
+
+  run mc_reap_sims
+
+  kill "$sim" "$hands_on" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+  [ -f "$(mc_sims_idle_stamp "$sim")" ]
+}
+
+# --- v0.3.0: a real reclaim logs enough detail to audit after the fact ------
+@test "a reclaim logs the pid, how long it was idle, and its flat CPU baseline" {
+  perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!
+  wait_spawned "$sim"
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$sim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_pids, sourced from enforce.sh
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 42\n' > "$(mc_sims_idle_stamp "$sim")"
+
+  run mc_reap_sims
+
+  kill "$sim" 2>/dev/null
+
+  log="$MEMCAP_STATE_HOME/memcap/actions.log"
+  grep -q "tier3: reclaiming pid $sim" "$log"
+  grep -q "CPU flat at ~42s accumulated" "$log"
 }
 
 # --- mc_pid_cwd must be resolved once per orphan, never per (orphan x root) ---

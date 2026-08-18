@@ -48,6 +48,21 @@ exit 0
 SCRIPT
   chmod +x "$MC_BREW_BIN"
   export MC_LAUNCHCTL_BIN MC_BREW_BIN
+
+  # Sandbox for tier 3's mobile-tooling vetoes (v0.3.0): both depend on the
+  # REAL process table, which pgrep sees regardless of MEMCAP_STATE_HOME/
+  # MEMCAP_CONFIG_HOME sandboxing -- those only isolate state files, not what
+  # processes actually exist on the machine. Discovered because THIS
+  # development machine runs a maestro MCP server in the background (`java
+  # ... maestro.cli.AppKt mcp`), which matched mc_active_mobile_tooling's own
+  # maestro pattern and made every tier-3 kill-path test silently decline
+  # depending on whether that ambient, unrelated process happened to be
+  # running. Forced to "0" (never vetoing) by default so the suite's result
+  # cannot depend on what IDEs or MCP servers happen to be running wherever
+  # `bats tests/` executes; individual tests override to "1" to exercise a
+  # veto deterministically.
+  export MC_ACTIVE_MOBILE_TOOLING=0
+  export MC_HANDS_ON_MOBILE=0
 }
 
 # Bash 3.2 -- the shipped macOS /bin/bash, and what `bats` itself runs under
