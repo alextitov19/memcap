@@ -251,30 +251,121 @@ mc_cputime_secs() {
 # subcommand a casual mention cannot produce; maestro runs as a JVM process,
 # identified by the same narrow argv pattern MC_SIM_ARG-equivalent matching
 # already uses for it elsewhere.
+MC_MOBILE_TOOLING_EXACT='xcodebuild detox'
+MC_MOBILE_TOOLING_ARGV_PATTERN='(^|/| )expo[[:space:]]+(start|run:ios|run:android)|(^|/| )react-native[[:space:]]+(run-ios|run-android|start)|\.maestro/lib|maestro\.cli'
+
+mc_mobile_tooling_idle_dir() { printf '%s/tooling-idle\n' "$(mc_state_dir)"; }
+mc_mobile_tooling_idle_stamp() { printf '%s/%s\n' "$(mc_mobile_tooling_idle_dir)" "$1"; }
+
+mc_mobile_tooling_pids() {
+  # `tr '\n' ' '` on each pgrep call, not just a final cleanup: pgrep prints
+  # one pid per LINE, and multiple matches from a single call (two processes
+  # matching the same argv pattern, say) are newline-separated, not
+  # space-separated. Downstream code -- specifically the prune step's `case "
+  # $pids " in *" $pid "*)` presence check -- pattern-matches against literal
+  # single spaces, so a pid sitting next to a newline instead of a space
+  # would silently never be found "present," making prune wrongly delete a
+  # still-valid, still-matching stamp on every single pass. Confirmed this
+  # exact failure with two real processes matching the same maestro pattern
+  # at once (a test fixture alongside the real maestro MCP server).
+  local name pids=""
+  for name in $MC_MOBILE_TOOLING_EXACT; do
+    pids="$pids $(pgrep -x "$name" 2>/dev/null | tr '\n' ' ')"
+  done
+  pids="$pids $(pgrep -f "$MC_MOBILE_TOOLING_ARGV_PATTERN" 2>/dev/null | tr '\n' ' ')"
+  printf '%s' "$pids"
+}
+
+# Matching a tool's mere EXISTENCE vetoed tier 3 permanently the moment one of
+# them runs as a background service rather than a foreground command --
+# discovered in production, not hypothetically: maestro's own MCP server
+# (`java ... maestro.cli.AppKt mcp`) idles for days between requests, matched
+# the maestro pattern, and made tier 3 dead in exactly the way this whole
+# change exists to fix. Enumerating "server" subcommands to exclude is a list
+# that rots -- every tool eventually grows one. Applying the same CPU-flat
+# test used for simulators fixes it without any new per-tool knowledge: a
+# maestro MCP server sitting idle burns approximately zero CPU, same as an
+# unused simulator; an actual maestro flow, xcodebuild, or detox run does not.
+# Reuses mc_cputime_secs and the same stamp-file shape as mc_reap_sims's own
+# tracking loop, in a separate directory (a tooling pid isn't a sim pid, and
+# the two must not share history).
+#
+# A pid never seen before starts its own clock and counts as active for this
+# pass -- the same conservative bootstrapping mc_reap_sims itself uses for a
+# freshly-tracked sim ("haven't watched it long enough to call it idle yet"),
+# not a weaker rule invented just for this check.
 #
 # Escape hatches, same pattern as MC_DOCKER_RUNTIME (docker.sh): both checks
 # depend entirely on what's running on the host, with no way to make them
 # deterministic in an environment that happens to have one of these processes
-# alive for an unrelated reason. Discovered empirically, not hypothetically:
-# this development machine runs a maestro MCP server in the background (`java
-# ... maestro.cli.AppKt mcp`, unrelated to any simulator use), which matched
-# the maestro pattern below and made tier 3's own test suite non-deterministic
+# alive for an unrelated reason -- this development machine's own maestro MCP
+# server is exactly such a case, and made tier 3's test suite non-deterministic
 # depending on which MCP servers or IDEs happen to be running wherever `bats
-# tests/` executes -- the same class of portability bug as an unavailable
-# Docker Desktop or a symlinked $HOME in earlier rounds. A plain environment
-# variable survives into any subprocess normally, unlike a function-level
-# stub, which a real `bin/memcap` invocation's own re-sourcing would clobber.
+# tests/` executes, the same class of portability bug as an unavailable Docker
+# Desktop or a symlinked $HOME in earlier rounds. A plain environment variable
+# survives into any subprocess normally, unlike a function-level stub, which a
+# real `bin/memcap` invocation's own re-sourcing would clobber.
 mc_active_mobile_tooling() {
   if [ -n "${MC_ACTIVE_MOBILE_TOOLING:-}" ]; then
     [ "$MC_ACTIVE_MOBILE_TOOLING" = "1" ]
     return
   fi
-  pgrep -qx xcodebuild 2>/dev/null && return 0
-  pgrep -qx detox 2>/dev/null && return 0
-  pgrep -qf '(^|/| )expo[[:space:]]+(start|run:ios|run:android)' 2>/dev/null && return 0
-  pgrep -qf '(^|/| )react-native[[:space:]]+(run-ios|run-android|start)' 2>/dev/null && return 0
-  pgrep -qf '\.maestro/lib|maestro\.cli' 2>/dev/null && return 0
-  return 1
+  local pid pids dir now window active_cpu_sec stamp first cpu_baseline cpu_now cpu_delta active=0
+
+  pids=$(mc_mobile_tooling_pids)
+  dir="$(mc_mobile_tooling_idle_dir)"
+
+  # Prune stamps for pids no longer alive or no longer matching, same
+  # reasoning as mc_reap_sims's own prune loop: a reused pid must not inherit
+  # a stale clock, and an exited process must not leave a stray file forever.
+  if [ -d "$dir" ]; then
+    for stamp in "$dir"/*; do
+      [ -e "$stamp" ] || continue
+      pid="${stamp##*/}"
+      case " $pids " in
+        *" $pid "*) kill -0 "$pid" 2>/dev/null && continue ;;
+      esac
+      rm -f "$stamp"
+    done
+  fi
+
+  [ -z "${pids// /}" ] && return 1
+
+  mkdir -p "$dir"
+  now=$(date +%s)
+  window="${MOBILE_TOOLING_IDLE_SEC:-60}"
+  active_cpu_sec="${SIM_ACTIVE_CPU_SEC:-2}"
+  for pid in $pids; do
+    stamp="$(mc_mobile_tooling_idle_stamp "$pid")"
+    first=""; cpu_baseline=""
+    if [ -f "$stamp" ]; then
+      # shellcheck disable=SC2162
+      read -r first cpu_baseline < "$stamp"
+    fi
+    cpu_now=$(mc_cputime_secs "$(ps -o time= -p "$pid" 2>/dev/null)") || cpu_now=""
+
+    if [ -z "$first" ]; then
+      first="$now"
+      cpu_baseline="${cpu_now:-0}"
+      printf '%s %s\n' "$first" "$cpu_baseline" > "$stamp"
+      active=1
+      continue
+    fi
+    if [ -z "$cpu_now" ]; then
+      active=1
+      continue
+    fi
+    cpu_delta=$(( cpu_now - ${cpu_baseline:-0} ))
+    if [ "$cpu_delta" -ge "$active_cpu_sec" ]; then
+      first="$now"
+      cpu_baseline="$cpu_now"
+      printf '%s %s\n' "$first" "$cpu_baseline" > "$stamp"
+      active=1
+      continue
+    fi
+    [ $((now - first)) -lt "$window" ] && active=1
+  done
+  [ "$active" = "1" ]
 }
 
 mc_hands_on_mobile() {

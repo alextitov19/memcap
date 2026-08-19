@@ -1325,6 +1325,77 @@ SCRIPT
   [ "$status" -eq 0 ]
 }
 
+# --- Production bug found post-ship: matching a tool's mere EXISTENCE vetoed
+# tier 3 permanently the moment one of them runs as a background service, not
+# just while driving a simulator. maestro's own MCP server (`java ...
+# maestro.cli.AppKt mcp`) idles for days between requests on the author's real
+# machine and matched the maestro pattern, reproducing the exact "tier 3 fired
+# zero times in 1,643 opportunities" bug this whole change exists to fix --
+# just with a different permanent veto standing in for the old one. Both tests
+# below assert against mc_reap_sims ITSELF with a long-lived fixture, not
+# against mc_active_mobile_tooling in isolation -- an isolated assertion is
+# exactly what let the first version of this ship with the bug still live.
+@test "a long-lived, CPU-idle maestro-pattern process does not permanently veto a reclaim" {
+  unset MC_ACTIVE_MOBILE_TOOLING
+  # Mimics maestro's MCP server: matches the maestro pattern, never exits,
+  # never does meaningful CPU work -- exactly the shape of the real process
+  # that reproduced this bug in production.
+  perl -e 'sleep 600' ".maestro/lib/fake-mcp-server.jar" & tooling=$!
+  perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!
+  wait_spawned "$tooling" "$sim"
+  AGENTPIDS=""
+  SIMPIDS="$sim"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
+
+  # First pass: the tooling process has never been tracked before, so it
+  # conservatively counts as active -- the same bootstrapping mc_reap_sims
+  # itself uses for a freshly-seen sim ("haven't watched it long enough to
+  # call it idle yet"). The sim is already past its own grace, proving the
+  # reap is blocked by the TOOLING veto specifically, not by the sim's clock.
+  run mc_reap_sims
+  assert_not_contains "$output" "would kill"
+
+  # Second pass: the tooling's own idle window has now cleared (zeroed here
+  # rather than waiting out the real default) and its CPU is still flat --
+  # the reap proceeds.
+  # shellcheck disable=SC2034  # consumed by mc_active_mobile_tooling, sourced from enforce.sh
+  MOBILE_TOOLING_IDLE_SEC=0
+  run mc_reap_sims
+
+  kill "$tooling" "$sim" 2>/dev/null
+
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "$sim"
+}
+
+@test "an actively busy maestro-pattern process keeps vetoing a reclaim" {
+  unset MC_ACTIVE_MOBILE_TOOLING
+  # A tight loop actually burns CPU, unlike sleep -- this is what a real
+  # maestro flow driving a simulator looks like, as opposed to its MCP server
+  # idling between requests.
+  perl -e 'my $e=time()+2; while(time()<$e){1+1} sleep 600' ".maestro/lib/fake-busy.jar" & tooling=$!
+  perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!
+  wait_spawned "$tooling" "$sim"
+  AGENTPIDS=""
+  SIMPIDS="$sim"
+  MC_DRY_RUN=1
+  # shellcheck disable=SC2034  # consumed by mc_active_mobile_tooling, sourced from enforce.sh
+  SIM_ACTIVE_CPU_SEC=0
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
+
+  run mc_reap_sims
+  # shellcheck disable=SC2034  # consumed by mc_active_mobile_tooling, sourced from enforce.sh
+  MOBILE_TOOLING_IDLE_SEC=0
+  run mc_reap_sims
+
+  kill "$tooling" "$sim" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+}
+
 @test "hands-on mobile work blocks the reap and preserves its stamp" {
   unset MC_HANDS_ON_MOBILE
   perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!

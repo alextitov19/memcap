@@ -121,18 +121,28 @@ open continuously — which is the normal case — so tier 3 fired zero times in
 memory against the budget the whole time. `TIER3_REQUIRE_NO_SESSION=1` restores
 that original, maximally conservative behavior for anyone who wants it back.
 
-Two vetoes still block a reap outright, independent of CPU idleness, because
-they are stronger and more certain evidence than a CPU sample: active mobile
-tooling actually driving a simulator (`maestro`, `xcodebuild`, `expo`,
-`react-native`, `detox`), and hands-on mobile work — Xcode, Android Studio, or
-Simulator.app itself open, so memcap will not pull a device out from under you
-while you're testing by hand. One consequence worth knowing: `expo run:ios`,
-`react-native run-ios`, and Maestro's iOS flows all launch the simulator through
-Simulator.app's own UI, so any of them keeps tier 3 switched off for as long as
-Simulator.app stays open — including well after the command that launched it
-has exited — not just while you're actively looking at it. Neither veto, nor a
-pass that simply hasn't cleared the idle grace yet, erases a simulator's
-accumulated idle history — only an actual reclaim does.
+Two vetoes still block a reap outright: hands-on mobile work is a plain
+presence check, because Xcode, Android Studio, and Simulator.app are apps a
+human has open and CPU is not the signal there. Active mobile tooling
+(`maestro`, `xcodebuild`, `expo`, `react-native`, `detox`) is CPU-checked the
+same way simulators are, not a bare presence check — matching one of those
+processes by name alone vetoed tier 3 permanently the moment it runs as a
+background service rather than a foreground command, which is exactly how
+`maestro`'s own MCP server behaves: it idles for days between requests, so an
+existence check treated it as permanently "driving a simulator" and
+reproduced the same dead-tier-3 bug this whole redesign exists to fix, with a
+different permanent veto standing in for the old one. Tooling that stays
+CPU-flat for `MOBILE_TOOLING_IDLE_SEC` (default 60 — shorter than
+`SIM_IDLE_GRACE_SEC`, since a quiet minute is likelier idle for a CLI tool or
+server than for a simulator) no longer blocks the reap; an actual `maestro`
+flow, `xcodebuild`, or `detox` run burns real CPU and keeps vetoing for as
+long as it does. One consequence worth knowing: `expo run:ios`,
+`react-native run-ios`, and Maestro's iOS flows all launch the simulator
+through Simulator.app's own UI, so any of them keeps tier 3 switched off for
+as long as Simulator.app stays open — including well after the command that
+launched it has exited — not just while you're actively looking at it.
+Neither veto, nor a pass that simply hasn't cleared the idle grace yet,
+erases a simulator's accumulated idle history — only an actual reclaim does.
 
 **Simulator memory counts toward the combined cap, but only tier 3 can reclaim
 it.** A booted simulator or a Playwright-driven browser is counted into the same
@@ -278,7 +288,8 @@ computed default if it is absent or commented out.
 | `MIN_FREE_PCT`             | `15`              | If system-wide free memory drops below this percentage, a tier-1 sweep runs regardless of whether the agent budget itself has been crossed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `TIER2_MIN_AGE_SEC`        | `300`             | Minimum age, in seconds, a dev server must have reached before tier 2 will consider killing it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `SIM_IDLE_GRACE_SEC`       | `600`             | How long a tracked simulator, emulator, or Playwright browser must show flat CPU (see `SIM_ACTIVE_CPU_SEC`) before tier 3 will shut it down, with no active-mobile-tooling or hands-on-mobile veto in effect. Each tracked process earns its own clock, starting the moment memcap first sees it, not a single clock shared by every simulator on the machine — booting a second simulator by hand does not inherit however long an unrelated, already-idle process has been sitting there. Tier 3 only acts once every currently-tracked process has individually cleared the grace, so one freshly-booted simulator holds the whole pass back rather than being swept in early alongside an older one. The clock for a process resets the moment its own CPU time advances meaningfully; a veto blocking the actual reap never erases accumulated idle history the way an unconditional wipe once did. |
-| `SIM_ACTIVE_CPU_SEC`       | `2`               | How many CPU-seconds a tracked simulator must accumulate since its clock last reset before memcap considers it "in use" and resets the clock again. A booted-but-unused simulator burns approximately zero CPU, so this is deliberately small — real work should register almost immediately, biasing toward not reclaiming when in doubt.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `SIM_ACTIVE_CPU_SEC`       | `2`               | How many CPU-seconds a tracked simulator or active-mobile-tooling process must accumulate since its clock last reset before memcap considers it "in use" and resets the clock again. A booted-but-unused simulator, or an idle `maestro` MCP server, burns approximately zero CPU, so this is deliberately small — real work should register almost immediately, biasing toward not reclaiming when in doubt.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `MOBILE_TOOLING_IDLE_SEC`  | `60`              | How long `maestro`, `xcodebuild`, `expo`, `react-native`, or `detox` must show flat CPU (see `SIM_ACTIVE_CPU_SEC`) before it stops vetoing tier 3. Shorter than `SIM_IDLE_GRACE_SEC` by default — a CLI tool or background server going quiet for a minute is likelier genuinely idle than a simulator is.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `TIER3_REQUIRE_NO_SESSION` | `0`               | Set to `1` to restore memcap's pre-0.3.0 behavior: tier 3 never reaps while any agent session is alive, full stop, regardless of CPU idleness. The original design, kept as an opt-in for anyone who wants the maximally conservative posture — see the Tier 3 section above for why it's no longer the default.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `EXTRA_AGENTS`             | empty             | Extra agent binary names to recognize, beyond the built-in list (`claude codex cursor-agent aider gemini amp opencode goose crush`). Also spliced into the process-classification regex, so avoid regex metacharacters in the names you add.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `LOG_THROTTLE_SEC`         | `1800`            | How long a repeating per-pass status line (tier 3 declining, or the combined cap being exceeded) is suppressed after it first logs, so a condition that holds across many consecutive polls doesn't drown `actions.log`'s kill records. Killed-process records are never throttled. Set to `0` to log every occurrence, e.g. while debugging. A state change — the condition stopping and later holding again — always gets its own line even inside the window.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -324,6 +335,11 @@ State, at `~/.local/state/memcap/` (override with `MEMCAP_STATE_HOME`):
   vetoes (active mobile tooling, hands-on mobile work) block a reap without
   touching this file, so idle time keeps accumulating honestly through a
   decline rather than being erased.
+- `tooling-idle/` — the same shape as `sims-idle/`, one file per pid matching
+  `maestro`/`xcodebuild`/`expo`/`react-native`/`detox`, tracking flat CPU
+  against `MOBILE_TOOLING_IDLE_SEC` so a background service (a `maestro` MCP
+  server, say) stops vetoing tier 3 once it's demonstrably idle rather than
+  vetoing forever just for existing.
 
 LaunchAgent, at `~/Library/LaunchAgents/com.alextitov19.memcap.plist` (override
 the directory with `MEMCAP_LAUNCHAGENT_DIR`): written and owned by `memcap

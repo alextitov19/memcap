@@ -203,7 +203,23 @@ Escalating, and no tier ever touches an agent CLI itself:
    > `xcodebuild`, `expo`, `react-native`, `detox`) and hands-on mobile work
    > (Xcode/Android Studio/Simulator.app open, kept exactly as it was) remain
    > independent vetoes -- both are stronger, more certain evidence than a CPU
-   > sample and block a reap outright. `TIER3_REQUIRE_NO_SESSION=1` restores
+   > sample and block a reap outright.
+   >
+   > **Amended 2026-08-18 (the active-tooling veto swapped one permanent block
+   > for another).** Matching a tool's mere existence reproduced the exact bug
+   > this reversal exists to fix: `maestro`'s own MCP server idles for days
+   > between requests, matched the maestro pattern, and permanently vetoed
+   > tier 3 on the machine whose 1,643 dead declines motivated the whole
+   > change -- caught only after shipping, on the real, live process, not in
+   > any test. Active mobile tooling is now CPU-checked the same way
+   > simulators are (a separate `tooling-idle/` stamp directory,
+   > `MOBILE_TOOLING_IDLE_SEC` default 60s, shorter than a simulator's grace
+   > since a quiet CLI tool or background server is more likely genuinely
+   > idle than a quiet simulator). Hands-on mobile work is unchanged: a plain
+   > presence check, because Xcode/Android Studio/Simulator.app are GUI apps a
+   > human has open, and CPU is not the signal there.
+   >
+   > `TIER3_REQUIRE_NO_SESSION=1` restores
    > the original behavior for anyone who wants the maximally conservative
    > posture back.
 

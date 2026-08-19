@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **v0.3.0 swapped one permanent tier-3 veto for another.** The
+  active-mobile-tooling check added in v0.3.0 matched a tool's mere
+  existence, not it actively driving a simulator — and `maestro`'s own MCP
+  server idles for days between requests as one of the author's registered
+  MCP servers, matching the maestro pattern and permanently vetoing tier 3 on
+  the exact machine whose 1,643 dead declines motivated the whole change.
+  Fixed post-ship, on the real process, not caught by the tests that shipped
+  with it.
+
+  Active mobile tooling (`maestro`, `xcodebuild`, `expo`, `react-native`,
+  `detox`) is now CPU-checked the same way simulators are, reusing
+  `mc_cputime_secs` and the same stamp-file shape in a new `tooling-idle/`
+  directory: a pid matching one of these patterns that stays CPU-flat for
+  `MOBILE_TOOLING_IDLE_SEC` (default 60s, shorter than `SIM_IDLE_GRACE_SEC`
+  since a quiet CLI tool or server is more likely genuinely idle than a quiet
+  simulator) no longer vetoes; real work — an actual `maestro` flow,
+  `xcodebuild`, or `detox` run — keeps vetoing for as long as it burns CPU.
+  Hands-on mobile work (Xcode, Android Studio, Simulator.app) is unchanged —
+  a plain presence check, since those are GUI apps a human has open and CPU
+  is not the signal there.
+
+  New tests assert against `mc_reap_sims` itself with a long-lived,
+  CPU-idle, maestro-shaped fixture — not against the matcher in isolation,
+  which is exactly what let the first version ship with this bug still live.
+
+- **A real bug found while building the above:** `pgrep -f` returns multiple
+  matches newline-separated, not space-separated. When two processes matched
+  the same active-mobile-tooling pattern at once (a test fixture alongside
+  the real `maestro` MCP server), the newline between their pids broke the
+  prune step's `case " $pids " in *" $pid "*)` presence check — which
+  pattern-matches on a literal space boundary — so a still-alive, still-
+  matching pid's stamp was wrongly deleted and recreated on every single
+  pass, discarding its accumulated idle history each time. Fixed by
+  normalizing `pgrep`'s output to spaces before concatenating.
+
+### Configuration
+
+- Added `MOBILE_TOOLING_IDLE_SEC` (default `60`).
+
 ## v0.3.0 — 2026-08-19
 
 ### Changed
