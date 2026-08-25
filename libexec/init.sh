@@ -34,8 +34,21 @@ mc_ask_int() {
   done
 }
 
+# Every yes/no prompt here compared against the literal string "yes" or "no".
+# Someone answering "n" to "Enforce by killing leaked processes? (yes/no)" was
+# therefore not answering no, and got enforcement. On a consent question the
+# unrecognised answer must land on the side that does not kill anything, so
+# only an explicit affirmative counts as yes.
+mc_is_yes() {
+  case "${1-}" in
+    [Yy]|[Yy][Ee][Ss]|[Tt][Rr][Uu][Ee]|1) return 0 ;;
+  esac
+  return 1
+}
+
 mc_run_init() {
   local no_service=0 no_docker=0 total cores cap docker_gb agents enforce start_svc safe_docker
+  local proto state_dir
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-service) no_service=1 ;;
@@ -44,7 +57,20 @@ mc_run_init() {
     shift
   done
 
-  total=$(mc_total_ram_gb); cores=$(mc_cpu_count); agents=$(mc_installed_agents)
+  # sysctl can be absent or fail in a container or under a restricted shell.
+  # `total` reaches `-lt` below and `cores` reaches arithmetic, where an empty
+  # answer would silently become 0 and write DOCKER_CPUS=0. A detected 0 is worse
+  # than non-numeric: mc_num passes it (it IS a whole number) and mc_cap_gb then
+  # returns a cap of 0, which mc_ask_int's min=1 rejects on every re-prompt --
+  # including the default it falls back to at EOF, i.e. an init that never ends.
+  total=$(mc_num "$(mc_total_ram_gb)" 16 "detected RAM")
+  cores=$(mc_num "$(mc_cpu_count)" 8 "detected cores")
+  if [ "$total" -lt 1 ] || [ "$cores" -lt 1 ]; then
+    echo "  Could not read this machine's RAM/CPU from sysctl -- assuming 16 GB, 8 cores." >&2
+    [ "$total" -lt 1 ] && total=16
+    [ "$cores" -lt 1 ] && cores=8
+  fi
+  agents=$(mc_installed_agents)
   cap=$(mc_cap_gb "$total"); docker_gb=$(mc_docker_gb "$cap")
 
   echo "  Detected: ${total} GB RAM · ${cores} cores · agents: ${agents:-none found}"
@@ -58,11 +84,18 @@ mc_run_init() {
   echo
 
   # Import the prototype's config if present, so the author's machine does not regress.
-  if [ -f "$HOME/.claude/agent-budget.conf" ]; then
-    # shellcheck source=/dev/null
-    . "$HOME/.claude/agent-budget.conf"
-    cap="${TOTAL_BUDGET_GB:-$cap}"; docker_gb="${DOCKER_BUDGET_GB:-$docker_gb}"
-    echo "  Imported existing settings from ~/.claude/agent-budget.conf"
+  # Checked and validated like any other config: this file is hand-written, its
+  # values become the DEFAULTS the user accepts by pressing Enter, and a bad one
+  # would be written straight into memcap.conf with the user's apparent blessing.
+  proto="$HOME/.claude/agent-budget.conf"
+  if [ -f "$proto" ]; then
+    if mc_source_checked "$proto"; then
+      cap=$(mc_num "${TOTAL_BUDGET_GB:-$cap}" "$cap" TOTAL_BUDGET_GB)
+      docker_gb=$(mc_num "${DOCKER_BUDGET_GB:-$docker_gb}" "$docker_gb" DOCKER_BUDGET_GB)
+      echo "  Imported existing settings from ~/.claude/agent-budget.conf"
+    else
+      echo "  Ignoring ~/.claude/agent-budget.conf -- it does not parse (bash -n $proto)" >&2
+    fi
   fi
 
   cap=$(mc_ask_int "Total cap for agents + Docker + sims (GB)" "$cap" 1)
@@ -100,19 +133,48 @@ SIM_ACTIVE_CPU_SEC=2
 MOBILE_TOOLING_IDLE_SEC=60
 TIER3_REQUIRE_NO_SESSION=0
 STALE_PASS_SEC=300
+LOG_THROTTLE_SEC=1800
 EXTRA_AGENTS=""
 EOF
-  [ "$enforce" = "no" ] && touch "$(mc_state_dir)/paused"
 
   echo
   echo "  Wrote $(mc_config_file)"
+
+  # The paused marker lives under the STATE directory, which -- unlike the config
+  # directory mkdir -p'd above -- does not exist on a fresh install. This `touch`
+  # used to fail silently, so a user who answered "no" to killing their processes
+  # got enforcement anyway, with no marker, no message, and no way to tell. The
+  # population that hit it is exactly the population that could not detect it.
+  # Failing loudly here matters more than finishing init: a wrong answer to this
+  # question is measured in killed dev servers.
+  if ! mc_is_yes "$enforce"; then
+    state_dir="$(mc_state_dir)"
+    if mkdir -p "$state_dir" 2>/dev/null && touch "$state_dir/paused" 2>/dev/null; then
+      echo "  Enforcement is OFF -- memcap will report only. Turn it on with: memcap on"
+    else
+      echo >&2
+      echo "  ERROR: could not write $state_dir/paused" >&2
+      echo "  You asked memcap NOT to kill anything, and it cannot record that." >&2
+      echo "  memcap WOULD ENFORCE. Fix the directory's permissions and run: memcap off" >&2
+      return 1
+    fi
+  elif [ -f "$(mc_state_dir)/paused" ]; then
+    # Do NOT silently clear a pause the user set with `memcap off`. The default
+    # answer here is "yes", so someone re-running init only to change the Docker
+    # ceiling would otherwise resume enforcement by pressing Enter past a
+    # question they were not really answering.
+    echo "  memcap is currently paused and stays paused -- resume it with: memcap on"
+  else
+    echo "  Enforcement is ON -- memcap will kill leaked processes. Turn it off with: memcap off"
+  fi
+
   if [ "$no_service" = "0" ]; then
     start_svc=$(mc_ask "Install and start the background service now? (yes/no)" "yes")
     # memcap owns and installs its own LaunchAgent (see service.sh) rather than
     # going through `brew services start` -- Homebrew's own copy of this job is
     # what `brew upgrade` was found to silently remove. mc_service_install also
     # migrates away from an existing Homebrew-owned plist if one is found.
-    [ "$start_svc" = "yes" ] && mc_service_install
+    mc_is_yes "$start_svc" && mc_service_install
   fi
   return 0
 }

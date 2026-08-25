@@ -4,12 +4,18 @@ MEMCAP_ROOT="${MEMCAP_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 LIB="$MEMCAP_ROOT/libexec"
 # shellcheck source=/dev/null
 . "$LIB/common.sh"
-for m in budget detect measure classify roots status; do
+for m in config budget detect measure classify roots status; do
   # shellcheck source=/dev/null
   . "$LIB/$m.sh"
 done
-# shellcheck source=/dev/null
-[ -f "$(mc_config_file)" ] && . "$(mc_config_file)"
+# Not a bare `.`: sourcing a config with a syntax error aborts the sourcing but
+# not the shell, so keys before the error apply and keys after it do not. One
+# stray quote in DOCKER_BUDGET_GB left TOTAL_BUDGET_GB=99 applied and the Docker
+# ceiling unset, i.e. an 87 GB agent budget on a 24 GB machine -- nothing over
+# budget ever again, no tier ever firing, and a heartbeat certifying it healthy.
+# mc_load_config checks the file before applying any of it and marks
+# MC_CONFIG_BROKEN so the acting commands refuse instead of running on defaults.
+mc_load_config || :
 
 case "${1:-help}" in
   init)
@@ -32,6 +38,10 @@ case "${1:-help}" in
     # `memcap off` is a kill switch, so it stops manual sweeps too. Otherwise
     # "paused" would mean "paused unless you type the other command".
     if mc_is_paused; then echo "memcap is paused (memcap on to resume)"; exit 0; fi
+    # `clean` reaps directly, bypassing every guard mc_watch applies, so it needs
+    # its own. Sweeping on defaults the user never chose is the same defect as
+    # enforcing on them.
+    mc_refuse_if_broken "sweep" || exit 3
     eval "$(mc_ps_snapshot | mc_classify)"
     mc_reap_orphans
     mc_reap_sims
@@ -40,7 +50,9 @@ case "${1:-help}" in
     shift
     # shellcheck source=/dev/null
     . "$LIB/profile.sh"
-    if [ $# -eq 0 ]; then mc_profile_list; else mc_profile_set "$1"; fi
+    # mc_profile_set rewrites memcap.conf in place. Editing a file that does not
+    # parse leaves the break in and adds a value the user cannot see take effect.
+    if [ $# -eq 0 ]; then mc_profile_list; else mc_refuse_if_broken "change the profile" || exit 3; mc_profile_set "$1"; fi
     ;;
   docker)
     shift
@@ -50,6 +62,10 @@ case "${1:-help}" in
     esac
     # shellcheck source=/dev/null
     . "$LIB/docker.sh"
+    # Writes DOCKER_BUDGET_GB/DOCKER_CPUS into Docker's own settings. On a broken
+    # config those are the built-in fallbacks, not the user's numbers, and the
+    # write outlives the mistake.
+    mc_refuse_if_broken "apply Docker settings" || exit 3
     mc_docker_apply "$@"
     ;;
   off)    mkdir -p "$(mc_state_dir)"; touch "$(mc_state_dir)/paused"; echo "memcap paused" ;;
