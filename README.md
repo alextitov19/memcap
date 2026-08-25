@@ -39,7 +39,23 @@ memcap — /Users/you/.config/memcap/memcap.conf
   ---------------------------------------------------------
   combined                        13.40 GB / 16 GB budget
   system memory available          25%
+  memory measured by               top footprint (569 processes)
+  last enforcement pass            3s ago
+  last pass outcome                enforced
+  background service               loaded
 ```
+
+The bottom four rows answer a question the earlier versions could not. A stopped
+memcap used to be indistinguishable from a quiet one: `status` printed a budget,
+nothing errored, and no notification fired, so a machine that had not enforced
+anything in 28 hours looked exactly like one with nothing to do. Worse, the
+states where memcap *refuses* to act — an unparseable config, a Docker ceiling
+that leaves agents no budget — still stamped the heartbeat, so the freshness
+indicator actively vouched for them.
+
+Each of those now has its own row and its own remedy, because the fixes differ:
+a missing LaunchAgent is not a stale heartbeat, and `MC_NO_TOP=1` set on purpose
+is not a `top` that failed.
 
 ## Requirements
 
