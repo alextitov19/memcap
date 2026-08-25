@@ -81,6 +81,37 @@ redefines it. And a function stub cannot reach a subprocess at all — `bin/memc
 re-sources its own libraries, discarding any override. Use an environment
 variable (`MC_DOCKER_RUNTIME`, `MC_NO_TOP`, `MC_DRY_RUN`).
 
+## A passing test can confirm the bug
+
+The hardest defects in this project were not caught by tests, because the test was
+written from the same misunderstanding as the code. Three instances so far:
+
+- A measurement escape hatch (`MC_NO_TOP=1`, set deliberately) was treated as a
+  fault. The test asserted the faulty behaviour and **passed** — it encoded the
+  misunderstanding rather than the requirement. What broke it open was an external
+  contract naming two signals where the author had assumed one.
+- Test fixtures built paths from a raw `$HOME` while the code canonicalizes. Under a
+  symlinked home the two never matched. Once, a fixture was canonicalized to make the
+  test green and the production bug shipped anyway.
+- Every tier-3 test set `SIMPIDS` to a pid the test itself owned, so `kill -0`
+  always succeeded. The EPERM case — a root-owned process the daemon cannot signal —
+  was unreachable by construction, and that one line kept the tier dead for the
+  tool's entire life.
+
+So: **when a test passes, ask what would have to be true for it to pass for the
+wrong reason.** Concretely —
+
+- Write the negative control. Break the fix deliberately and confirm the test fails.
+  A guard nobody has watched fail is not a guard.
+- Ask what your fixtures cannot express. If every fixture is a pid you own, a file
+  you wrote, or a path you canonicalized, then permission errors, foreign ownership
+  and symlinks are all outside the reachable space.
+- Run the suite somewhere unlike your machine — `env HOME="$(mktemp -d)" bats tests/`
+  is not optional here. Two real bugs were invisible in normal mode purely because a
+  canonical `$HOME` makes raw and resolved paths coincide.
+- A test that matches the live process table is a test whose result depends on what
+  the developer happens to be running. Build the tree the test needs.
+
 ## Layout
 
 | Path                  | Contents                                                           |
