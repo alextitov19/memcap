@@ -68,6 +68,77 @@ now tells you when it is not doing its job.
   `ROOT_TTL_DAYS` and `ROOT_MAX`; a wrongly-dropped root is re-registered within
   one pass, which is what makes a short TTL safe.
 
+### The enforcement tiers
+
+- **Tier 3 had never fired — not once, in the tool's entire life.** Eleven days of
+  logs: 1,973 declines, zero reclaims. The cause was `kill -0` used as a liveness
+  test, which fails for **EPERM** ("alive, but not yours to signal") exactly as it
+  does for **ESRCH** ("dead"). Root-owned `simdiskimaged` is listed in the simulator
+  pattern and appears on any Mac with Xcode installed, so every pass declared it
+  dead, deleted its idle stamp, re-saw it as never-tracked, and returned — through
+  the one unlogged return in the function. A process that is not even in the
+  reclaim pattern, and could never have been killed if selected, blocked the tier
+  permanently. It predates both the v0.3.0 and v0.3.1 "fixes", which addressed the
+  vetoes standing in front of it.
+
+- **The invariant that came out of unblocking it: memcap never reaps a process its
+  own vetoes count as evidence of active work.** With tier 3 working, the first
+  thing it selected was a Chrome browser held open by a live `@playwright/mcp`
+  server under an active session — idle *by design* between requests — while the
+  same pass counted the author's `maestro` servers as proof that mobile work was
+  happening. A resource cannot be both proof someone is working and reclaimable
+  garbage. Enforced once at the kill choke point, over whatever the veto matchers
+  return, rather than by excluding one vendor from one pattern.
+
+- **Simulator protection now has three bands**, because the populations genuinely
+  differ: a resource held open by a live server under an agent session is exempt
+  while its holder lives; a session-owned process that is *not* server-held gets a
+  longer clock (`TIER3_AGENT_TREE_GRACE_SEC`, default 1800) rather than immunity;
+  anything unowned keeps the ordinary grace. Every exclusion is logged with its
+  reason — the difference between this and the original bug is not that tier 3
+  reclaims more, but that when it reclaims nothing it says why.
+
+- **Tier 2 killed live work, reclaimed nothing, and misreported it.** Ten kills in
+  the audited window recovered 126 MB against overages of 0.5–6 GB. It never
+  consulted the mobile vetoes, so it killed the Metro bundler feeding a simulator
+  one second after tier 3 had declined to touch that simulator because the
+  developer was driving it. It ranked candidates by their own footprint and then
+  killed the whole subtree, so a fat worker outranked the server that owned the
+  worker pool — memcap fighting a supervisor that respawns. It now consults both
+  vetoes, ranks by subtree total, protects an agent's whole tree, names what it
+  actually killed, and can be switched off with `TIER2_ENABLED`.
+
+- **Tier 1 had no age gate**, while tier 2's documentation claimed an age gate
+  "keeps builds from ever being the victim" — a guarantee that existed in only one
+  of the two tiers that can kill a build. `npm run build &` reparented to init was
+  an instant target. `TIER1_MIN_AGE_SEC` (default 300) closes it. Still open, and
+  documented rather than papered over: `ppid == 1` is also what `nohup` and
+  `disown` produce, so a deliberately daemonized production server is
+  indistinguishable from a leak — a real kill of `npm exec next start -p 3100`
+  is the counter-example, and an age gate does not help because such a server is
+  old by definition.
+
+- **The 2-second SIGTERM→SIGKILL window killed recycled pids.** The recheck asked
+  "is *a* process alive at this number", not "is it the one I signalled", and fed
+  the survivors to SIGKILL **without passing back through the protection filter**.
+  At 135 pids allocated per 2-second window, a 388-orphan sweep carries roughly
+  half an expected wrong-process kill. Identity is now confirmed by start time and
+  argv, and the filter is re-applied before the kill.
+
+- **Tier 1 was on course to exceed its own service interval again.** Three process
+  forks remained inside the per-(orphan × root) loop, including canonicalizing the
+  same path twice. At 40 roots, 388 orphans measured 79 seconds against a
+  60-second interval. The inner loop now forks zero times.
+
+- **Kill records were truncated where they became informative.** All 376 records in
+  the audited window collapse to four distinct strings, because the `node` binary
+  path plus the `--require` shim consumed the entire 160-character budget and the
+  script actually executed always fell past the cut.
+
+- **An hourly liveness line is back.** The 28-hour outage was detectable only
+  because a line happened to fire every 30 minutes; v0.3.0 removed it, so the same
+  outage today would be indistinguishable from a quiet week.
+
 ### Knowing whether it works
 
 - **`status` reported activity, not outcome.** It printed a heartbeat whether or
