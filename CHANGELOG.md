@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.0 — 2026-08-25
 
 ### Notifications carry memcap's own icon
 
