@@ -1,0 +1,5 @@
+83665 83000 178000 claude --dangerously-skip-permissions
+83693 83665  62000 npm exec chrome-devtools-mcp@1.7.0
+83957 83693  91000 chrome-devtools-mcp
+83989 83957  40000 /opt/homebrew/bin/node /Users/x/.npm/_npx/chrome-devtools-mcp/telemetry/watchdog/main.js --parent-pid=83957
+77482     1  19280 /Users/x/.nvm/versions/node/v22.12.0/bin/node /Users/x/proj/server/index.ts
