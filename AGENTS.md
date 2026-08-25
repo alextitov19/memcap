@@ -124,6 +124,7 @@ wrong reason.** Concretely —
 | `libexec/roots.sh`    | Learned sweep roots: canonicalize, safety-check, persist.          |
 | `libexec/enforce.sh`  | The three tiers, and `mc_kill_pids` — the single kill choke point. |
 | `libexec/docker.sh`   | Runtime detection and the VM ceiling.                              |
+| `libexec/notify.sh`   | Building the notification bundle that carries memcap's icon.       |
 | `tests/`              | bats suite. `helper.bash` holds the assertion helpers.             |
 
 Every kill routes through `mc_kill_pids`. If you are adding a code path that

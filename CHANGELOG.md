@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased
+
+### Notifications carry memcap's own icon
+
+- **Every memcap notification was attributed to Script Editor.** A notification's
+  icon belongs to the app that posts it — `display notification` has no icon
+  parameter, and a plain `osascript` call is Script Editor as far as Notification
+  Center is concerned. So the alert saying memcap had just killed a dev server
+  arrived wearing the icon of a text editor the user had never opened, and could
+  only be silenced by silencing Script Editor for everything.
+- `memcap init` now compiles a bundle for memcap to post through: an AppleScript
+  applet carrying an `.icns` rendered from a single emoji (`NOTIFY_ICON`, default
+  🧠). Everything it uses ships with macOS — `osacompile`, AppKit through JXA,
+  `sips`, `iconutil`, `codesign` — which is what keeps a binary icon out of a repo
+  that is otherwise entirely shell. `memcap notify` rebuilds it and posts a sample;
+  `NOTIFY_ICON=none` removes it.
+- **It is not load-bearing.** Rendering an icon needs a window server, so a machine
+  without one (an ssh session, a headless runner) cannot build the bundle at all.
+  That path logs why and posts exactly the way every previous version did, and the
+  same fallback covers a bundle that exists but will not launch.
+- **A failed build is recorded, not rediscovered.** The stamp holds the icon, the
+  memcap that built it, and whether the build worked. Inferring "not built" from the
+  app's absence would have made a machine that can never render an icon re-attempt a
+  ~4-second `osacompile`/`sips`/`codesign` build on all 1,440 passes a day — the
+  same shape as the tier 1 root-scan cost fixed in v0.4.0. A changed `NOTIFY_ICON`,
+  an upgraded memcap, or `memcap notify` are what ask for a retry.
+- Two things found while building it, both of which would have shipped silently:
+  `open --args` does not reach an applet's `run` handler on macOS 26 (it surfaces as
+  a **modal dialog** the user has to dismiss, which is worse than no notification),
+  so the message travels through a file written atomically before `open` is called;
+  and `osacompile` ships an `Assets.car` whose `CFBundleIconName` **wins over** the
+  `.icns` next to it, so replacing the icon file alone leaves the stock AppleScript
+  icon in place and looks exactly like a rendering failure.
+- `NOTIFY_ICON` is validated as bytes, not characters: `[[:cntrl:]]` classifies
+  ZERO WIDTH JOINER in a UTF-8 locale, so the first version of that check rejected
+  👨‍👩‍👧‍👦 — an ordinary icon — as a control character.
+
+### Fixed
+
+- **Two `set -e` fragilities in the same shape as the config bugs.** `have=$(cat
+  stamp)` on a missing file, and a bare `PlistBuddy -c Delete` for a key that is not
+  there, both fail ordinarily and both would abort a caller running under `set -e`.
+  Neither could bite `bin/memcap`, which does not set it; both bit the test suite,
+  which does. They are written as `|| have=""` and `|| :` now.
+
 ## v0.4.0 — 2026-08-25
 
 A six-agent forensic audit of eleven days of production logs (4,002 lines) found
