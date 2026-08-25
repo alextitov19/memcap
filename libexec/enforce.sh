@@ -188,31 +188,68 @@ mc_proc_table_warm() {
 # all day it is not empty. Reaching it is the whole point of the narrower `sims`
 # protection scope; this rule narrows what that scope exposes without closing it.
 mc_held_by_agent_server() {
-  local pid="$1" verdict
+  local pid="$1" verdict rest
+  MC_HELD_BY_PID=""
+  MC_HELD_BY_CMD=""
   # Fail closed: with no classification there is no way to tell a held resource
   # from a leaked one, and the wrong guess here kills a live browser.
   [ -n "${AGENTPIDS+x}" ] || return 0
+  mc_veto_evidence_warm
   mc_proc_table_warm
-  verdict=$(printf '%s\n' "$MC_PROC_TABLE" | awk -v start="$pid" -v agents=" $AGENTPIDS " -v srv="$MC_HELD_SERVER_PATTERN" '
+  # An ancestor counts as a holder if it is server-shaped OR is already in the
+  # flat evidence set -- a simulator launched by a running xcodebuild or maestro
+  # flow is held by that run just as a browser is held by an MCP server. The two
+  # forms of evidence compose rather than sitting side by side.
+  verdict=$(printf '%s\n' "$MC_PROC_TABLE" | awk -v start="$pid" -v agents=" $AGENTPIDS " \
+      -v evid="$MC_VETO_EVIDENCE_CACHE" -v sims=" ${SIMPIDS:-} " -v srv="$MC_HELD_SERVER_PATTERN" '
     {
       p=$1; pp=$2; cmd=$0
       sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, "", cmd)
       PP[p]=pp; C[p]=cmd
     }
     END {
-      cur=start; seen_server=0
+      cur=start; holder=""; holdercmd=""
       # Bounded like every other ancestry walk in this file: a tree deeper than
       # this is a bug or a cycle, not a process tree.
       for (i=0; i<32; i++) {
         pp = PP[cur]
         if (pp == "" || pp == "0" || pp == "1") break
-        if (index(agents, " " pp " ") > 0) { if (seen_server) { print "held"; exit } ; break }
-        if (C[pp] ~ srv) seen_server=1
+        if (index(agents, " " pp " ") > 0) {
+          # Reached a live session. Held only if something on the way up was
+          # actually holding this open.
+          # Emitted whole; the caller abbreviates with mc_abbrev, which keeps
+          # both ends. Truncating here would lose the tail -- the same mistake
+          # `cut -c1-160` made on kill records, where the argument naming the
+          # actual script never survived.
+          if (holder != "") { print "held " holder " " holdercmd; exit }
+          break
+        }
+        # Keep the INNERMOST holder: it is the process that actually owns the
+        # resource, and naming `npm exec` two levels up would be less use.
+        #
+        # But never name a sim-classified process as the holder. A Chrome helper
+        # IS held by Chrome, and on this machine Chrome matches the token itself
+        # because its profile directory is `mcp-chrome-7ac0193` -- so the honest
+        # walk produced "pid 41317 is held by pid 41308", which is true, useless,
+        # and would send whoever reads it looking at the wrong process. Skipping
+        # them walks on to the server that actually owns the browser.
+        if (holder == "" && index(sims, " " pp " ") == 0 &&
+            (C[pp] ~ srv || index(evid, " " pp " ") > 0)) {
+          holder = pp; holdercmd = C[pp]
+        }
         cur = pp
       }
       print "free"
     }')
-  [ "$verdict" = "held" ]
+  case "$verdict" in
+    "held "*)
+      rest="${verdict#held }"
+      MC_HELD_BY_PID="${rest%% *}"
+      MC_HELD_BY_CMD="${rest#* }"
+      return 0
+      ;;
+  esac
+  return 1
 }
 
 # The single question every kill path asks. MC_EVIDENCE_REASON carries which of
@@ -229,7 +266,7 @@ mc_pid_is_evidence() {
       ;;
   esac
   if mc_held_by_agent_server "$pid"; then
-    MC_EVIDENCE_REASON="it is a resource held open by a live server under an agent session (an MCP server's browser is idle between requests by design)"
+    MC_EVIDENCE_REASON="it is held open by live server pid $MC_HELD_BY_PID ($(mc_abbrev "$MC_HELD_BY_CMD" 160)) under an agent session -- a held resource is idle because it is WAITING, not because it is garbage"
     return 0
   fi
   return 1

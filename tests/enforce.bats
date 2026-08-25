@@ -2848,7 +2848,7 @@ EOS
   kill "$browser_pid" "$srv_pid" 2>/dev/null
 
   assert_not_contains "$output" "would kill"
-  grep -q "held open by a live server" "$(mc_state_dir)/actions.log"
+  grep -q "held open by live server pid" "$(mc_state_dir)/actions.log"
 }
 
 @test "HELD: the same browser IS reclaimable once its owning session is gone" {
@@ -2937,4 +2937,200 @@ EOS
   run mc_held_by_agent_server "$browser"
   kill "$browser" 2>/dev/null
   [ "$status" -eq 0 ]
+}
+
+# --- The three bands, and the line that says which one a pid is in ------------
+# 1. server-held   -- exempt while the holder is alive
+# 2. agent tree, not server-held -- TIER3_AGENT_TREE_GRACE_SEC
+# 3. unowned       -- ordinary SIM_IDLE_GRACE_SEC
+#
+# The band a pid is in, and what is holding it back, is the difference between
+# diagnosing the next instance of this in minutes and in eleven days.
+@test "BANDS: a server-held exclusion names the holder, not just the fact" {
+  mc_build_held_tree "@playwright/mcp@latest"
+  # shellcheck disable=SC2034  # consumed by mc_held_by_agent_server
+  AGENTPIDS="$agent_pid"
+  PROTECTEDPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$browser_pid"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$browser_pid")"
+
+  run mc_reap_sims
+
+  kill "$browser_pid" "$srv_pid" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+  log="$(mc_state_dir)/actions.log"
+  # The holding process, by pid and by name -- "held by something" is not enough
+  # to act on.
+  grep -q "held open by live server pid $srv_pid" "$log"
+  grep -q "@playwright/mcp" "$log"
+}
+
+@test "BANDS: the innermost holder is named, not the outermost" {
+  # A real chain is `npm exec @playwright/mcp` -> `node .../playwright-mcp` ->
+  # browser. Both match the token; the one that actually owns the resource is the
+  # inner one, and naming the outer would send someone looking in the wrong place.
+  local outer="$BATS_TEST_TMPDIR/outer.sh" inner="$BATS_TEST_TMPDIR/inner.sh"
+  cat > "$inner" <<'EOS'
+#!/bin/bash
+perl -e 'sleep 600' "ms-playwright-fixture" &
+wait
+EOS
+  cat > "$outer" <<EOS
+#!/bin/bash
+bash "$inner" "node-playwright-mcp-inner" &
+wait
+EOS
+  chmod +x "$inner" "$outer"
+  bash "$outer" "npm-exec-mcp-outer" & outer_pid=$!
+  inner_pid=""
+  for _ in $(seq 1 250); do
+    inner_pid=$(pgrep -P "$outer_pid" | head -1)
+    [ -n "$inner_pid" ] && break
+    sleep 0.02
+  done
+  [ -n "$inner_pid" ]
+  browser=""
+  for _ in $(seq 1 250); do
+    browser=$(pgrep -P "$inner_pid" | head -1)
+    [ -n "$browser" ] && break
+    sleep 0.02
+  done
+  [ -n "$browser" ]
+  wait_spawned "$browser"
+
+  # shellcheck disable=SC2034  # consumed by mc_held_by_agent_server
+  AGENTPIDS="$(ps -o ppid= -p "$outer_pid" | tr -d ' ')"
+  # Called directly, not through `run`: `run` executes in a subshell, so the
+  # MC_HELD_BY_* globals it sets would not survive back to the test body.
+  mc_held_by_agent_server "$browser" || true
+  held_pid="$MC_HELD_BY_PID"
+
+  kill "$browser" "$inner_pid" "$outer_pid" 2>/dev/null
+
+  [ "$held_pid" = "$inner_pid" ] || {
+    echo "named holder $held_pid; innermost is $inner_pid, outermost is $outer_pid" >&2
+    return 1
+  }
+}
+
+@test "BANDS: a simulator held by a running tooling process is held by it too" {
+  # The two forms of evidence compose: an ancestor already in the flat tooling set
+  # holds its children just as a server-shaped one does. A simulator launched by a
+  # live xcodebuild or maestro flow is not garbage because the flow paused.
+  local script="$BATS_TEST_TMPDIR/tooling.sh"
+  cat > "$script" <<'EOS'
+#!/bin/bash
+perl -e 'sleep 600' "ms-playwright-fixture" &
+wait
+EOS
+  chmod +x "$script"
+  bash "$script" "some-plain-wrapper" & tool_pid=$!
+  browser=""
+  for _ in $(seq 1 250); do
+    browser=$(pgrep -P "$tool_pid" | head -1)
+    [ -n "$browser" ] && break
+    sleep 0.02
+  done
+  [ -n "$browser" ]
+  wait_spawned "$browser"
+
+  # The wrapper carries NO protocol token -- it is a holder purely because the
+  # flat evidence set names it, which is what this test is about.
+  # shellcheck disable=SC2034  # consumed by mc_veto_evidence_warm
+  MC_VETO_EVIDENCE_PIDS="$tool_pid"
+  # shellcheck disable=SC2034  # consumed by mc_held_by_agent_server
+  AGENTPIDS="$(ps -o ppid= -p "$tool_pid" | tr -d ' ')"
+  PROTECTEDPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$browser"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$browser")"
+
+  run mc_reap_sims
+
+  kill "$browser" "$tool_pid" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+}
+
+@test "BANDS: when the holder dies, its resource becomes an ordinary candidate" {
+  # The correct transition, and it needs no special case: the resource reparents,
+  # the ancestry walk no longer finds a holder or a session, and it falls to band
+  # 3. This is what makes "exempt while the holder is alive" safe to say.
+  mc_build_held_tree "@playwright/mcp@latest"
+  # shellcheck disable=SC2034  # consumed by mc_held_by_agent_server
+  AGENTPIDS="$agent_pid"
+  PROTECTEDPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$browser_pid"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$browser_pid")"
+
+  run mc_reap_sims
+  assert_not_contains "$output" "would kill"
+
+  # The holder exits; the browser reparents to init.
+  kill "$srv_pid" 2>/dev/null
+  for _ in $(seq 1 250); do
+    [ "$(ps -o ppid= -p "$browser_pid" | tr -d ' ')" = "1" ] && break
+    sleep 0.02
+  done
+  # The process table was cached for the pass; a new pass re-reads it.
+  unset MC_PROC_TABLE
+
+  run mc_reap_sims
+
+  kill "$browser_pid" 2>/dev/null
+
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "$browser_pid"
+}
+
+@test "BANDS: a sim-classified ancestor is never named as the holder" {
+  # On this machine Chrome's own profile directory is `mcp-chrome-7ac0193`, so
+  # Chrome matches the protocol token itself and the honest walk reported "pid
+  # 41317 is held by pid 41308" -- Chrome holding Chrome. True, useless, and it
+  # points whoever reads the log at the wrong process. The walk skips
+  # sim-classified ancestors and names the server that actually owns the browser.
+  local script="$BATS_TEST_TMPDIR/mcp-holder.sh"
+  cat > "$script" <<'EOS'
+#!/bin/bash
+# Stands in for Chrome: sim-classified AND carrying a protocol token, exactly
+# like a browser whose profile dir is named after the MCP tool that launched it.
+perl -e 'sleep 600' "ms-playwright-fixture --user-data-dir=/tmp/mcp-chrome-abc" &
+wait
+EOS
+  chmod +x "$script"
+  bash "$script" "node-playwright-mcp" & server=$!
+  browser=""
+  for _ in $(seq 1 250); do
+    browser=$(pgrep -P "$server" | head -1)
+    [ -n "$browser" ] && break
+    sleep 0.02
+  done
+  [ -n "$browser" ]
+  wait_spawned "$browser"
+
+  # Both the browser AND the intermediate are sim-classified; only the outer
+  # `bash ... node-playwright-mcp` is a real server.
+  # shellcheck disable=SC2034  # consumed by mc_held_by_agent_server
+  SIMPIDS="$browser"
+  # shellcheck disable=SC2034  # consumed by mc_held_by_agent_server
+  AGENTPIDS="$(ps -o ppid= -p "$server" | tr -d ' ')"
+  # Called directly, not via `run`: the MC_HELD_BY_* globals must survive.
+  mc_held_by_agent_server "$browser" || true
+  held="$MC_HELD_BY_PID"
+
+  kill "$browser" "$server" 2>/dev/null
+
+  [ "$held" = "$server" ] || {
+    echo "named holder $held; expected the server $server" >&2
+    return 1
+  }
 }
