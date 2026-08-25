@@ -109,15 +109,54 @@ acts through three tiers, and each one is deliberately narrow.
 
 **Tier 1 — orphans.** A process is only touched here if its parent is already dead
 (`ppid == 1`), its command line matches a known dev-server pattern (`vite`, `next`,
-`nodemon`, `uvicorn`, and similar), and it lives under a sweep root memcap has
-learned (see below). A dead parent means no live terminal or session owns the
-process anymore — there is nothing left for it to be doing.
+`nodemon`, `uvicorn`, and similar), it lives under a sweep root memcap has learned
+(see below), and it is older than `TIER1_MIN_AGE_SEC` (default 300 seconds). A dead
+parent means no live terminal or session owns the process anymore — there is nothing
+left for it to be doing.
+
+That age gate arrived in 0.4.0. Until then tier 1 had no age check of any kind,
+while the age gate described under tier 2 below was treated as the thing that keeps
+a build from ever being the victim — a guarantee that actually held in only one of
+the two tiers that can kill a build. The dev-server pattern also matches `esbuild`, `webpack`, `rollup` and `tsx`,
+so `npm run build &` reparented to init was an instant target. The asymmetry decides
+the default: a leak is a persistent condition, so waiting five minutes to reap one
+costs nothing, while killing a three-second-old build destroys work that cannot be
+recovered.
+
+One limitation is worth stating plainly rather than papering over. `ppid == 1` is
+also what `nohup` and `disown` produce, so a deliberately daemonized production
+server is indistinguishable from a leak by the process table alone, and the age gate
+does not help — such a server is old by definition. A real kill of `npm exec next
+start -p 3100` on an ad-hoc port is the counter-example. If you daemonize something
+you care about under a directory an agent session has worked in, run it somewhere
+memcap has not learned as a sweep root.
+
+A root matches either the orphan's command line or the orphan's own canonicalized
+working directory — the second catches a project sitting behind a symlink, but costs
+an `lsof` call, so it is budgeted per pass by `TIER1_MAX_CWD_LOOKUPS` (default 64).
+Exhausting that budget means some orphans are matched on argv alone: fewer kills,
+which is the safe direction to fail in, and memcap logs when it happens.
 
 **Tier 2 — over-budget dev servers.** Only reached when agents are still over
 budget after tier 1 has run. Only processes older than `TIER2_MIN_AGE_SEC` (default
 300 seconds) are eligible. A dev server runs for hours; a `vite build` or test run
 lasts seconds. If every candidate is younger than the age gate, memcap logs that,
 sends a notification, and kills nothing on that pass.
+
+Tier 2 also declines outright while either mobile veto holds — active mobile tooling,
+or hands-on mobile work, the same two checks tier 3 uses and describes below. Before
+0.4.0 it consulted neither, and the production logs show what that cost: memcap
+declined to reclaim a simulator at 13:03:47 because the developer was driving it,
+then killed the Metro bundler feeding that same simulator at 13:03:48.
+
+Candidates are ranked by their whole subtree's footprint rather than their own,
+because the kill takes the subtree: ranking on a process's own memory let a fat
+worker outrank the server that owned the worker pool, which is memcap fighting a
+supervisor that respawns. The whole live agent tree is off limits here, not just the
+agent CLI — six of the ten real tier 2 kills in the audited window were
+`chrome-devtools-mcp` watchdogs running as grandchildren of a live `claude` session.
+`TIER2_ENABLED=0` switches the tier off entirely and leaves over-budget handling to
+tier 1 and tier 3.
 
 **Tier 3 — idle simulators.** iOS Simulators, Android emulators, Playwright
 browsers, and Maestro processes. Idle is measured directly, not inferred: memcap
@@ -127,6 +166,20 @@ approximately zero CPU; once one has stayed flat across `SIM_ACTIVE_CPU_SEC`
 (default 2) of real work for the full `SIM_IDLE_GRACE_SEC` grace period, it is
 reclaimed. Real work resets that pid's own clock, so a simulator mid-test is
 never mistaken for an idle one no matter how long an agent session has been open.
+
+Protection here has three bands, because the populations genuinely differ. A
+simulator or browser held open by a live MCP-style server under an agent session is
+exempt for as long as its holder lives — seven "idle Chrome processes" are typically
+one browser a Playwright or devtools MCP server is holding across requests, idle by
+design between calls, and the reap would only be discovered when the next navigation
+failed. A sim-classified process that belongs to a live agent session but is not
+server-held gets a longer clock instead of immunity: `TIER3_AGENT_TREE_GRACE_SEC`
+(default 1800, and never allowed to be shorter than `SIM_IDLE_GRACE_SEC`). Blanket
+immunity for the whole tree would be indistinguishable from a dead tier — on a
+machine that runs agents all day, every reclaimable browser is an agent descendant,
+because that is how it was launched. Anything with no live owner keeps the ordinary
+grace. Every exclusion is logged with its reason, which is the real difference from
+the original bug: when tier 3 reclaims nothing, it now says why.
 
 memcap versions before 0.3.0 used "no agent session is alive" as a stand-in for
 "a simulator is in use," because simulators can't be attributed to a session by
@@ -169,17 +222,32 @@ booted simulator or headless browser is using): sims still count toward
 `status`'s combined figure and are reclaimed by tier 3 once genuinely idle, they
 just cannot be the reason a dev server gets killed.
 
-Four guarantees hold across all three tiers, enforced at a single choke point
+Five guarantees hold across all three tiers, enforced at a single choke point
 (`mc_kill_pids`) that every kill routes through:
 
 - It never kills an agent CLI itself, or anything in memcap's own process
-  ancestry — that check happens once, in the choke point, not per tier.
+  ancestry — that check happens once, in the choke point, not per tier. For tiers 1
+  and 2, which choose their victim by inference, protection covers the whole live
+  agent process tree: every MCP server, hook, and tool subprocess under a session.
+  Tier 3 deliberately uses the narrower scope (the agent CLIs themselves), because it
+  does not infer — it acts on an explicit list of browser and emulator binaries, on
+  measured CPU flatness, and on the three bands above.
+- It never reaps a process its own vetoes count as evidence of active work. A
+  resource cannot be both proof that someone is working and reclaimable garbage. The
+  rule is enforced once, at the choke point, over whatever the veto matchers return,
+  rather than by excluding one vendor from one pattern: the first thing tier 3
+  selected once it was unblocked was a browser held open by a live `@playwright/mcp`
+  server, in the same pass that was counting `maestro` servers as proof that mobile
+  work was happening.
 - Nothing runs at all while `memcap off` is set — including a manual
   `memcap clean`. Pausing is absolute, not "paused except when you ask directly."
 - `MC_DRY_RUN=1` reports exactly what would be killed and why, without killing
   anything.
 - Every kill is logged to `actions.log` with the reason and the process line, so
-  after the fact you can see exactly what happened and why.
+  after the fact you can see exactly what happened and why. Between `SIGTERM` and
+  `SIGKILL`, a survivor's identity is re-confirmed by start time and argv and re-run
+  through the protection filter, so a pid recycled inside that two-second window
+  cannot be killed in the original's place.
 
 **Sweep roots are learned, not configured.** memcap never asks you which
 directories are safe to clean. Instead, while an agent session is alive, it
@@ -242,6 +310,14 @@ interval) with no `memcap off` in effect, or if it has never run since install,
 was never installed, was unloaded somehow, or is fine already — see "Install"
 above and `memcap service status` below.
 
+`actions.log` carries an hourly liveness line of its own — `watch: alive (60 passes
+since last mark)`, written every `LIVENESS_SEC` (default 3600). The pass count is the
+informative half: 60 passes in an hour is a healthy daemon at the default 60-second
+interval, while "alive (3 passes)" is one that has been stalling or restarting.
+Version 0.3.0 removed the periodic line that made the author's 28-hour outage visible
+at all, so the same outage would have been indistinguishable from a quiet week; this
+is that signal, back deliberately.
+
 A paused service with a fresh heartbeat still reads as paused, not dead — the
 heartbeat answers "is the daemon ticking," a different question from "is it
 enforcing," which the `ENFORCEMENT PAUSED` line already covers on its own. Note
@@ -302,13 +378,18 @@ computed default if it is absent or commented out.
 | `DOCKER_CPUS`              | 55% of core count | Docker's VM CPU ceiling, set alongside the memory ceiling.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `SOFT_TRIGGER`             | `0.80`            | Fraction of the agents' budget that, once crossed, triggers a tier-1 sweep before anything is killed outright.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `MIN_FREE_PCT`             | `15`              | If system-wide free memory drops below this percentage, a tier-1 sweep runs regardless of whether the agent budget itself has been crossed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `TIER1_MIN_AGE_SEC`        | `300`             | Minimum age, in seconds, before an orphaned dev server is eligible for tier 1. Tier 1 had no age gate at all before 0.4.0, while the dev-server pattern matches `esbuild`, `webpack`, `rollup` and `tsx` — so a backgrounded `npm run build` whose parent shell had exited was an instant kill target. A leak is a persistent condition, so five minutes of patience costs nothing; a three-second-old build is unrecoverable. |
+| `TIER1_MAX_CWD_LOOKUPS`    | `64`              | How many orphans per pass may fall back to resolving their own working directory (an `lsof` call, ~36 ms each) when their command line does not textually contain a sweep root. That fallback is what catches a project behind a symlink; the cap is what stops a 388-orphan leak from spending 14 seconds inside a 60-second interval. Exhausting it means some orphans are matched on argv alone — fewer kills, and a logged line saying so. |
 | `TIER2_MIN_AGE_SEC`        | `300`             | Minimum age, in seconds, a dev server must have reached before tier 2 will consider killing it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `TIER2_ENABLED`            | `1`               | Set to `0` to disable tier 2 entirely: memcap still measures and still reports being over budget, but never kills a dev server to get back under it, leaving that to tier 1 (orphans) and tier 3 (idle simulators). Provided because tier 2 is the one tier that acts on inference against live, parented processes — in eleven days of production logs its ten kills reclaimed 126 MB against overages of 0.5–6 GB. |
 | `SIM_IDLE_GRACE_SEC`       | `600`             | How long a tracked simulator, emulator, or Playwright browser must show flat CPU (see `SIM_ACTIVE_CPU_SEC`) before tier 3 will shut it down, with no active-mobile-tooling or hands-on-mobile veto in effect. Each tracked process earns its own clock, starting the moment memcap first sees it, not a single clock shared by every simulator on the machine — booting a second simulator by hand does not inherit however long an unrelated, already-idle process has been sitting there. Tier 3 only acts once every currently-tracked process has individually cleared the grace, so one freshly-booted simulator holds the whole pass back rather than being swept in early alongside an older one. The clock for a process resets the moment its own CPU time advances meaningfully; a veto blocking the actual reap never erases accumulated idle history the way an unconditional wipe once did. |
 | `SIM_ACTIVE_CPU_SEC`       | `2`               | How many CPU-seconds a tracked simulator or active-mobile-tooling process must accumulate since its clock last reset before memcap considers it "in use" and resets the clock again. A booted-but-unused simulator, or an idle `maestro` MCP server, burns approximately zero CPU, so this is deliberately small — real work should register almost immediately, biasing toward not reclaiming when in doubt.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `MOBILE_TOOLING_IDLE_SEC`  | `60`              | How long `maestro`, `xcodebuild`, `expo`, `react-native`, or `detox` must show flat CPU (see `SIM_ACTIVE_CPU_SEC`) before it stops vetoing tier 3. Shorter than `SIM_IDLE_GRACE_SEC` by default — a CLI tool or background server going quiet for a minute is likelier genuinely idle than a simulator is.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `TIER3_REQUIRE_NO_SESSION` | `0`               | Set to `1` to restore memcap's pre-0.3.0 behavior: tier 3 never reaps while any agent session is alive, full stop, regardless of CPU idleness. The original design, kept as an opt-in for anyone who wants the maximally conservative posture — see the Tier 3 section above for why it's no longer the default.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `EXTRA_AGENTS`             | empty             | Extra agent binary names to recognize, beyond the built-in list (`claude codex cursor-agent aider gemini amp opencode goose crush`). Names must be letters, digits, `_` or `-`; anything else is dropped with a logged line rather than spliced into the classification regex. That validation is not cosmetic: an unvalidated `a|` previously matched **every process on the machine**, making all of them agent-classified and every cwd a sweep root, while a `foo,bar` silently matched nothing and left the user believing they had added protection they did not have.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `TIER3_AGENT_TREE_GRACE_SEC` | `1800`          | The longer idle clock applied to a simulator or browser that belongs to a live agent session but is not held open by a server (see the three bands in Tier 3 above). Clamped never to be shorter than `SIM_IDLE_GRACE_SEC`, since a lower value would make agent-owned browsers the *first* thing reclaimed rather than the last. |
+| `EXTRA_AGENTS`             | empty             | Extra agent binary names to recognize, beyond the built-in list (`claude codex cursor-agent aider gemini amp opencode goose crush`). Names must be letters, digits, `_` or `-`; anything else is dropped with a logged line rather than spliced into the classification regex. That validation is not cosmetic: an unvalidated `a\|` previously matched **every process on the machine**, making all of them agent-classified and every cwd a sweep root, while a `foo,bar` silently matched nothing and left the user believing they had added protection they did not have.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `LOG_THROTTLE_SEC`         | `1800`            | How long a repeating per-pass status line (tier 3 declining, or the combined cap being exceeded) is suppressed after it first logs, so a condition that holds across many consecutive polls doesn't drown `actions.log`'s kill records. Killed-process records are never throttled. Set to `0` to log every occurrence, e.g. while debugging. A state change — the condition stopping and later holding again — always gets its own line even inside the window.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `LIVENESS_SEC`             | `3600`            | How often `watch` writes an `alive (N passes since last mark)` line to `actions.log`, and resets the pass counter. This is the signal that distinguishes a quiet week from a dead daemon — the author's 28-hour outage was noticed only because a periodic line happened to exist at the time. Set to `0` to log one every pass. |
 | `ROOT_TTL_DAYS`            | `14`              | How many days a learned sweep root is kept after a live agent session was last seen in it. Roots are re-registered every pass while a session sits in one, so a wrongly-dropped root returns within a single 60-second pass — which makes a short TTL cheap to be wrong about, while a kept one costs measurable time on every orphan scan forever. |
 | `ROOT_MAX`                 | `64`              | Hard cap on retained roots, newest first. Tier 1 costs roughly 5 ms per (orphan × root) pair, so an unbounded list is a latent performance failure: 388 orphans against 40 roots already exceeds the 60-second service interval. |
 | `MEASURE_MISSING_PCT_MAX`  | `10`              | What share of processes may be missing a `top` footprint row before memcap treats the measurement as faulty rather than merely noisy. A few missing rows happen on every busy pass and are worth ~0.03% of the total; a wholesale fallback to `ps` RSS understates the combined figure by ~42%. One threshold for both would light permanently, which is the same as no signal at all. |
