@@ -220,6 +220,41 @@ seed_row() {  # seed_row AGE_DAYS PATH -- writes one row directly, bypassing mc_
   [ "$output" = "$(rp 'code/foo bar')" ]
 }
 
+# The direct guard for the raw-vs-canonical comparison that this prune path
+# briefly carried: prune judged the STORED string against a canonicalized $HOME
+# as well as the resolved form. Rows memcap writes are always canonical, so that
+# only bit a row that arrived some other way -- and README documents the roots
+# file as a plain list of paths, so a hand-added row is a supported way in. One
+# written through a symlink resolves somewhere safe and must survive; deleting
+# it silently is the same class of failure as v0.1.2 rejecting every root.
+@test "a hand-added row that is not already canonical is kept, not silently dropped" {
+  mkdir -p "$HOME/.mc-handreal-$$/proj"
+  ln -sfn "$HOME/.mc-handreal-$$" "$HOME/.mc-handlink-$$"
+  seed_row 0 "$HOME/.mc-handlink-$$/proj"
+  ROOT_TTL_DAYS=14 mc_prune_roots
+  run mc_sweep_roots
+  rm -rf "$HOME/.mc-handreal-$$" "$HOME/.mc-handlink-$$"
+  assert_contains "$output" ".mc-handlink-$$/proj"
+}
+
+# The v0.1.3 defect class, applied to the new prune path rather than to
+# recording. mc_record_root stores the RESOLVED path, so prune has to re-resolve
+# and compare canonical-to-canonical. A raw-vs-canonical comparison here would
+# silently drop the root of any user whose project sits behind a symlink -- tier
+# 1 left with nothing to sweep, no error anywhere, exactly the v0.1.2 failure.
+# Uses a real symlinked project directory, not a symlinked $HOME, so it fails in
+# NORMAL mode too rather than only under `env HOME=$(mktemp -d)`.
+@test "a root recorded through a symlink survives pruning, not just recording" {
+  mkdir -p "$HOME/.mc-symreal-$$/proj"
+  ln -sfn "$HOME/.mc-symreal-$$" "$HOME/.mc-symlink-$$"
+  mc_record_root "$HOME/.mc-symlink-$$/proj"
+  ROOT_TTL_DAYS=14 mc_prune_roots
+  run mc_sweep_roots
+  rm -rf "$HOME/.mc-symreal-$$" "$HOME/.mc-symlink-$$"
+  assert_contains "$output" ".mc-symreal-$$/proj"
+  assert_not_contains "$output" ".mc-symlink-$$"
+}
+
 @test "a root that now resolves outside HOME is pruned regardless of age" {
   seed_row 0 "$(rp .mc-out-$$)/proj"
   ln -sfn /etc "$HOME/.mc-out-$$"
