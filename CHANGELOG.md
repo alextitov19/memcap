@@ -1,5 +1,93 @@
 # Changelog
 
+## Unreleased
+
+A six-agent forensic audit of eleven days of production logs (4,002 lines) found
+ten defects. Every one of them failed **silently** — a value became wrong, or a
+guard failed open, and nothing anywhere said so. That is the same shape as every
+defect in this project's history, so the theme of this release is that memcap
+now tells you when it is not doing its job.
+
+### Consent and configuration
+
+- **Answering "no" to enforcement did not stop enforcement.** `memcap init`
+  wrote its pause marker with `touch "$(mc_state_dir)/paused"` while only the
+  *config* directory had been created. On a fresh install the state directory
+  did not exist yet, the `touch` failed silently, and memcap killed processes
+  the user had explicitly declined. Only new installs were affected — exactly
+  the population that could not tell.
+- **`"n"` was not "no".** Every yes/no prompt compared against the literal
+  string, so answering `n` to the same question also got you enforcement.
+  Anything unrecognised now lands on the side that kills nothing.
+- **A one-character config typo silently disabled everything.** The config was
+  sourced without checking the result, so on a syntax error the keys *before*
+  the error applied and the keys *after* it did not. A stray quote produced an
+  87 GB agent budget on a 24 GB machine: nothing was ever over budget, no tier
+  ever fired again, and the heartbeat reported it healthy. The file is now
+  parsed before it is sourced, so a broken config changes nothing at all, and
+  memcap refuses to enforce rather than acting on a policy the user never chose.
+- **Every numeric knob failed open.** `[` returns status 2 on a non-integer and
+  each gate sat to the left of an `&&`, so a bad value did not fail the gate —
+  it removed it. `TIER2_MIN_AGE_SEC="5m"` was not a long minimum age, it was no
+  minimum age, and a one-second-old process became a kill target. That is the
+  Linux-only-`etimes` bug of v0.1.3 reborn through configuration. Leading zeros
+  were also read as octal, so `016` silently meant a 20% tighter budget.
+
+### What gets killed
+
+- **An agent's own tooling was unprotected.** `AGENTPIDS` held only *direct*
+  agent-CLI matches; the ancestry propagation fed memory accounting but never
+  the protection list, while the dev-server list excluded only the CLI itself.
+  Every MCP server, hook, and tool subprocess under a live session was both
+  unprotected and classified as a dev server. Six of the ten real tier-2 kills
+  in the audited window were `chrome-devtools-mcp` watchdogs running as
+  grandchildren of a live `claude` session.
+- **`EXTRA_AGENTS` was spliced into a regex unvalidated.** The README advised
+  avoiding metacharacters; it is now enforced. An `a|` matched **every process
+  on the machine**, making all of them agent-classified and every working
+  directory a sweep root; a `foo,bar` matched nothing at all and left the user
+  believing they had added protection.
+
+### Measurement
+
+- **A failed measurement silently halved every total.** `top`'s exit status was
+  never checked and neither was `mktemp`, so any failure dropped every process
+  to `ps` RSS — combined 12.60 GB became 7.28 GB, a 42% under-measurement with
+  no log line and nothing in `status`. `SIM_KB` moved the *opposite* way in the
+  fallback, so the degraded state was not even a consistent bias.
+- **`mc_free_pct` returned a hardcoded 100 when `sysctl` was unavailable**,
+  permanently disabling tier 1's low-memory trigger. It now reports 0 and says
+  so — the one signal grounded in real physical memory rather than footprint.
+
+### Growth
+
+- **The learned sweep-roots file only ever grew.** Nothing pruned it; this
+  machine reached 40 rows and every new project added one permanently. Tier 1
+  costs roughly 5 ms per (orphan × root) pair, so 388 orphans against 40 roots
+  already exceeded the 60-second service interval. Roots are now bounded by
+  `ROOT_TTL_DAYS` and `ROOT_MAX`; a wrongly-dropped root is re-registered within
+  one pass, which is what makes a short TTL safe.
+
+### Knowing whether it works
+
+- **`status` reported activity, not outcome.** It printed a heartbeat whether or
+  not the pass had enforced anything, so the states where memcap deliberately
+  refuses — an unparseable config, a Docker ceiling leaving agents no budget —
+  stamped the heartbeat and were certified healthy. The heartbeat added in
+  v0.1.4 to make non-enforcement visible had become what concealed it. `status`
+  now reports the outcome, the measurement basis, and whether the LaunchAgent is
+  actually loaded, each with its own remedy.
+- **Freshness never proved the service ran the pass** — any manual
+  `memcap watch` stamps it. `status` now asks `launchctl` directly, and reports
+  `unknown` rather than `no` when it cannot ask.
+- **A sleeping laptop produced false alarms.** Staleness is judged on a
+  monotonic clock that does not advance during sleep, so a closed lid no longer
+  reads as a dead daemon. False alarms are how a real one gets ignored.
+- **`memcap off` and `on` wrote nothing to the log**, so a paused week and a
+  dead week were indistinguishable in the audit trail forever. Both are logged,
+  and `status` says how long it has been paused.
+
+
 ## v0.3.1 — 2026-08-19
 
 ### Fixed
