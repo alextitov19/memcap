@@ -2783,3 +2783,158 @@ SCRIPT
 
   assert_not_contains "$output" "would shut down"
 }
+
+# =============================================================================
+# Evidence, second form: a resource HELD OPEN by a live server.
+#
+# The flat evidence set answers "is this pid itself a tool memcap vetoes on", and
+# that is too narrow. Walked on the real machine:
+#
+#   41308 Google Chrome                      <- sim-classified, CPU-flat, would be reaped
+#    41307 node .../playwright-mcp
+#     41263 npm exec @playwright/mcp@latest   <- MCP server
+#      93098 claude                           <- live agent session
+#
+# The seven "idle Chrome processes" are ONE browser an MCP server holds across
+# requests. Same category as the maestro MCP server: a long-lived server holding
+# a resource that is idle BY DESIGN between calls. Ten minutes of CPU-flatness
+# while the agent reads code is ordinary, and the reap surfaces as the next
+# browser_navigate failing.
+#
+# These build the real three-level tree rather than asserting on the matcher in
+# isolation -- an isolated assertion is what let the first version of the tooling
+# veto ship with its bug still live.
+# =============================================================================
+
+# Builds: agent -> server (argv carries the token) -> browser. Sets $srv_pid,
+# $browser_pid and $agent_pid for the caller.
+mc_build_held_tree() {
+  local token="$1" script="$BATS_TEST_TMPDIR/srv-$$.sh"
+  cat > "$script" <<'EOS'
+#!/bin/bash
+perl -e 'sleep 600' "ms-playwright-fixture" &
+wait
+EOS
+  chmod +x "$script"
+  bash "$script" "$token" & srv_pid=$!
+  browser_pid=""
+  for _ in $(seq 1 250); do
+    browser_pid=$(pgrep -P "$srv_pid" | head -1)
+    [ -n "$browser_pid" ] && break
+    sleep 0.02
+  done
+  [ -n "$browser_pid" ] || return 1
+  wait_spawned "$browser_pid"
+  # The real parent of the server, whatever shell bats is running this in.
+  agent_pid=$(ps -o ppid= -p "$srv_pid" | tr -d ' ')
+  [ -n "$agent_pid" ]
+}
+
+@test "HELD: a browser an MCP server holds open under a live session is never reaped" {
+  mc_build_held_tree "@playwright/mcp@latest"
+  # shellcheck disable=SC2034  # consumed by mc_held_by_agent_server
+  AGENTPIDS="$agent_pid"
+  PROTECTEDPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$browser_pid"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  # Decades idle and CPU-flat -- past every grace. Only the held-resource rule
+  # can save it, which is the point.
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$browser_pid")"
+
+  run mc_reap_sims
+
+  kill "$browser_pid" "$srv_pid" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+  grep -q "held open by a live server" "$(mc_state_dir)/actions.log"
+}
+
+@test "HELD: the same browser IS reclaimable once its owning session is gone" {
+  # The guarantee that keeps tier 3 from going inert for a third reason. A walk
+  # that reaches ppid 1 without finding a live agent session is a resource whose
+  # owner is dead -- the leaked browser, which is the population this tier exists
+  # for. Here the session is simply not live, so the walk finds no agent.
+  mc_build_held_tree "@playwright/mcp@latest"
+  # No live agent session anywhere in the ancestry.
+  AGENTPIDS=""
+  PROTECTEDPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$browser_pid"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$browser_pid")"
+
+  run mc_reap_sims
+
+  kill "$browser_pid" "$srv_pid" 2>/dev/null
+
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "$browser_pid"
+}
+
+@test "HELD: the rule matches the protocol, not a vendor -- chrome-devtools-mcp too" {
+  # `@playwright/mcp` and `chrome-devtools-mcp` share no vendor, only the bounded
+  # `mcp` token. Enumerating vendors here would be the MC_SIM_KILL_PATTERN edit
+  # this file already refused to make, one layer up.
+  mc_build_held_tree "chrome-devtools-mcp"
+  # shellcheck disable=SC2034  # consumed by mc_held_by_agent_server
+  AGENTPIDS="$agent_pid"
+  PROTECTEDPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$browser_pid"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$browser_pid")"
+
+  run mc_reap_sims
+
+  kill "$browser_pid" "$srv_pid" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+}
+
+@test "HELD: an ordinary intermediary is not a server, so it does not hold anything" {
+  # The contrast that keeps the rule from collapsing into "anything under an
+  # agent session". A plain shell between the agent and the browser carries no
+  # protocol token, so the browser falls through to the ordinary rules.
+  mc_build_held_tree "some-ordinary-wrapper"
+  # shellcheck disable=SC2034  # consumed by mc_held_by_agent_server
+  AGENTPIDS="$agent_pid"
+  PROTECTEDPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$browser_pid"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$browser_pid")"
+
+  run mc_reap_sims
+
+  kill "$browser_pid" "$srv_pid" 2>/dev/null
+
+  assert_contains "$output" "would kill"
+}
+
+@test "HELD: memcap's own name does not match the protocol token" {
+  # `mcp` must be bounded by non-alphanumerics on both sides, or the tool would
+  # classify itself -- and every process with `memcap` in its argv -- as an MCP
+  # server holding something.
+  run bash -c "printf '%s' 'memcap watch' | grep -Eq '$MC_HELD_SERVER_PATTERN'"
+  [ "$status" -ne 0 ]
+  run bash -c "printf '%s' 'npm exec @playwright/mcp@latest' | grep -Eq '$MC_HELD_SERVER_PATTERN'"
+  [ "$status" -eq 0 ]
+  run bash -c "printf '%s' 'node /x/@modelcontextprotocol/server-filesystem/index.js' | grep -Eq '$MC_HELD_SERVER_PATTERN'"
+  [ "$status" -eq 0 ]
+}
+
+@test "HELD: an unset AGENTPIDS fails closed -- everything reads as held" {
+  # With no classification there is no way to tell a held resource from a leaked
+  # one, and the wrong guess here kills a live browser.
+  perl -e 'sleep 600' "ms-playwright-fixture" & browser=$!
+  wait_spawned "$browser"
+  unset AGENTPIDS
+  run mc_held_by_agent_server "$browser"
+  kill "$browser" 2>/dev/null
+  [ "$status" -eq 0 ]
+}

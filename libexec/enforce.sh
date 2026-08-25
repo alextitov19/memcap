@@ -144,6 +144,97 @@ mc_veto_evidence_pids() {
   return 0
 }
 
+# --- Evidence, second form: a resource HELD by a live server ------------------
+# The flat evidence set above answers "is this pid itself a tool memcap vetoes
+# on". It is too narrow, and the process tree says why:
+#
+#   41308 Google Chrome                        <- sim-classified, CPU-flat
+#    41307 node .../playwright-mcp
+#     41263 npm exec @playwright/mcp@latest     <- MCP server
+#      93098 claude                             <- live agent session
+#
+# Seven "idle Chrome processes" are ONE browser an MCP server is holding open
+# across requests. That is the maestro defect in a new place: a long-lived server
+# registered in the user's agent config, holding a resource that is idle BY
+# DESIGN between calls. Ten minutes of CPU-flatness while the agent reads code is
+# entirely ordinary, and the reap is only discovered when the next
+# browser_navigate fails. Shipping the tier-3 unblock without this would have
+# made its first production act breaking the user's Playwright tooling, in the
+# same release that stopped it breaking their maestro tooling.
+#
+# The rule is structural, one layer up from a vendor list -- refusing to
+# enumerate `@playwright/mcp` and `chrome-devtools-mcp` for exactly the reason
+# this file refuses to enumerate exclusions into MC_SIM_KILL_PATTERN. It matches
+# the PROTOCOL as an argv token: `@playwright/mcp`, `chrome-devtools-mcp`,
+# `mcp-server-filesystem` and `@modelcontextprotocol/server-*` all satisfy the
+# same bounded-token rule, and so will the next one nobody has written yet.
+# Bounded on both sides by non-alphanumerics, so `memcap` does not match itself.
+MC_HELD_SERVER_PATTERN='(^|[^[:alnum:]])mcp([^[:alnum:]]|$)|modelcontextprotocol'
+
+# One `ps` of the whole table per pass, for the ancestry walks below.
+mc_proc_table_warm() {
+  [ -n "${MC_PROC_TABLE+x}" ] && return 0
+  MC_PROC_TABLE=$(ps -Ao pid=,ppid=,command= 2>/dev/null)
+  return 0
+}
+
+# True when PID's ancestry passes through a live server-shaped process and then
+# reaches a live agent session.
+#
+# BOTH halves are required, and the second is what keeps tier 3 from going inert
+# again: a walk that hits ppid 1 without reaching an agent session is a resource
+# whose owner is DEAD -- the leaked browser, the abandoned simulator. That is the
+# population this tier exists for, and on a machine that has been running agents
+# all day it is not empty. Reaching it is the whole point of the narrower `sims`
+# protection scope; this rule narrows what that scope exposes without closing it.
+mc_held_by_agent_server() {
+  local pid="$1" verdict
+  # Fail closed: with no classification there is no way to tell a held resource
+  # from a leaked one, and the wrong guess here kills a live browser.
+  [ -n "${AGENTPIDS+x}" ] || return 0
+  mc_proc_table_warm
+  verdict=$(printf '%s\n' "$MC_PROC_TABLE" | awk -v start="$pid" -v agents=" $AGENTPIDS " -v srv="$MC_HELD_SERVER_PATTERN" '
+    {
+      p=$1; pp=$2; cmd=$0
+      sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, "", cmd)
+      PP[p]=pp; C[p]=cmd
+    }
+    END {
+      cur=start; seen_server=0
+      # Bounded like every other ancestry walk in this file: a tree deeper than
+      # this is a bug or a cycle, not a process tree.
+      for (i=0; i<32; i++) {
+        pp = PP[cur]
+        if (pp == "" || pp == "0" || pp == "1") break
+        if (index(agents, " " pp " ") > 0) { if (seen_server) { print "held"; exit } ; break }
+        if (C[pp] ~ srv) seen_server=1
+        cur = pp
+      }
+      print "free"
+    }')
+  [ "$verdict" = "held" ]
+}
+
+# The single question every kill path asks. MC_EVIDENCE_REASON carries which of
+# the two rules answered, so the log line can say something useful rather than
+# just "protected".
+mc_pid_is_evidence() {
+  local pid="$1"
+  MC_EVIDENCE_REASON=""
+  mc_veto_evidence_warm
+  case "$MC_VETO_EVIDENCE_CACHE" in
+    *" $pid "*)
+      MC_EVIDENCE_REASON="memcap's own mobile-tooling veto counts it as active work"
+      return 0
+      ;;
+  esac
+  if mc_held_by_agent_server "$pid"; then
+    MC_EVIDENCE_REASON="it is a resource held open by a live server under an agent session (an MCP server's browser is idle between requests by design)"
+    return 0
+  fi
+  return 1
+}
+
 # Two scopes, because tiers 1/2 and tier 3 are protecting against different
 # mistakes. Returns non-zero when the protected set is unknown, so mc_kill_pids
 # can refuse outright rather than kill through a filter that was never populated.
@@ -185,12 +276,10 @@ mc_filter_protected() {
     fi
     case " ${AGENTPIDS} " in *" $pid "*) continue ;; esac
     case "$self" in *" $pid "*) continue ;; esac
-    case "$MC_VETO_EVIDENCE_CACHE" in
-      *" $pid "*)
-        mc_log_throttled "kill-skip-tooling" "protection: not reaping pid $pid -- memcap's own mobile-tooling veto counts it as active work. A process cannot be both evidence of work and reclaimable garbage."
-        continue
-        ;;
-    esac
+    if mc_pid_is_evidence "$pid"; then
+      mc_log_throttled "kill-skip-evidence" "protection: not reaping pid $pid -- $MC_EVIDENCE_REASON. A process cannot be both evidence of work and reclaimable garbage."
+      continue
+    fi
     out="$out $pid"
   done
   printf '%s' "$out"
@@ -846,13 +935,10 @@ mc_sim_is_target() {
     mc_log_throttled "tier3-unsignalable" "tier3: pid $pid matches the reclaim pattern but memcap cannot signal it (not ours) -- tracked, never a target"
     return 1
   fi
-  mc_veto_evidence_warm
-  case "$MC_VETO_EVIDENCE_CACHE" in
-    *" $pid "*)
-      mc_log_throttled "tier3-target-is-evidence" "tier3: pid $pid matches the reclaim pattern but memcap's own mobile-tooling veto counts it as active work -- never a target"
-      return 1
-      ;;
-  esac
+  if mc_pid_is_evidence "$pid"; then
+    mc_log_throttled "tier3-target-is-evidence" "tier3: pid $pid matches the reclaim pattern but $MC_EVIDENCE_REASON -- never a target"
+    return 1
+  fi
   return 0
 }
 
@@ -989,10 +1075,7 @@ mc_reap_sims() {
     # whether any pid is a kill target, and is answered over the ready set rather
     # than the target set.
     if printf '%s' "$cmd" | grep -Eq "$MC_SIM_IOS_EXE"; then
-      case "$MC_VETO_EVIDENCE_CACHE" in
-        *" $pid "*) : ;;
-        *) ios_ready=1 ;;
-      esac
+      mc_pid_is_evidence "$pid" || ios_ready=1
     fi
     mc_sim_is_target "$pid" "$cmd" || continue
     targets="$targets $pid"
@@ -1120,8 +1203,10 @@ mc_watch() {
   fi
 
   # One snapshot of "what counts as evidence of active work" per pass, shared by
-  # every tier through mc_veto_evidence_pids.
+  # every tier -- both the flat tool set and the process table the held-resource
+  # ancestry walk reads.
   unset MC_VETO_EVIDENCE_CACHE
+  unset MC_PROC_TABLE
 
   eval "$(mc_ps_snapshot | mc_classify)"
   # Fail closed on a classifier that produced nothing: an `eval` of an empty
