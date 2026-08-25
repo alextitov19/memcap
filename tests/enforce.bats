@@ -4,6 +4,12 @@ setup() {
   setup_common
   # shellcheck source=/dev/null
   source "$MEMCAP_ROOT/libexec/common.sh"
+  # Sourced in the same order bin/memcap uses, and specifically so mc_num/mc_frac
+  # (contract C1) are the REAL ones here rather than enforce.sh's standalone
+  # fallbacks -- the config-warning assertions below depend on the real throttled
+  # log line, and every numeric knob in this file is meant to reach mc_num.
+  # shellcheck source=/dev/null
+  source "$MEMCAP_ROOT/libexec/config.sh"
   # shellcheck source=/dev/null
   source "$MEMCAP_ROOT/libexec/roots.sh"
   # shellcheck source=/dev/null
@@ -18,6 +24,41 @@ setup() {
   # enforcement functions directly; this covers the ones that shell out to
   # `bin/memcap watch`/`clean` and would otherwise inherit no override at all.
   export MC_DRY_RUN=1
+
+  # Sandbox for tier 3's `xcrun simctl shutdown all`. Before this, `xcrun` was
+  # stubbed NOWHERE in tests/ -- the two SIMPIDS="" tests could reach the shutdown
+  # branch and were safe only by the accident of MC_DRY_RUN=1, so a future test
+  # that forgot the flag would have shut down a developer's booted simulators for
+  # real. MC_XCRUN_BIN is the same indirection service.sh uses for launchctl and
+  # brew: a guarantee rather than a PATH convention, so no test can reach the real
+  # binary by forgetting anything.
+  FAKE_XCRUN_LOG="$BATS_TEST_TMPDIR/xcrun.calls"
+  FAKE_XCRUN_BOOTED="$BATS_TEST_TMPDIR/xcrun.booted"
+  export FAKE_XCRUN_LOG FAKE_XCRUN_BOOTED
+  : > "$FAKE_XCRUN_LOG"
+  : > "$FAKE_XCRUN_BOOTED"
+  MC_XCRUN_BIN="$BATS_TEST_TMPDIR/fake-xcrun"
+  cat > "$MC_XCRUN_BIN" <<'SCRIPT'
+#!/bin/sh
+echo "$@" >> "$FAKE_XCRUN_LOG"
+case "$2" in
+  list) cat "$FAKE_XCRUN_BOOTED" 2>/dev/null ;;
+esac
+exit 0
+SCRIPT
+  chmod +x "$MC_XCRUN_BIN"
+  export MC_XCRUN_BIN
+
+  # Both halves of the protected set, always defined. mc_classify emits them
+  # together on every real pass, and mc_filter_protected now REFUSES to kill when
+  # either is unset rather than defaulting an empty protected set -- a fail-open
+  # default on the protection filter itself was one of this round's findings. A
+  # test that wants protection sets one or both to a pid; the baseline is "no
+  # protected pids, but classification did run".
+  # shellcheck disable=SC2034  # consumed by mc_filter_protected, sourced from enforce.sh
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_filter_protected, sourced from enforce.sh
+  PROTECTEDPIDS=""
 }
 
 @test "dry run reports without killing" {
@@ -127,6 +168,12 @@ setup() {
 
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim"
+  # Tier 1 now has its own age gate (TIER1_MIN_AGE_SEC, default 300s), so a
+  # freshly-spawned fixture would be spared for a reason that has nothing to do
+  # with what this test is checking. Zeroed here; the gate itself is tested
+  # directly further down.
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  TIER1_MIN_AGE_SEC=0
   MC_DRY_RUN=1
   run mc_reap_orphans
 
@@ -157,6 +204,12 @@ setup() {
 
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim"
+  # Tier 1 now has its own age gate (TIER1_MIN_AGE_SEC, default 300s), so a
+  # freshly-spawned fixture would be spared for a reason that has nothing to do
+  # with what this test is checking. Zeroed here; the gate itself is tested
+  # directly further down.
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  TIER1_MIN_AGE_SEC=0
   MC_DRY_RUN=1
   run mc_reap_orphans
 
@@ -183,6 +236,12 @@ setup() {
 
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim"
+  # Tier 1 now has its own age gate (TIER1_MIN_AGE_SEC, default 300s), so a
+  # freshly-spawned fixture would be spared for a reason that has nothing to do
+  # with what this test is checking. Zeroed here; the gate itself is tested
+  # directly further down.
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  TIER1_MIN_AGE_SEC=0
   MC_DRY_RUN=1
   run mc_reap_orphans
 
@@ -209,6 +268,12 @@ setup() {
 
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim"
+  # Tier 1 now has its own age gate (TIER1_MIN_AGE_SEC, default 300s), so a
+  # freshly-spawned fixture would be spared for a reason that has nothing to do
+  # with what this test is checking. Zeroed here; the gate itself is tested
+  # directly further down.
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  TIER1_MIN_AGE_SEC=0
   MC_DRY_RUN=1
   run mc_reap_orphans
 
@@ -236,6 +301,12 @@ setup() {
 
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim"
+  # Tier 1 now has its own age gate (TIER1_MIN_AGE_SEC, default 300s), so a
+  # freshly-spawned fixture would be spared for a reason that has nothing to do
+  # with what this test is checking. Zeroed here; the gate itself is tested
+  # directly further down.
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  TIER1_MIN_AGE_SEC=0
   MC_DRY_RUN=1
   run mc_reap_orphans
 
@@ -281,6 +352,12 @@ setup() {
 
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim"
+  # Tier 1 now has its own age gate (TIER1_MIN_AGE_SEC, default 300s), so a
+  # freshly-spawned fixture would be spared for a reason that has nothing to do
+  # with what this test is checking. Zeroed here; the gate itself is tested
+  # directly further down.
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  TIER1_MIN_AGE_SEC=0
   MC_DRY_RUN=1
   run mc_reap_orphans
 
@@ -311,6 +388,12 @@ setup() {
 
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim"
+  # Tier 1 now has its own age gate (TIER1_MIN_AGE_SEC, default 300s), so a
+  # freshly-spawned fixture would be spared for a reason that has nothing to do
+  # with what this test is checking. Zeroed here; the gate itself is tested
+  # directly further down.
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  TIER1_MIN_AGE_SEC=0
   MC_DRY_RUN=1
   run mc_reap_orphans
 
@@ -603,6 +686,9 @@ SCRIPT
   # under test -- mc_log's kill-record line must fire every time, unthrottled --
   # and both victims are dummy perl processes this test owns and spawned itself,
   # never anything reachable from a real snapshot.
+  # Tier 1 age gate zeroed -- see the anchoring test above.
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  TIER1_MIN_AGE_SEC=0
   MC_DRY_RUN=0
   mc_reap_orphans
 
@@ -611,6 +697,9 @@ SCRIPT
   wait_spawned "$victim2"
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim2"
+  # Tier 1 age gate zeroed -- see the anchoring test above.
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  TIER1_MIN_AGE_SEC=0
   MC_DRY_RUN=0
   mc_reap_orphans
 
@@ -789,9 +878,17 @@ for a in "$@"; do
   case "$a" in
     etime=) mode=etime ;;
     rss=)   mode=rss ;;
+    ppid=)  mode=ppid ;;
     [0-9]*) pid="$a" ;;
   esac
 done
+# mc_self_ancestry walks memcap's own parents through ps and now FAILS CLOSED on
+# a ps that answers nothing -- the old version silently reduced the protected set
+# to $$ alone. A stub that does not answer `-o ppid=` would therefore make
+# mc_kill_pids refuse outright, for a reason unrelated to what these tests check.
+case "$mode" in
+  ppid) echo " 1"; exit 0 ;;
+esac
 case "$pid:$mode" in
   999000:etime) echo "  05:00" ;;
   999000:rss)   : ;;                 # gone -- no output, exactly like an exited pid
@@ -807,6 +904,11 @@ exit 1
 SCRIPT
   chmod +x "$fakebin/pgrep"
 
+  # Straight to the stubbed `ps -o rss=` fallback, which is the reading this test
+  # is actually about. Without it mc_footprint_kb runs the REAL `top` first, and
+  # pid 123 is a real process on macOS -- so the number being ranked would come
+  # from the machine rather than the fixture.
+  MC_NO_TOP=1
   # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
   DEVPIDS="999000 123"
   # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
@@ -834,9 +936,17 @@ for a in "$@"; do
   case "$a" in
     etime=) mode=etime ;;
     rss=)   mode=rss ;;
+    ppid=)  mode=ppid ;;
     [0-9]*) pid="$a" ;;
   esac
 done
+# mc_self_ancestry walks memcap's own parents through ps and now FAILS CLOSED on
+# a ps that answers nothing -- the old version silently reduced the protected set
+# to $$ alone. A stub that does not answer `-o ppid=` would therefore make
+# mc_kill_pids refuse outright, for a reason unrelated to what these tests check.
+case "$mode" in
+  ppid) echo " 1"; exit 0 ;;
+esac
 case "$pid:$mode" in
   5010:etime) echo "  10:00" ;;
   5010:rss)   echo " 1000" ;;        # tiny RSS -- would lose if ranking used this
@@ -979,53 +1089,52 @@ SCRIPT
 # --- Final review, I6: the idle grace stamp must be per-pid, not machine-wide -
 # One shared `sims-idle` stamp meant a hand-booted simulator inherited whichever
 # timestamp an unrelated, already-idle sim process had accumulated, and could be
-# reaped with none of its own grace. Each tracked sim pid now gets its own stamp,
-# and a pid seen idle for the first time this pass blocks the WHOLE reap -- not just
-# itself -- until it too clears the grace, rather than being swept in in with an
-# older pid's head start.
-@test "I6: a freshly-tracked sim pid blocks the reap even though another tracked sim already cleared its own grace" {
+# reaped with none of its own grace. Each tracked sim pid gets its own stamp.
+#
+# What I6 got WRONG, and this round reverses: it also made readiness a global
+# conjunction -- no pid could be reaped until EVERY tracked pid had individually
+# cleared the grace. That was chosen as the conservative reading of "protect the
+# newest one", and measured against real churn it is not conservative, it is
+# inert. 239 distinct sim-classified pids appeared on this machine in 9.5
+# minutes, including 28 Playwright Firefox processes born and dead inside a
+# single 60-second pass; under a global conjunction one fresh renderer protects
+# an unrelated stale Chrome forever, which is most of why tier 3 reclaimed
+# nothing even in the passes where it was not blocked outright. Readiness is now
+# per pid: each earns, and spends, its own clock.
+@test "PER-PID: a freshly-tracked sim does not hold back one that has cleared its own grace" {
   perl -e 'sleep 600' "ms-playwright-fixture" & old=$!
-  sleep 600 & fresh=$!
+  perl -e 'sleep 600' "ms-playwright-other-fixture" & fresh=$!
   wait_spawned "$old" "$fresh"
   AGENTPIDS=""
   SIMPIDS="$old $fresh"
   MC_DRY_RUN=1
-  # $old gets a stamp far enough in the past to have cleared any real-world grace on
-  # its own -- mirroring a sim that has genuinely been idle a while. $fresh gets none:
-  # it is tracked for the first time on this very pass, exactly like a simulator just
-  # booted by hand. Under the old shared-stamp design this single old timestamp would
-  # have applied to $fresh too, and $old (a real kill-pattern match) would have been
-  # reaped immediately -- taking $fresh's grace away from it in the process.
+  # $old gets a stamp far enough in the past to have cleared any real-world grace
+  # on its own. $fresh gets none: it is tracked for the first time on this very
+  # pass, exactly like a browser just launched. Both match the reclaim pattern, so
+  # the only thing separating them is their own clocks.
   mkdir -p "$(mc_sims_idle_dir)"
-  # Second field is the CPU-time baseline (v0.3.0: tier 3 now tracks CPU
-  # alongside the timestamp) -- set absurdly high so $old's real, near-zero
-  # CPU usage can never look like it "advanced" past this baseline and reset
-  # the clock, regardless of how much wall-clock time this test happens to
-  # take to run.
+  # Second field is the CPU-time baseline -- set absurdly high so $old's real,
+  # near-zero CPU usage can never look like it "advanced" past this baseline and
+  # reset the clock, regardless of how long this test takes to run.
   printf '1 999999\n' > "$(mc_sims_idle_stamp "$old")"
 
   run mc_reap_sims
 
   kill "$old" "$fresh" 2>/dev/null
 
-  assert_not_contains "$output" "would kill"
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "$old"
+  assert_not_contains "$output" "$fresh"
   [ -f "$(mc_sims_idle_stamp "$fresh")" ]
 }
 
-@test "I6: once every tracked sim pid has individually cleared the grace, the reap proceeds" {
-  perl -e 'sleep 600' "ms-playwright-fixture" & old=$!
-  sleep 600 & fresh=$!
-  wait_spawned "$old" "$fresh"
+@test "PER-PID: the freshly-tracked sim is reclaimed on a later pass, once its own clock clears" {
+  perl -e 'sleep 600' "ms-playwright-fixture" & fresh=$!
+  wait_spawned "$fresh"
   AGENTPIDS=""
-  SIMPIDS="$old $fresh"
+  SIMPIDS="$fresh"
   MC_DRY_RUN=1
-  mkdir -p "$(mc_sims_idle_dir)"
-  # Second field is the CPU-time baseline (v0.3.0: tier 3 now tracks CPU
-  # alongside the timestamp) -- set absurdly high so $old's real, near-zero
-  # CPU usage can never look like it "advanced" past this baseline and reset
-  # the clock, regardless of how much wall-clock time this test happens to
-  # take to run.
-  printf '1 999999\n' > "$(mc_sims_idle_stamp "$old")"
+
   run mc_reap_sims
   # assert_not_contains, not a standalone `[[ ]]`: this check's own $output is
   # about to be overwritten by the next `run` below, so it can't share a single
@@ -1034,17 +1143,16 @@ SCRIPT
   # `[[ ]]` would not (see classify.bats).
   assert_not_contains "$output" "would kill"
 
-  # Grace set to 0 rather than sleeping for real, same trick as the single-pid test
-  # above: $fresh's own stamp (written on the poll just above) now also counts as
-  # cleared, so both pids are individually ready and the pass proceeds.
+  # Grace set to 0 rather than sleeping for real: the stamp written on the poll
+  # above is now, by definition, at least zero seconds old.
   # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
   SIM_IDLE_GRACE_SEC=0
   run mc_reap_sims
 
-  kill "$old" "$fresh" 2>/dev/null
+  kill "$fresh" 2>/dev/null
 
   assert_contains "$output" "would kill"
-  assert_contains "$output" "$old"
+  assert_contains "$output" "$fresh"
 }
 
 @test "I6: mc_hands_on_mobile also treats Simulator.app itself as hands-on" {
@@ -1337,6 +1445,17 @@ SCRIPT
 # exactly what let the first version of this ship with the bug still live.
 @test "a long-lived, CPU-idle maestro-pattern process does not permanently veto a reclaim" {
   unset MC_ACTIVE_MOBILE_TOOLING
+  # Narrowed to this test's own fixture. The real pattern also matches the
+  # maestro MCP servers running on the author's machine, and those are live
+  # processes: if one of them does any real work between this test's two passes,
+  # the veto correctly reports "active" and the test fails for a reason that has
+  # nothing to do with what it is checking. Observed as an intermittent failure
+  # under full-suite load. The pattern itself is spot-checked against a
+  # maestro-shaped fixture by its own test above.
+  # shellcheck disable=SC2034  # consumed by mc_mobile_tooling_pids
+  MC_MOBILE_TOOLING_ARGV_PATTERN='fake-mcp-server\.jar'
+  # shellcheck disable=SC2034  # consumed by mc_mobile_tooling_pids
+  MC_MOBILE_TOOLING_EXACT=''
   # Mimics maestro's MCP server: matches the maestro pattern, never exits,
   # never does meaningful CPU work -- exactly the shape of the real process
   # that reproduced this bug in production.
@@ -1372,6 +1491,11 @@ SCRIPT
 
 @test "an actively busy maestro-pattern process keeps vetoing a reclaim" {
   unset MC_ACTIVE_MOBILE_TOOLING
+  # Narrowed to this test's own fixture -- see the previous test for why.
+  # shellcheck disable=SC2034  # consumed by mc_mobile_tooling_pids
+  MC_MOBILE_TOOLING_ARGV_PATTERN='fake-busy\.jar'
+  # shellcheck disable=SC2034  # consumed by mc_mobile_tooling_pids
+  MC_MOBILE_TOOLING_EXACT=''
   # A tight loop actually burns CPU, unlike sleep -- this is what a real
   # maestro flow driving a simulator looks like, as opposed to its MCP server
   # idling between requests.
@@ -1468,6 +1592,12 @@ SCRIPT
 
   # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
   ORPHANS="$victim"
+  # Tier 1 now has its own age gate (TIER1_MIN_AGE_SEC, default 300s), so a
+  # freshly-spawned fixture would be spared for a reason that has nothing to do
+  # with what this test is checking. Zeroed here; the gate itself is tested
+  # directly further down.
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  TIER1_MIN_AGE_SEC=0
   MC_DRY_RUN=1
   run mc_reap_orphans
 
@@ -1482,4 +1612,1068 @@ SCRIPT
     echo "it must be resolved once per orphan, not once per (orphan x root)" >&2
     return 1
   }
+}
+
+# =============================================================================
+# THE HEADLINE: tier 3 has never fired, in the tool's entire life.
+#
+# Eleven days of production logs on this machine: 1,973 tier-3 declines, zero
+# reclaims. The cause was `kill -0` used as a LIVENESS test. It conflates EPERM
+# ("alive, but not yours to signal") with ESRCH ("dead"), and simdiskimaged --
+# root-owned, listed in MC_SIM_EXE, present on any Mac with Xcode installed --
+# entered SIMPIDS on every single pass. Every pass the prune declared it dead and
+# deleted its idle stamp; the tracking loop then re-saw it as never-tracked and
+# reset the global readiness flag; and the function returned through the one
+# unlogged return it had. It was blocked by a process that is not even in
+# MC_SIM_KILL_PATTERN and could never have been killed if it had been selected.
+# =============================================================================
+
+@test "HEADLINE: kill -0 and mc_pid_alive disagree about a root-owned process -- that disagreement is the bug" {
+  # pid 1 (launchd) is the reproduction that is guaranteed present on any macOS
+  # machine: alive, root-owned, unsignalable by this user. simdiskimaged behaves
+  # identically and is what actually did it here.
+  run mc_pid_alive 1
+  [ "$status" -eq 0 ]
+  run kill -0 1
+  [ "$status" -ne 0 ]
+}
+
+@test "HEADLINE: the prune keeps the idle stamp of an alive-but-unsignalable sim pid" {
+  # Under `kill -0` this stamp was deleted on every pass, so the pid was re-seen
+  # as never-tracked on every pass, and its clock could never advance past zero.
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="1"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp 1)"
+
+  run mc_reap_sims
+
+  [ -f "$(mc_sims_idle_stamp 1)" ]
+}
+
+@test "HEADLINE: an unsignalable pid is tracked but is never a kill target" {
+  # MC_SIM_KILL_PATTERN is overridden to match launchd so the pattern test PASSES
+  # and the permission test is the thing being exercised -- otherwise this would
+  # be rejected one line earlier for a reason that is not the one under test.
+  # shellcheck disable=SC2034  # consumed by mc_sim_is_target, sourced from enforce.sh
+  MC_SIM_KILL_PATTERN='launchd'
+  run mc_sim_is_target 1 "/sbin/launchd"
+  [ "$status" -ne 0 ]
+  grep -q "memcap cannot signal it" "$(mc_state_dir)/actions.log"
+}
+
+@test "HEADLINE: a non-target sim pid no longer holds back a genuine reclaim" {
+  # Both pids are ready (ancient stamps). Only one matches the reclaim pattern.
+  # Pre-fix, readiness was a global conjunction over every tracked pid and any
+  # disqualified pid could gate the whole tier; now a pid that cannot be a target
+  # simply is not one.
+  perl -e 'sleep 600' "ms-playwright-fixture" & target=$!
+  sleep 600 & bystander=$!
+  wait_spawned "$target" "$bystander"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$bystander $target"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$target")"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$bystander")"
+
+  run mc_reap_sims
+
+  kill "$target" "$bystander" 2>/dev/null
+
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "$target"
+  assert_not_contains "$output" "$bystander"
+}
+
+@test "HEADLINE: a pass that reclaims nothing names the pid blocking it and how long it has been idle" {
+  # The return this replaces was the ONLY unlogged return in mc_reap_sims, and it
+  # is the one that fired 1,973 times. Eleven days of silence, in a file whose
+  # stated purpose is recording enforcement decisions.
+  perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!
+  wait_spawned "$sim"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$sim"
+  MC_DRY_RUN=1
+
+  run mc_reap_sims
+
+  kill "$sim" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+  grep -q "tier3: reclaimed nothing" "$(mc_state_dir)/actions.log"
+  grep -q "longest-idle blocker is pid $sim" "$(mc_state_dir)/actions.log"
+}
+
+# --- The invariant: evidence of work is never reclaimable garbage -------------
+# The one-line kill -0 fix is correct and, alone, unsafe to ship. With tier 3
+# unblocked it would have reclaimed the author's own maestro MCP servers:
+# MC_SIM_KILL_PATTERN matches `\.maestro/lib`, and mc_active_mobile_tooling
+# matches the same string as PROOF that a simulator is being driven. memcap would
+# have been vetoing on the very pids it was about to kill.
+#
+# The rule is stated generally, not as an exclusion bolted onto one pattern: a
+# process that any veto counts as evidence of active work is never a target, and
+# it is enforced once, at mc_filter_protected, over whatever set the matchers
+# currently return. Any future veto whose evidence overlaps a kill pattern
+# inherits the protection automatically.
+@test "INVARIANT: a process the mobile-tooling veto counts as evidence is never reclaimed" {
+  # This fixture matches BOTH MC_SIM_KILL_PATTERN and the maestro arm of
+  # MC_MOBILE_TOOLING_ARGV_PATTERN -- exactly the real maestro MCP server's shape.
+  perl -e 'sleep 600' ".maestro/lib/fake-mcp-server.jar" & tooling=$!
+  wait_spawned "$tooling"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$tooling"
+  MC_DRY_RUN=1
+  # The veto's ANSWER is forced to "not active" (setup_common's suite-wide
+  # default) so this cannot pass merely because tier 3 declined. The veto says
+  # "go ahead"; the invariant still refuses to touch the pid the veto is built on.
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$tooling")"
+
+  run mc_reap_sims
+
+  kill "$tooling" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+  grep -q "counts it as active work" "$(mc_state_dir)/actions.log"
+}
+
+@test "INVARIANT: the choke point drops a tooling pid even when a tier hands it over directly" {
+  # Stated at mc_kill_pids rather than inside one tier, so no tier can opt out of
+  # it by construction. MC_VETO_EVIDENCE_PIDS is the deterministic form of the
+  # same set (the matchers themselves depend on what is running on the host).
+  sleep 600 & victim=$!
+  wait_spawned "$victim"
+  # shellcheck disable=SC2034  # consumed by mc_veto_evidence_pids
+  MC_VETO_EVIDENCE_PIDS="$victim"
+  MC_DRY_RUN=1
+  run mc_kill_pids "$victim" "test"
+
+  kill -0 "$victim"
+  kill "$victim" 2>/dev/null
+
+  [ -z "$output" ]
+}
+
+# --- xcrun simctl shutdown all was reachable with zero bookkeeping ------------
+# all_ready was initialised to 1 at its `local` declaration while every grace and
+# CPU check lived inside `if [ -n "${SIMPIDS// /}" ]`. An EMPTY SIMPIDS therefore
+# skipped the whole block with all_ready still 1, and every booted device on the
+# machine was shut down. The live trigger is ordinary: `simctl boot` flips a
+# device to Booted before launchd_sim appears in the `ps` snapshot.
+@test "XCRUN: an empty SIMPIDS does not shut down a single booted device" {
+  printf 'iPhone 17 (ABC) (Booted)\n' > "$FAKE_XCRUN_BOOTED"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS=""
+  # Deliberately NOT a dry run: the pre-fix behavior was safe in tests only by the
+  # accident of MC_DRY_RUN=1, which is precisely the accident this asserts against.
+  # Nothing real is reachable -- MC_XCRUN_BIN is setup_common's logging fake, and
+  # there are no kill targets.
+  MC_DRY_RUN=0
+
+  run mc_reap_sims
+
+  [ ! -s "$FAKE_XCRUN_LOG" ]
+}
+
+@test "XCRUN: a booted device is shut down once a simulator pid has cleared its own grace" {
+  printf 'iPhone 17 (ABC) (Booted)\n' > "$FAKE_XCRUN_BOOTED"
+  # launchd_sim is the per-device process, so it is the evidence that a device is
+  # actually booted. It is deliberately NOT in MC_SIM_KILL_PATTERN -- a booted
+  # device is reclaimed with `simctl shutdown`, not by signalling its launchd.
+  perl -e 'sleep 600' "launchd_sim" & sim=$!
+  wait_spawned "$sim"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$sim"
+  MC_DRY_RUN=0
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
+
+  run mc_reap_sims
+
+  kill "$sim" 2>/dev/null
+
+  grep -q "simctl shutdown all" "$FAKE_XCRUN_LOG"
+}
+
+@test "XCRUN: simdiskimaged alone is not evidence that any device is booted" {
+  # simdiskimaged is a root-owned daemon that runs whether or not a device is
+  # booted, which is why it is excluded from MC_SIM_IOS_EXE. Treating it as
+  # evidence is what made a shutdown look justified on a machine with nothing
+  # booted at all.
+  printf 'iPhone 17 (ABC) (Booted)\n' > "$FAKE_XCRUN_BOOTED"
+  perl -e 'sleep 600' "/Library/Developer/CoreSimulator/simdiskimaged" & daemon=$!
+  wait_spawned "$daemon"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$daemon"
+  MC_DRY_RUN=0
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$daemon")"
+
+  run mc_reap_sims
+
+  kill "$daemon" 2>/dev/null
+
+  [ ! -s "$FAKE_XCRUN_LOG" ]
+}
+
+# --- Corrupt idle stamps ------------------------------------------------------
+# Both of these were reproduced, and both are worse than they look.
+@test "STAMP: a truncated stamp restarts the clock instead of bypassing the grace entirely" {
+  # `12345` -- second field lost. The CPU delta was computed against an empty
+  # baseline so no reset ever fired, and `now - 12345` is decades: the grace was
+  # bypassed ENTIRELY, the pid was killed on the first pass that saw it, and it
+  # was reported as a successful, correctly-graced reclaim.
+  perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!
+  wait_spawned "$sim"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$sim"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '12345\n' > "$(mc_sims_idle_stamp "$sim")"
+
+  run mc_reap_sims
+
+  assert_not_contains "$output" "would kill"
+  # Rewritten as a well-formed two-field stamp with a fresh clock, so the pid gets
+  # its full grace from here rather than from a number nobody could parse.
+  read -r first cpu < "$(mc_sims_idle_stamp "$sim")"
+  kill "$sim" 2>/dev/null
+  [ "$first" != "12345" ]
+  [ -n "$cpu" ]
+}
+
+@test "STAMP: a non-numeric stamp does not take down this pass, or every pass after it" {
+  # `notanumber 0` reached `$(( ))` under `set -u` and killed the whole pass. The
+  # stamp is only pruned once its pid dies, so EVERY subsequent pass died at the
+  # same line for as long as that simulator lived -- a single bad write was a
+  # permanent outage, and the heartbeat would still have been stamped by the
+  # caller that never got to run.
+  perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!
+  wait_spawned "$sim"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$sim"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf 'notanumber 0\n' > "$(mc_sims_idle_stamp "$sim")"
+
+  run mc_reap_sims
+  [ "$status" -eq 0 ]
+
+  # And again, with the stamp deliberately re-corrupted, to prove the recovery is
+  # not a one-off: the real failure was that it repeated forever.
+  printf 'notanumber 0\n' > "$(mc_sims_idle_stamp "$sim")"
+  run mc_reap_sims
+
+  kill "$sim" 2>/dev/null
+  [ "$status" -eq 0 ]
+}
+
+# =============================================================================
+# The kill path: pid reuse between the snapshot and the SIGKILL.
+#
+# `kill -TERM $pids; sleep 2; kill -0 recheck; kill -KILL`. The recheck answers
+# "is A process alive at this number", not "is it the one I TERMed" -- and the
+# survivors went to SIGKILL without passing back through mc_filter_protected.
+# Measured on this machine: 135 pids allocated per 2-second idle window against a
+# pid space of ~99999, so the 388-orphan sweep this tool was built for carries
+# roughly half an expected SIGKILL delivered to an innocent bystander. It is the
+# widest snapshot-to-action window in the codebase and was revalidated by nothing.
+# =============================================================================
+
+@test "REUSE: a pid's identity is its start time plus its command line, and it distinguishes two processes" {
+  perl -e 'sleep 600' "mc-ident-a" & a=$!
+  perl -e 'sleep 600' "mc-ident-b" & b=$!
+  wait_spawned "$a" "$b"
+  ident_a=$(mc_pid_identity "$a")
+  ident_b=$(mc_pid_identity "$b")
+  kill "$a" "$b" 2>/dev/null
+  [ -n "$ident_a" ]
+  assert_contains "$ident_a" "mc-ident-a"
+  assert_contains "$ident_a" "$(date +%Y)"
+  [ "$ident_a" != "$ident_b" ] || {
+    echo "two distinct fixtures produced identical identities:" >&2
+    echo "  $ident_a" >&2
+    return 1
+  }
+}
+
+@test "REUSE: what the identity check does NOT close, stated honestly" {
+  # `lstart` has one-second resolution, so two processes started in the same
+  # second with the same argv are genuinely indistinguishable by this test. That
+  # is the residual window, and it is a far narrower one than the pre-fix
+  # behavior: the pid number alone matched ANY process that happened to inherit
+  # the number, whereas this requires an unrelated process to have taken the
+  # number AND to be running the same command line AND to have started in the
+  # same second the original did. Pinned as a test so the limitation is a
+  # recorded decision rather than something a later reader has to rediscover.
+  sleep 600 & a=$!
+  sleep 600 & b=$!
+  wait_spawned "$a" "$b"
+  ident_a=$(mc_pid_identity "$a")
+  ident_b=$(mc_pid_identity "$b")
+  kill "$a" "$b" 2>/dev/null
+  [ "$ident_a" = "$ident_b" ]
+}
+
+@test "REUSE: an identity recorded before SIGTERM is looked up again by pid" {
+  recorded="4242|Mon Jan  1 00:00:00 2024 /usr/bin/node server.js
+4243|Mon Jan  1 00:00:01 2024 /usr/bin/node other.js"
+  run mc_identity_lookup 4243 "$recorded"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "other.js"
+  run mc_identity_lookup 9999 "$recorded"
+  [ "$status" -ne 0 ]
+}
+
+@test "REUSE: a real TERM-then-KILL still kills the process it was aimed at" {
+  # The identity check must close the reuse window without breaking the ordinary
+  # path. A perl fixture that ignores SIGTERM forces the escalation to SIGKILL,
+  # which is the branch the re-filter and the identity comparison live on.
+  perl -e '$SIG{TERM}="IGNORE"; sleep 600' "mc-stubborn-fixture" & victim=$!
+  wait_spawned "$victim"
+  MC_DRY_RUN=0
+  run mc_kill_pids "$victim" "test escalation"
+  [ "$status" -eq 0 ]
+
+  # SIGKILL is synchronous enough that a short poll is decisive, and polling
+  # rather than sleeping a constant keeps this from racing under suite load.
+  gone=0
+  for _ in $(seq 1 250); do
+    mc_pid_alive "$victim" || { gone=1; break; }
+    sleep 0.02
+  done
+  kill -9 "$victim" 2>/dev/null || true
+  [ "$gone" -eq 1 ]
+}
+
+# --- The protection filter itself must not fail open -------------------------
+@test "PROTECT: an unset PROTECTEDPIDS refuses the kill instead of protecting nothing" {
+  sleep 600 & victim=$!
+  wait_spawned "$victim"
+  unset PROTECTEDPIDS
+  MC_DRY_RUN=1
+  run mc_kill_pids "$victim" "test"
+
+  kill -0 "$victim"
+  kill "$victim" 2>/dev/null
+
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+  grep -q "the protected pid set is unknown" "$(mc_state_dir)/actions.log"
+}
+
+@test "PROTECT: a pid in PROTECTEDPIDS but not AGENTPIDS is still spared" {
+  # Contract C3: PROTECTEDPIDS is the propagated agent TREE. This is the shape of
+  # the six real tier-2 kills that were chrome-devtools-mcp watchdogs running as
+  # grandchildren of a live claude session -- in the tree, absent from AGENTPIDS.
+  sleep 600 & victim=$!
+  wait_spawned "$victim"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_filter_protected
+  PROTECTEDPIDS="$victim"
+  MC_DRY_RUN=1
+  run mc_kill_pids "$victim" "test"
+
+  kill -0 "$victim"
+  kill "$victim" 2>/dev/null
+
+  [ -z "$output" ]
+}
+
+@test "PROTECT: a ps that cannot resolve memcap's own ancestry refuses the kill" {
+  # The old walk broke out of the loop on an empty ps answer and returned just
+  # `$$`, silently dropping memcap's parents out of the protected set -- at
+  # exactly the moment the machine is under enough pressure for a tier to fire.
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/ps" <<'SCRIPT'
+#!/usr/bin/env bash
+exit 1
+SCRIPT
+  chmod +x "$fakebin/ps"
+
+  sleep 600 & victim=$!
+  wait_spawned "$victim"
+  MC_DRY_RUN=1
+  PATH="$fakebin:$PATH" run mc_self_ancestry
+  [ "$status" -ne 0 ]
+
+  PATH="$fakebin:$PATH" run mc_kill_pids "$victim" "test"
+
+  kill -0 "$victim"
+  kill "$victim" 2>/dev/null
+
+  [ -z "$output" ]
+}
+
+# --- Kill records were truncated mid-token -----------------------------------
+@test "RECORD: a long command line keeps its informative tail instead of being cut at 160" {
+  # 376 real kill records collapsed to 4 distinct strings under `cut -c1-160`:
+  # the node binary path plus the `--require` shim consumed the whole budget, so
+  # the argument naming the script actually being killed was never recorded once.
+  filler=$(printf 'A%.0s' $(seq 1 500))
+  perl -e 'sleep 600' "$filler" "mc-tail-marker-9f2" & victim=$!
+  wait_spawned "$victim"
+  MC_DRY_RUN=0
+  run mc_kill_pids "$victim" "tail test"
+
+  kill -9 "$victim" 2>/dev/null || true
+
+  log="$(mc_state_dir)/actions.log"
+  grep -q "mc-tail-marker-9f2" "$log"
+  grep -q '\.\.\.' "$log"
+}
+
+@test "RECORD: mc_abbrev leaves a short record exactly as it found it" {
+  run mc_abbrev "1234  5000  /usr/bin/node server.js"
+  [ "$output" = "1234  5000  /usr/bin/node server.js" ]
+}
+
+# =============================================================================
+# Tier 1: it had no age gate at all, while its own comment claimed one.
+#
+# MC_DEV_PATTERN matches /esbuild, /webpack, /rollup and /tsx, so `npm run build
+# &` reparented to init is an instant kill target. One real production kill was
+# `npm exec next start -p 3100` -- a PRODUCTION server on an ad-hoc port. ppid==1
+# cannot distinguish "abandoned by a dead session" from "deliberately daemonized
+# with nohup", and nothing else in the process table can either; the age gate
+# does not fix that case, but the asymmetry decides the one it does fix. A leak
+# is persistent (388 orphans accumulate over hours), so waiting five minutes to
+# reap one costs nothing; killing a three-second-old build destroys work.
+# =============================================================================
+
+@test "TIER1-AGE: a freshly-spawned orphan under a valid root is spared" {
+  mkdir -p "$HOME/.mc-age-$$/proj"
+  real_root=$(mc_canonicalize "$HOME/.mc-age-$$/proj")
+  mc_record_root "$HOME/.mc-age-$$/proj"
+
+  perl -e 'sleep 600' "$real_root/node_modules/.bin/esbuild" &
+  victim=$!
+  wait_spawned "$victim"
+
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  ORPHANS="$victim"
+  MC_DRY_RUN=1
+  # No TIER1_MIN_AGE_SEC override: the DEFAULT must already spare this.
+  run mc_reap_orphans
+
+  kill "$victim" 2>/dev/null
+  rm -rf "$HOME/.mc-age-$$"
+
+  assert_not_contains "$output" "would kill"
+}
+
+@test "TIER1-AGE: the gate reads through mc_num, so a non-numeric value does not disable it" {
+  # `[ 0 -lt "5m" ]` returns status 2 and the gate sits left of an `&&`, so
+  # pre-C1 a hand-typed "5m" did not lengthen the minimum age -- it removed it.
+  mkdir -p "$HOME/.mc-agebad-$$/proj"
+  real_root=$(mc_canonicalize "$HOME/.mc-agebad-$$/proj")
+  mc_record_root "$HOME/.mc-agebad-$$/proj"
+
+  perl -e 'sleep 600' "$real_root/node_modules/.bin/esbuild" &
+  victim=$!
+  wait_spawned "$victim"
+
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  ORPHANS="$victim"
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans's age gate
+  TIER1_MIN_AGE_SEC="5m"
+  MC_DRY_RUN=1
+  run mc_reap_orphans
+
+  kill "$victim" 2>/dev/null
+  rm -rf "$HOME/.mc-agebad-$$"
+
+  assert_not_contains "$output" "would kill"
+  grep -q "TIER1_MIN_AGE_SEC is not a whole number" "$(mc_state_dir)/actions.log"
+}
+
+@test "TIER1-PERF: sweep roots are validated once per pass, not once per (orphan x root)" {
+  # mc_canonicalize was called from inside the per-root loop, which itself sits
+  # inside the per-orphan loop. Measured at 5,121us per (orphan, root) pair, this
+  # machine's 40 recorded roots against 388 orphans is 79 seconds of work against
+  # a 60-second service interval -- memcap at its slowest in exactly the leak it
+  # exists to clean up. Validation does not depend on which orphan is being
+  # tested, so it happens once. This test counts the calls and fails if it is
+  # ever moved back inside.
+  local i
+  for i in 1 2 3 4 5; do
+    mkdir -p "$HOME/.mc-rootcost-$$/r$i"
+    mc_record_root "$HOME/.mc-rootcost-$$/r$i"
+  done
+
+  mkdir -p "$HOME/.mc-rootcost-other-$$/proj"
+  perl -e 'sleep 600' "$HOME/.mc-rootcost-other-$$/proj/a.js" & v1=$!
+  perl -e 'sleep 600' "$HOME/.mc-rootcost-other-$$/proj/b.js" & v2=$!
+  wait_spawned "$v1" "$v2"
+
+  # Counting stub, defined AFTER enforce.sh was sourced in setup() so sourcing
+  # cannot clobber it. Identity-canonicalizing is correct for this fixture:
+  # mc_record_root already stored the resolved form, so `real == root` holds and
+  # the validation path behaves exactly as it does for real.
+  MC_CANON_CALLS="$BATS_TEST_TMPDIR/canon-calls"
+  : > "$MC_CANON_CALLS"
+  mc_canonicalize() { echo x >> "$MC_CANON_CALLS"; printf '%s\n' "$1"; }
+  # Kept out of it entirely so the count is purely about root validation.
+  mc_pid_cwd() { printf '%s' ""; }
+
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans, sourced from enforce.sh
+  ORPHANS="$v1 $v2"
+  # shellcheck disable=SC2034  # consumed by mc_reap_orphans's age gate
+  TIER1_MIN_AGE_SEC=0
+  MC_DRY_RUN=1
+  run mc_reap_orphans
+
+  calls=$(wc -l < "$MC_CANON_CALLS" | tr -d ' ')
+
+  kill "$v1" "$v2" 2>/dev/null
+  rm -rf "$HOME/.mc-rootcost-$$" "$HOME/.mc-rootcost-other-$$"
+
+  # Five roots, two orphans. Hoisted: 5. Inside the loop: 10.
+  [ "$calls" -eq 5 ] || {
+    echo "mc_canonicalize called $calls times for 5 roots across 2 orphans" >&2
+    echo "roots must be validated once per pass, not once per (orphan x root)" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# Tier 2 killed live work, reclaimed nothing, and misreported it.
+#
+# Ten real kills on this machine, 126 MB reclaimed in total, against overages of
+# 0.5-6 GB. Six were agent grandchildren; four were the Metro transformer feeding
+# a simulator the developer was actively driving -- the production log has tier 3
+# declining at 13:03:47 "active mobile tooling", and tier 2 killing that
+# simulator's bundler at 13:03:48. And every one of them was announced as
+# "killed a leaked dev server".
+# =============================================================================
+
+@test "TIER2-VETO: active mobile tooling declines tier 2, because the dev server IS the bundler" {
+  sleep 600 & victim=$!
+  wait_spawned "$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
+  DEVPIDS="$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
+  TIER2_MIN_AGE_SEC=0
+  # shellcheck disable=SC2034  # consumed by mc_active_mobile_tooling
+  MC_ACTIVE_MOBILE_TOOLING=1
+  MC_DRY_RUN=1
+  run mc_kill_over_budget
+
+  kill -0 "$victim"
+  kill "$victim" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+  grep -q "tier2: declining -- active mobile tooling" "$(mc_state_dir)/actions.log"
+}
+
+@test "TIER2-VETO: hands-on mobile work declines tier 2 as well" {
+  sleep 600 & victim=$!
+  wait_spawned "$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
+  DEVPIDS="$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
+  TIER2_MIN_AGE_SEC=0
+  # shellcheck disable=SC2034  # consumed by mc_hands_on_mobile
+  MC_HANDS_ON_MOBILE=1
+  MC_DRY_RUN=1
+  run mc_kill_over_budget
+
+  kill -0 "$victim"
+  kill "$victim" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+  grep -q "tier2: declining -- hands-on mobile work" "$(mc_state_dir)/actions.log"
+}
+
+@test "TIER2-OFF: TIER2_ENABLED=0 switches the tier off outright" {
+  sleep 600 & victim=$!
+  wait_spawned "$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
+  DEVPIDS="$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
+  TIER2_MIN_AGE_SEC=0
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget
+  TIER2_ENABLED=0
+  MC_DRY_RUN=1
+  run mc_kill_over_budget
+
+  kill -0 "$victim"
+  kill "$victim" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+  grep -q "TIER2_ENABLED=0" "$(mc_state_dir)/actions.log"
+}
+
+@test "TIER2-PROTECT: a dev server's agent grandchild is spared via PROTECTEDPIDS" {
+  # The exact shape of six of the ten real kills: a telemetry watchdog running as
+  # a GRANDCHILD of a live agent session. It never appeared in AGENTPIDS, which
+  # only ever held direct CLI matches, so the old filter did not see it.
+  bash -c 'sleep 600 & wait' >/dev/null 2>&1 & server=$!
+  agent_child=""
+  for _ in $(seq 1 250); do
+    agent_child=$(pgrep -P "$server" | head -1)
+    [ -n "$agent_child" ] && break
+    sleep 0.02
+  done
+  [ -n "$agent_child" ]
+
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
+  DEVPIDS="$server"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
+  TIER2_MIN_AGE_SEC=0
+  # Deliberately empty: this must be caught by PROTECTEDPIDS alone.
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_filter_protected
+  PROTECTEDPIDS="$agent_child"
+  MC_DRY_RUN=1
+  run mc_kill_over_budget
+
+  kill "$agent_child" "$server" 2>/dev/null
+
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "$server"
+  assert_not_contains "$output" "$agent_child"
+}
+
+@test "TIER2-RANK: candidates are ranked by subtree total, not by their own footprint" {
+  # Ranking by the victim's own footprint while killing its subtree ranks by a
+  # number that is not what the kill reclaims: a fat worker outranks the server
+  # that owns the worker pool, memcap kills the worker, the supervisor respawns
+  # it, and the next pass kills a different pid for the same reason. Two such
+  # kills 70 seconds apart, on consecutive passes, are in the production log.
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/ps" <<'SCRIPT'
+#!/usr/bin/env bash
+pid="" mode=""
+for a in "$@"; do
+  case "$a" in
+    etime=) mode=etime ;;
+    ppid=)  mode=ppid ;;
+    comm=)  mode=comm ;;
+    [0-9]*) pid="$a" ;;
+  esac
+done
+case "$mode" in
+  ppid) echo " 1"; exit 0 ;;
+  comm) echo " node"; exit 0 ;;
+esac
+case "$pid:$mode" in
+  7010:etime) echo "  10:00" ;;
+  7020:etime) echo "  10:00" ;;
+esac
+exit 0
+SCRIPT
+  chmod +x "$fakebin/ps"
+  cat > "$fakebin/top" <<'SCRIPT'
+#!/usr/bin/env bash
+pid="" prev=""
+for a in "$@"; do
+  [ "$prev" = "-pid" ] && pid="$a"
+  prev="$a"
+done
+case "$pid" in
+  7010) echo "7010  100M" ;;    # the supervisor: small on its own
+  7011) echo "7011  8000M" ;;   # its worker: where the memory actually is
+  7020) echo "7020  5000M" ;;   # a fat leaf with no children
+esac
+exit 0
+SCRIPT
+  chmod +x "$fakebin/top"
+  cat > "$fakebin/pgrep" <<'SCRIPT'
+#!/usr/bin/env bash
+[ "$1" = "-P" ] && [ "$2" = "7010" ] && { echo 7011; exit 0; }
+exit 1
+SCRIPT
+  chmod +x "$fakebin/pgrep"
+
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
+  DEVPIDS="7010 7020"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
+  TIER2_MIN_AGE_SEC=0
+  MC_DRY_RUN=1
+  PATH="$fakebin:$PATH" run mc_kill_over_budget
+
+  # Own footprint: 7020 (5000M) beats 7010 (100M). Subtree: 7010 (8100M) beats
+  # 7020 (5000M). The subtree is what the kill actually reclaims.
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "7010"
+  assert_contains "$output" "7011"
+  assert_not_contains "$output" "7020"
+}
+
+@test "TIER2-C1: TIER2_MIN_AGE_SEC=\"5m\" lengthens the gate instead of deleting it" {
+  # `[ 0 -lt "5m" ]` returns status 2, and the gate sits left of an `&&`, so
+  # pre-C1 this did not mean "five minutes" and it did not mean "reject the
+  # value" -- it meant no age gate at all, and a one-second-old process died.
+  sleep 600 & victim=$!
+  wait_spawned "$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
+  DEVPIDS="$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
+  TIER2_MIN_AGE_SEC="5m"
+  MC_DRY_RUN=1
+  run mc_kill_over_budget
+
+  kill -0 "$victim"
+  kill "$victim" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+  grep -q "TIER2_MIN_AGE_SEC is not a whole number" "$(mc_state_dir)/actions.log"
+}
+
+@test "TIER2-NOTIFY: the 'only fresh builds' notification is dry-run gated too" {
+  # enforce.sh's other notification was gated on mc_kill_pids actually killing
+  # something; this one was gated on nothing at all, so a dry run fired a real
+  # desktop notification and burned the 5-minute rate limit doing it.
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  capture="$BATS_TEST_TMPDIR/osascript-arg"
+  cat > "$fakebin/osascript" <<SCRIPT
+#!/usr/bin/env bash
+printf '%s' "\$2" >> "$capture"
+SCRIPT
+  chmod +x "$fakebin/osascript"
+
+  sleep 600 & victim=$!
+  wait_spawned "$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
+  DEVPIDS="$victim"
+  MC_DRY_RUN=1
+  PATH="$fakebin:$PATH" run mc_kill_over_budget
+
+  kill "$victim" 2>/dev/null
+
+  run cat "$(mc_state_dir)/actions.log"
+  assert_contains "$output" "not touching active work"
+  [ ! -f "$capture" ]
+}
+
+@test "TIER2-NOTIFY: a real kill names what was killed rather than calling it a leaked dev server" {
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  capture="$BATS_TEST_TMPDIR/osascript-arg"
+  cat > "$fakebin/osascript" <<SCRIPT
+#!/usr/bin/env bash
+printf '%s' "\$2" >> "$capture"
+SCRIPT
+  chmod +x "$fakebin/osascript"
+
+  perl -e 'sleep 600' "mc-notify-fixture" & victim=$!
+  wait_spawned "$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
+  DEVPIDS="$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
+  TIER2_MIN_AGE_SEC=0
+  # A real kill of a fixture this test spawned itself -- the notification wording
+  # only exists on the real path.
+  MC_DRY_RUN=0
+  PATH="$fakebin:$PATH" run mc_kill_over_budget
+
+  kill -9 "$victim" 2>/dev/null || true
+
+  run cat "$capture"
+  assert_contains "$output" "$victim"
+  assert_not_contains "$output" "leaked dev server"
+}
+
+# =============================================================================
+# Contract C5: last-outcome, written next to the heartbeat on every path.
+#
+# The heartbeat answers "is the daemon ticking". It does not answer "is it
+# enforcing", and those came apart repeatedly in this audit: a refusing pass, a
+# paused pass and a healthy pass all stamped the same file and all read as
+# healthy in `status`. One word next to it closes that gap, and `status` renders
+# anything other than `enforced` as a remedy line.
+# =============================================================================
+
+@test "C5: a normal dry-run pass records dry-run" {
+  run "$MEMCAP_ROOT/bin/memcap" watch
+  [ "$status" -eq 0 ]
+  run cat "$MEMCAP_STATE_HOME/memcap/last-outcome"
+  [ "$output" = "dry-run" ]
+}
+
+@test "C5: a paused pass records paused, and still stamps the heartbeat" {
+  "$MEMCAP_ROOT/bin/memcap" off
+  run "$MEMCAP_ROOT/bin/memcap" watch
+  "$MEMCAP_ROOT/bin/memcap" on
+  [ -f "$MEMCAP_STATE_HOME/memcap/last-pass" ]
+  run cat "$MEMCAP_STATE_HOME/memcap/last-outcome"
+  [ "$output" = "paused" ]
+}
+
+@test "C5: an unsatisfiable budget records refused-misconfig" {
+  mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
+  cat > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" <<-'EOF'
+	TOTAL_BUDGET_GB=8
+	DOCKER_BUDGET_GB=10
+	EOF
+  run "$MEMCAP_ROOT/bin/memcap" watch
+  [ "$status" -ne 0 ]
+  run cat "$MEMCAP_STATE_HOME/memcap/last-outcome"
+  [ "$output" = "refused-misconfig" ]
+}
+
+@test "C5: a config that does not parse records refused-badconfig and enforces nothing" {
+  # config.sh deliberately does NOT guard `watch` with mc_refuse_if_broken, so
+  # that mc_watch reaches its own refusal and still stamps both files: a daemon
+  # that is running but refusing must not be indistinguishable from a dead one.
+  mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
+  cat > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" <<-'EOF'
+	TOTAL_BUDGET_GB="10
+	EOF
+  run "$MEMCAP_ROOT/bin/memcap" watch
+  [ "$status" -ne 0 ]
+  [ -f "$MEMCAP_STATE_HOME/memcap/last-pass" ]
+  run cat "$MEMCAP_STATE_HOME/memcap/last-outcome"
+  [ "$output" = "refused-badconfig" ]
+}
+
+@test "C5: a real, healthy pass records enforced" {
+  # MC_DRY_RUN=0 with a fixed fixture: nothing here can reach a real kill --
+  # mc_ps_snapshot is a two-line fixture of fabricated pids, tier 2 is stubbed,
+  # and tier 1 has no recorded roots in this sandboxed state directory.
+  run env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=0 bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/config.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/measure.sh'
+    source '$MEMCAP_ROOT/libexec/classify.sh'
+    source '$MEMCAP_ROOT/libexec/roots.sh'
+    source '$MEMCAP_ROOT/libexec/status.sh'
+    source '$MEMCAP_ROOT/libexec/enforce.sh'
+    mc_ps_snapshot() { printf '9001 1 2000000 /usr/local/bin/claude\n'; }
+    mc_kill_over_budget() { :; }
+    mc_record_roots() { :; }
+    mc_watch
+  "
+  run cat "$MEMCAP_STATE_HOME/memcap/last-outcome"
+  [ "$output" = "enforced" ]
+}
+
+@test "C5: a degraded measurement is reported rather than passed off as enforced" {
+  # Contract C4: mc_ps_snapshot sets MC_MEASURE_DEGRADED when a total falls back
+  # to ps RSS instead of top footprint. It runs inside a command-substitution
+  # subshell, so the flag is read back from the status file rather than from a
+  # variable that cannot survive the pipeline.
+  run env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=0 MC_NO_TOP=1 bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/config.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/measure.sh'
+    source '$MEMCAP_ROOT/libexec/classify.sh'
+    source '$MEMCAP_ROOT/libexec/roots.sh'
+    source '$MEMCAP_ROOT/libexec/status.sh'
+    source '$MEMCAP_ROOT/libexec/enforce.sh'
+    mc_kill_over_budget() { :; }
+    mc_record_roots() { :; }
+    mc_watch
+  "
+  run cat "$MEMCAP_STATE_HOME/memcap/last-outcome"
+  [ "$output" = "degraded-measurement" ]
+}
+
+@test "C5: a classifier that produces nothing refuses rather than running on unset variables" {
+  # `eval "$(mc_ps_snapshot | mc_classify)"` on an empty string leaves every
+  # variable below unset, and `set -u` would then take the pass down somewhere
+  # much less obvious than here.
+  run env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=1 bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/config.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/measure.sh'
+    source '$MEMCAP_ROOT/libexec/classify.sh'
+    source '$MEMCAP_ROOT/libexec/roots.sh'
+    source '$MEMCAP_ROOT/libexec/status.sh'
+    source '$MEMCAP_ROOT/libexec/enforce.sh'
+    mc_classify() { :; }
+    mc_kill_over_budget() { echo TIER2_FIRED; }
+    mc_record_roots() { :; }
+    mc_watch
+  "
+  [ "$status" -ne 0 ]
+  assert_not_contains "$output" "TIER2_FIRED"
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_contains "$output" "the classifier produced no assignments"
+}
+
+# --- The liveness line -------------------------------------------------------
+# The 28-hour outage that motivated the heartbeat was only detectable because a
+# since-removed log line happened to fire every 30 minutes. Since v0.3.0 --
+# correctly, since those lines were 94% of the file -- everything routine is
+# throttled or conditional, so the same outage would now look identical to a
+# quiet week. The pass count is what carries the information: "alive (60 passes)"
+# is a healthy hour; "alive (3 passes)" is a daemon restarting or stalling.
+@test "LIVENESS: the first pass logs an alive line with its pass count" {
+  run "$MEMCAP_ROOT/bin/memcap" watch
+  grep -q "watch: alive (1 passes since last mark)" "$MEMCAP_STATE_HOME/memcap/actions.log"
+}
+
+@test "LIVENESS: the line is hourly, not per pass -- three passes in a row log once" {
+  "$MEMCAP_ROOT/bin/memcap" watch >/dev/null
+  "$MEMCAP_ROOT/bin/memcap" watch >/dev/null
+  "$MEMCAP_ROOT/bin/memcap" watch >/dev/null
+  run grep -c "watch: alive" "$MEMCAP_STATE_HOME/memcap/actions.log"
+  [ "$output" = "1" ]
+}
+
+@test "LIVENESS: a paused daemon still proves it is ticking" {
+  # A paused memcap is not a stopped one, and this is the line that says so.
+  "$MEMCAP_ROOT/bin/memcap" off
+  run "$MEMCAP_ROOT/bin/memcap" watch
+  "$MEMCAP_ROOT/bin/memcap" on
+  grep -q "watch: alive" "$MEMCAP_STATE_HOME/memcap/actions.log"
+}
+
+@test "LIVENESS: the next window reports how many passes went by" {
+  "$MEMCAP_ROOT/bin/memcap" watch >/dev/null
+  "$MEMCAP_ROOT/bin/memcap" watch >/dev/null
+  "$MEMCAP_ROOT/bin/memcap" watch >/dev/null
+  # LIVENESS_SEC=0 opens the window immediately rather than waiting an hour. The
+  # counter resets when a mark is written, so the three passes counted here are
+  # the two silent ones above plus this one -- the first pass wrote the mark.
+  run env LIVENESS_SEC=0 "$MEMCAP_ROOT/bin/memcap" watch
+  grep -q "watch: alive (3 passes since last mark)" "$MEMCAP_STATE_HOME/memcap/actions.log"
+}
+
+# --- C1's fractional sibling: SOFT_TRIGGER -----------------------------------
+@test "C1-FRAC: a non-numeric SOFT_TRIGGER falls back instead of firing tier 1 every pass" {
+  # SOFT_TRIGGER reaches awk rather than `[`, so it fails open in the opposite
+  # direction from the integer knobs: awk coerces garbage to 0, `agents >
+  # budget*0` is true for any live agent, and the soft trigger fires on EVERY
+  # pass. Same class of defect, opposite sign -- hence mc_frac.
+  #
+  # MIN_FREE_PCT=0 so the low-memory arm of the same `if` cannot fire and make
+  # this pass for the wrong reason on a busy machine. 1 GB against a 10 GB agent
+  # budget is nowhere near the real 0.80 trigger.
+  run env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MIN_FREE_PCT=0 SOFT_TRIGGER=eighty MC_DRY_RUN=1 bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/config.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/measure.sh'
+    source '$MEMCAP_ROOT/libexec/classify.sh'
+    source '$MEMCAP_ROOT/libexec/roots.sh'
+    source '$MEMCAP_ROOT/libexec/status.sh'
+    source '$MEMCAP_ROOT/libexec/enforce.sh'
+    mc_ps_snapshot() { printf '9001 1 1000000 /usr/local/bin/claude\n'; }
+    mc_reap_orphans() { echo TIER1_FIRED; }
+    mc_kill_over_budget() { :; }
+    mc_record_roots() { :; }
+    mc_watch
+  "
+  assert_not_contains "$output" "TIER1_FIRED"
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_contains "$output" "SOFT_TRIGGER is not a number"
+}
+
+# --- Protection scope: tier 3 protects the agent, not the agent's whole tree --
+# Applying the full propagated tree to tier 3 leaves it exactly as dead as the
+# kill -0 bug did. Measured against this machine's real process table: of the 18
+# sim-classified pids, 14 are descendants of a live agent session (seven Chrome
+# processes and five Playwright headless shells, plus the two maestro MCP
+# servers), and the remaining four are CoreSimulator daemons that match no kill
+# pattern. Full-tree protection would have shipped a tier-3 fix that reclaims
+# nothing, for a new reason.
+@test "SCOPE: tier 3 reclaims an idle browser that is a descendant of a live agent session" {
+  perl -e 'sleep 600' "ms-playwright-fixture" & browser=$!
+  wait_spawned "$browser"
+  AGENTPIDS=""
+  # The browser is inside the agent tree -- the ordinary shape, since that is how
+  # a Playwright or devtools-MCP browser gets launched in the first place.
+  # shellcheck disable=SC2034  # consumed by mc_filter_protected
+  PROTECTEDPIDS="$browser"
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$browser"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$browser")"
+
+  run mc_reap_sims
+
+  kill "$browser" 2>/dev/null
+
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "$browser"
+}
+
+@test "SCOPE: tier 3 still refuses to touch an agent CLI process itself" {
+  # AGENTPIDS -- the direct CLI matches -- applies in both scopes. The narrower
+  # scope drops the propagated TREE, not the agent.
+  perl -e 'sleep 600' "ms-playwright-fixture" & victim=$!
+  wait_spawned "$victim"
+  # shellcheck disable=SC2034  # consumed by mc_filter_protected
+  AGENTPIDS="$victim"
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$victim"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$victim")"
+
+  run mc_reap_sims
+
+  kill -0 "$victim"
+  kill "$victim" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+}
+
+@test "SCOPE: tiers 1 and 2 keep the full-tree protection" {
+  # The contrast case. Tier 2 picks its victim by inference, and the inference is
+  # what went wrong in six of ten real kills -- so under the default scope a pid
+  # anywhere in the agent tree is off limits, exactly as before.
+  sleep 600 & victim=$!
+  wait_spawned "$victim"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_filter_protected
+  PROTECTEDPIDS="$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
+  DEVPIDS="$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget's age gate
+  TIER2_MIN_AGE_SEC=0
+  MC_DRY_RUN=1
+  run mc_kill_over_budget
+
+  kill -0 "$victim"
+  kill "$victim" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+}
+
+@test "XCRUN: a dry run does not announce a shutdown on a machine with nothing booted" {
+  # SimulatorTrampoline can outlive every booted device, and does on this machine
+  # -- so "a simulator process is idle" is not the same claim as "a device is
+  # booted". The read-only `list devices booted` query settles it on the dry-run
+  # path too, rather than the dry run reporting an action that would not happen.
+  : > "$FAKE_XCRUN_BOOTED"
+  perl -e 'sleep 600' "SimulatorTrampoline" & sim=$!
+  wait_spawned "$sim"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$sim"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
+
+  run mc_reap_sims
+
+  kill "$sim" 2>/dev/null
+
+  assert_not_contains "$output" "would shut down"
 }
