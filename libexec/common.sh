@@ -75,3 +75,12 @@ mc_notify() {
   osascript -e "display notification \"$msg\" with title \"memcap\"" 2>/dev/null
   return 0
 }
+
+# Permission-independent liveness test. NEVER use `kill -0` for this: it returns
+# failure for EPERM ("alive, but not yours to signal") exactly as it does for
+# ESRCH ("dead"). That single confusion kept tier 3 from ever firing for the
+# entire life of the tool -- root-owned `simdiskimaged` matches MC_SIM_EXE, enters
+# SIMPIDS on every pass on any Mac with Xcode installed, failed `kill -0`, had its
+# idle stamp deleted as though it had exited, and pinned `all_ready=0` forever.
+# `ps -p` asks the question actually being asked: does this pid exist.
+mc_pid_alive() { ps -p "$1" >/dev/null 2>&1; }
