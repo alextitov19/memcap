@@ -23,6 +23,8 @@ case "${1:-help}" in
     # shellcheck source=/dev/null
     . "$LIB/service.sh"
     # shellcheck source=/dev/null
+    . "$LIB/notify.sh"
+    # shellcheck source=/dev/null
     . "$LIB/init.sh"
     mc_run_init "$@"
     ;;
@@ -38,6 +40,12 @@ case "${1:-help}" in
   watch)
     # shellcheck source=/dev/null
     . "$LIB/enforce.sh"
+    # shellcheck source=/dev/null
+    . "$LIB/notify.sh"
+    # One file read on a pass where nothing has changed. Here rather than inside
+    # mc_watch so that calling the enforcement functions directly -- which the
+    # test suite does constantly -- never compiles an app bundle.
+    mc_ensure_notifier || :
     mc_watch
     ;;
   clean)
@@ -80,6 +88,13 @@ case "${1:-help}" in
   # spent paused and a week spent dead read identically in the audit trail --
   # and since `on` deletes the marker, even the fact that a pause happened was
   # gone. mc_pause also dates the marker so `status` can say how long it held.
+  notify)
+    shift
+    if [ $# -gt 0 ]; then echo "usage: memcap notify" >&2; exit 2; fi
+    # shellcheck source=/dev/null
+    . "$LIB/notify.sh"
+    mc_notify_command
+    ;;
   off)    mc_pause; echo "memcap paused" ;;
   on)     mc_resume ;;
   service)
@@ -107,6 +122,6 @@ case "${1:-help}" in
     echo "Config kept at $(mc_config_file) — delete it yourself for a clean slate."
     echo "Then: brew uninstall memcap"
     ;;
-  help|--help|-h) echo "memcap — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|watch|clean|profile|docker [apply [--force]]|off|on|service [install|uninstall|status]|uninstall}" ;;
+  help|--help|-h) echo "memcap — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|watch|clean|profile|docker [apply [--force]]|notify|off|on|service [install|uninstall|status]|uninstall}" ;;
   *) echo "unknown command: $1" >&2; exit 1 ;;
 esac

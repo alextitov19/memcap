@@ -63,6 +63,14 @@ SCRIPT
   # veto deterministically.
   export MC_ACTIVE_MOBILE_TOOLING=0
   export MC_HANDS_ON_MOBILE=0
+
+  # Sandbox for the notification bundle (notify.sh). `bin/memcap watch` builds one
+  # when the stamp does not match, and a build is osacompile + an AppKit render +
+  # ten sips calls + codesign -- several seconds, in every test that shells out to
+  # watch. MEMCAP_STATE_HOME already keeps it out of the real install, so this is
+  # about time rather than safety. tests/notify.bats unsets it: it is the file
+  # that tests the building.
+  export MC_NO_NOTIFIER=1
 }
 
 # Bash 3.2 -- the shipped macOS /bin/bash, and what `bats` itself runs under

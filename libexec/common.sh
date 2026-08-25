@@ -186,18 +186,51 @@ mc_log_throttle_clear() {
 }
 
 # Rate-limited desktop notification: at most one per 5 minutes.
+# Escaping for a value about to be interpolated into an AppleScript string
+# literal: an unescaped quote or backslash breaks the script, and every caller
+# here builds its argument out of process data or a filesystem path.
+mc_as_quote() {
+  local s="$1"
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '%s' "$s"
+}
+
+# The generated bundle memcap posts through, and the file it reads its message
+# from. Both live in the state directory, so `memcap uninstall` already removes
+# them and a sandboxed test never sees the real one. notify.sh builds it; these
+# two paths are all the enforcement path needs to know.
+mc_notifier_app() { printf '%s/Notifier.app\n' "$(mc_state_dir)"; }
+mc_notifier_message_file() { printf '%s/notify-message\n' "$(mc_state_dir)"; }
+
+# Posted through memcap's own bundle when there is one, because a notification's
+# icon is the icon of the app that POSTS it -- a bare `osascript` is attributed
+# to Script Editor. Falls back to exactly what every version before this did, so
+# a machine that cannot build a bundle (no window server, no osacompile) still
+# gets the notification, just with the old icon.
 mc_notify() {
-  local stamp now last
+  local stamp now last msg="$1" app file tmp
   stamp="$(mc_state_dir)/.notified"
   now=$(date +%s); last=$(cat "$stamp" 2>/dev/null || echo 0)
   [ $((now - last)) -lt 300 ] && return 0
   mkdir -p "$(mc_state_dir)"; echo "$now" > "$stamp"
-  # Escape before interpolating into AppleScript: an unescaped quote or backslash in a
-  # message breaks the script, and callers build messages from process data.
-  local msg="$1"
-  msg=${msg//\\/\\\\}
-  msg=${msg//\"/\\\"}
-  osascript -e "display notification \"$msg\" with title \"memcap\"" 2>/dev/null
+
+  app="$(mc_notifier_app)"
+  if [ -d "$app" ]; then
+    file="$(mc_notifier_message_file)"
+    # Written whole and then moved into place: `open` is asynchronous, so the
+    # applet can read this file while the next line of this function is still
+    # running, and a partially-written message is a notification that lies about
+    # what memcap did. No AppleScript escaping is needed on this path at all --
+    # the message never enters a script.
+    tmp="$file.$$"
+    if printf '%s' "$msg" > "$tmp" 2>/dev/null && mv -f "$tmp" "$file" 2>/dev/null; then
+      open -a "$app" 2>/dev/null && return 0
+    fi
+    rm -f "$tmp" 2>/dev/null
+  fi
+
+  osascript -e "display notification \"$(mc_as_quote "$msg")\" with title \"memcap\"" 2>/dev/null
   return 0
 }
 

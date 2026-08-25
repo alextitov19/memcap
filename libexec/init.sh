@@ -143,10 +143,19 @@ ROOT_TTL_DAYS=14
 ROOT_MAX=64
 MEASURE_MISSING_PCT_MAX=10
 EXTRA_AGENTS=""
+# The emoji on memcap's notifications. Change it, then run: memcap notify
+# NOTIFY_ICON=none goes back to plain Script Editor notifications.
+NOTIFY_ICON="🧠"
 EOF
 
   echo
   echo "  Wrote $(mc_config_file)"
+
+  # The notification bundle memcap posts through (notify.sh). Failing to build
+  # one costs the custom icon and nothing else, so it never fails init -- and it
+  # is deliberately built AFTER the config is written, since the icon it renders
+  # is the one that file now names.
+  mc_ensure_notifier || :
 
   # The paused marker lives under the STATE directory, which -- unlike the config
   # directory mkdir -p'd above -- does not exist on a fresh install. This `touch`

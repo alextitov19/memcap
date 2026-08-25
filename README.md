@@ -328,6 +328,38 @@ a problem. `memcap service status` and `tail`ing `actions.log` remain useful
 for a deeper look, but you shouldn't need them just to answer "is this
 running."
 
+## Notifications
+
+memcap notifies you when it kills something to stay inside the budget, and when it
+declines to. Those notifications used to arrive wearing **Script Editor's** icon,
+because a notification's icon is the icon of the app that posts it: AppleScript's
+`display notification` has no icon parameter, and a plain `osascript` call is
+attributed to Script Editor. Notifications about processes memcap had just killed
+looked like they came from a text editor nobody had opened.
+
+So `memcap init` compiles memcap one of its own — a two-line AppleScript applet
+carrying an icon rendered from a single emoji, built out of tools every Mac already
+has (`osacompile`, `sips`, `iconutil`, `codesign`), which is what keeps a binary
+`.icns` out of a repo that is otherwise entirely shell. It also gets memcap its own
+row in System Settings → Notifications, so you can silence *memcap* rather than
+silencing Script Editor for everything.
+
+Pick the icon with `NOTIFY_ICON` in your config, then rebuild and preview it:
+
+```bash
+memcap notify
+```
+
+`NOTIFY_ICON=none` removes the bundle and goes back to plain notifications.
+
+None of this is load-bearing. A machine that cannot build the bundle — an ssh
+session with no window server, `osacompile` unavailable — logs why in
+`actions.log` and posts exactly the way every version before this did. The bundle
+is also not retried on every pass once it has failed for a given icon: the attempt's
+outcome is recorded, and a changed `NOTIFY_ICON`, an upgraded memcap, or `memcap
+notify` are what ask for another. The first notification may need one "Allow" in
+System Settings → Notifications.
+
 ## `memcap off`: the panic switch
 
 If memcap ever does something you don't want, or you just want it out of the way:
@@ -355,6 +387,7 @@ touch your config or uninstall anything.
 | `memcap status`                 | One-shot snapshot of current agent/Docker footprint against budget, and free system memory.                                                                                                                                                                       |
 | `memcap watch`                  | Runs a single enforcement pass (tiers as needed). This is what the background service calls repeatedly.                                                                                                                                                           |
 | `memcap clean`                  | Manual sweep: tier 1 (orphans) and tier 3 (idle sims) only. No-ops while paused.                                                                                                                                                                                  |
+| `memcap notify`                 | Rebuild the notification bundle and post a sample, so you can see the icon. Run it after changing `NOTIFY_ICON`.                                                                                                                                                        |
 | `memcap off`                    | Pause switch. See above.                                                                                                                                                                                                                                          |
 | `memcap on`                     | Resume enforcement.                                                                                                                                                                                                                                               |
 | `memcap profile [name]`         | List the budget profiles (`balanced`, `stacks`, `mobile`), or switch to one — rewrites `DOCKER_BUDGET_GB` in the config.                                                                                                                                          |
@@ -393,6 +426,7 @@ computed default if it is absent or commented out.
 | `ROOT_TTL_DAYS`            | `14`              | How many days a learned sweep root is kept after a live agent session was last seen in it. Roots are re-registered every pass while a session sits in one, so a wrongly-dropped root returns within a single 60-second pass — which makes a short TTL cheap to be wrong about, while a kept one costs measurable time on every orphan scan forever. |
 | `ROOT_MAX`                 | `64`              | Hard cap on retained roots, newest first. Tier 1 costs roughly 5 ms per (orphan × root) pair, so an unbounded list is a latent performance failure: 388 orphans against 40 roots already exceeds the 60-second service interval. |
 | `MEASURE_MISSING_PCT_MAX`  | `10`              | What share of processes may be missing a `top` footprint row before memcap treats the measurement as faulty rather than merely noisy. A few missing rows happen on every busy pass and are worth ~0.03% of the total; a wholesale fallback to `ps` RSS understates the combined figure by ~42%. One threshold for both would light permanently, which is the same as no signal at all. |
+| `NOTIFY_ICON`              | `🧠`              | The emoji memcap renders into the icon its notifications carry (see Notifications above). Must be at most 32 bytes and contain no control characters — it is passed to `sips` and written into `actions.log`, and a multi-codepoint emoji like 👨‍👩‍👧‍👦 is a legitimate choice, so the limit is measured in bytes rather than in whatever the current locale calls a character. `none` disables the bundle and returns to plain Script Editor notifications. Changing this rebuilds on the next pass. |
 | `STALE_PASS_SEC`           | `300`             | How long since the last completed `watch` pass before `status` reports the service as probably not running, rather than just "quiet." Five ticks of the default 60-second service interval — long enough to absorb one missed tick without a false alarm.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ## Files on disk
@@ -429,6 +463,16 @@ State, at `~/.local/state/memcap/` (override with `MEMCAP_STATE_HOME`):
   enforcement is active.
 - `.notified` — a timestamp used to rate-limit desktop notifications to at most
   one every 5 minutes.
+- `Notifier.app` — the generated bundle memcap posts notifications through, so they
+  carry its icon rather than Script Editor's (see "Notifications" above). Regenerated
+  from `NOTIFY_ICON` whenever that changes; delete it and memcap rebuilds it on the
+  next pass, or falls back to plain notifications if it cannot.
+- `notify-message` — the text of the notification being posted. The applet reads it
+  from here rather than taking it as an argument, because `open --args` does not
+  reach an applet's `run` handler on macOS 26.
+- `notifier-stamp` — which icon the bundle was built from, which memcap built it,
+  and whether that build succeeded. What stops a ~4-second rebuild from running on
+  every 60-second pass.
 - `sims-idle/` — one file per tracked simulator/emulator/browser process
   (named by pid), holding when its clock last (re)started and its CPU-time
   baseline at that moment; tier 3 waits out `SIM_IDLE_GRACE_SEC` of flat CPU
