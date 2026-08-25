@@ -42,9 +42,9 @@ mc_enf_frac() {
 }
 
 # --- Liveness (contract C6) ---------------------------------------------------
-# common.sh owns mc_pid_alive; this is the fallback for a standalone sourcing of
-# this module, defined only when the real one is absent so load order can never
-# shadow it.
+# mc_pid_alive lives in common.sh, which bin/memcap sources before this file.
+# There is deliberately no local copy or fallback here: two definitions of a
+# liveness test is how the codebase got one that was wrong.
 #
 # Why this matters more than any other line in this file: `kill -0` conflates
 # EPERM ("alive, but not yours to signal") with ESRCH ("dead"). simdiskimaged is
@@ -55,9 +55,9 @@ mc_enf_frac() {
 # days of production logs: 1,973 tier-3 declines, zero reclaims, all of it caused
 # by a process that is not even in MC_SIM_KILL_PATTERN and could never have been
 # killed if it had been selected.
-if ! command -v mc_pid_alive >/dev/null 2>&1; then
-  mc_pid_alive() { ps -p "${1:-0}" >/dev/null 2>&1; }
-fi
+#
+# `kill -0` still appears once in this file, in mc_sim_is_target, as a PERMISSION
+# test -- the one question it answers well.
 
 # --- The protection filter ----------------------------------------------------
 # Every pid memcap kills passes through mc_kill_pids, so the protection filter
@@ -857,7 +857,7 @@ mc_sim_is_target() {
 }
 
 mc_reap_sims() {
-  local pid dir stamp now grace active_cpu_sec cmd
+  local pid dir stamp now grace tree_grace pid_grace active_cpu_sec cmd
   local ready="" targets="" ios_ready=0 held=0 held_pid="" held_age=-1 age
 
   if [ -z "${SIMPIDS+x}" ]; then
@@ -869,6 +869,29 @@ mc_reap_sims() {
   dir="$(mc_sims_idle_dir)"
   now=$(date +%s)
   grace=$(mc_enf_num "${SIM_IDLE_GRACE_SEC:-600}" 600 SIM_IDLE_GRACE_SEC)
+  # A sim pid that is a DESCENDANT OF A LIVE AGENT SESSION earns a longer clock
+  # rather than either absolute immunity or none. Both extremes are wrong, and
+  # the measurements say why.
+  #
+  # Absolute immunity (full PROTECTEDPIDS at this tier) is indistinguishable from
+  # tier 3 being dead: on this machine all 14 reclaimable sim pids -- 7 Chrome, 5
+  # Playwright shells, 2 maestro -- are agent descendants, because that is how a
+  # Playwright or devtools-MCP browser is launched in the first place. Shipping
+  # it would re-create the audit's headline finding under a new cause.
+  #
+  # No extra clock is wrong too: an agent's browser can sit genuinely idle
+  # through a long turn while the agent thinks, and losing it mid-test is exactly
+  # the "kills live work" failure this audit is about.
+  #
+  # So: the ordinary grace proves a browser is unused; triple it before acting on
+  # one that still belongs to somebody. The measured churn supports the split --
+  # 28 Playwright Firefox processes were born and died inside a single 60s pass
+  # here, so a genuinely-in-use browser never approaches either threshold, while
+  # a leaked one crosses both and keeps going. Clamped never to be shorter than
+  # the ordinary grace: a config that lowered it would silently make agent-owned
+  # browsers the FIRST thing reaped.
+  tree_grace=$(mc_enf_num "${TIER3_AGENT_TREE_GRACE_SEC:-1800}" 1800 TIER3_AGENT_TREE_GRACE_SEC)
+  [ "$tree_grace" -lt "$grace" ] && tree_grace="$grace"
   active_cpu_sec=$(mc_enf_num "${SIM_ACTIVE_CPU_SEC:-2}" 2 SIM_ACTIVE_CPU_SEC)
 
   # Prune stamps for pids no longer alive or no longer sim-classified, so a
@@ -915,9 +938,19 @@ mc_reap_sims() {
         mc_write_idle_stamp "$stamp" "$now" "$MC_CPUTIME_SECS"
       else
         age=$(( now - MC_STAMP_FIRST ))
-        if [ "$age" -ge "$grace" ]; then
+        pid_grace="$grace"
+        case " $PROTECTEDPIDS " in
+          *" $pid "*) pid_grace="$tree_grace" ;;
+        esac
+        if [ "$age" -ge "$pid_grace" ]; then
           ready="$ready $pid"
           continue
+        fi
+        if [ "$pid_grace" != "$grace" ] && [ "$age" -ge "$grace" ]; then
+          # Held ONLY because it belongs to a live session. Worth a line: it is
+          # the difference between "tier 3 is working" and "tier 3 is inert
+          # again", and it is invisible from the outside otherwise.
+          mc_log_throttled "tier3-agent-tree-grace" "tier3: pid $pid has been idle ${age}s, past the ${grace}s grace, but it is a live agent session's own process -- holding it to ${tree_grace}s (TIER3_AGENT_TREE_GRACE_SEC)"
         fi
       fi
       # Not ready, for whichever of the four reasons. Counted and remembered, so
@@ -971,7 +1004,7 @@ mc_reap_sims() {
   # five minutes of diagnosis.
   if [ -z "${targets// /}" ] && [ "$ios_ready" != "1" ]; then
     if [ "$held" -gt 0 ]; then
-      mc_log_throttled "tier3-holding" "tier3: reclaimed nothing -- $held sim pid(s) still inside the ${grace}s idle grace; longest-idle blocker is pid $held_pid at ${held_age}s"
+      mc_log_throttled "tier3-holding" "tier3: reclaimed nothing -- $held sim pid(s) still inside their idle grace (${grace}s, or ${tree_grace}s for a live session's own processes); longest-idle blocker is pid $held_pid at ${held_age}s"
     fi
     return 0
   fi
@@ -1169,9 +1202,21 @@ mc_watch() {
     # enforced at all" is the more complete description of the pass, and a real
     # service pass never sets MC_DRY_RUN.
     outcome=dry-run
-  elif [ "${MC_MEASURE_DEGRADED:-0}" = "1" ]; then
+  elif [ "${MC_MEASURE_FAULT:-0}" = "1" ]; then
+    # FAULT, not DEGRADED (C4 as amended). DEGRADED is also set by a deliberate
+    # MC_NO_TOP=1, which is a documented escape hatch -- keying the outcome on it
+    # would turn the user's own choice into a refusal to enforce and make
+    # `status` shout about a setting they typed themselves. FAULT means the
+    # fallback to ps RSS was not asked for.
+    #
+    # The wording comes from mc_measure_summary rather than being composed here,
+    # so a fault's description stays with the code that can produce it.
+    if command -v mc_measure_summary >/dev/null 2>&1; then
+      mc_log_throttled "measure-fault" "watch: $(mc_measure_summary)"
+    fi
     outcome=degraded-measurement
   else
+    mc_log_throttle_clear "measure-fault"
     outcome=enforced
   fi
   mc_finish_pass "$outcome"

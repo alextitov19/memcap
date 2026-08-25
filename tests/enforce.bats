@@ -2465,12 +2465,47 @@ SCRIPT
   [ "$output" = "enforced" ]
 }
 
-@test "C5: a degraded measurement is reported rather than passed off as enforced" {
-  # Contract C4: mc_ps_snapshot sets MC_MEASURE_DEGRADED when a total falls back
-  # to ps RSS instead of top footprint. It runs inside a command-substitution
-  # subshell, so the flag is read back from the status file rather than from a
-  # variable that cannot survive the pipeline.
+@test "C5: a deliberate MC_NO_TOP=1 is NOT a fault -- the escape hatch keeps enforcing" {
+  # C4 as amended publishes TWO signals, and C5 keys on the second:
+  #   MC_MEASURE_DEGRADED -- totals are ps RSS, for any reason INCLUDING a
+  #                          deliberate MC_NO_TOP=1
+  #   MC_MEASURE_FAULT    -- that fallback was not asked for
+  # Keying the outcome on DEGRADED would make a documented escape hatch refuse to
+  # enforce and make `status` shout a remedy line at a setting the user typed
+  # themselves. This is the test that pins which signal is which.
   run env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=0 MC_NO_TOP=1 bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/config.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/measure.sh'
+    source '$MEMCAP_ROOT/libexec/classify.sh'
+    source '$MEMCAP_ROOT/libexec/roots.sh'
+    source '$MEMCAP_ROOT/libexec/status.sh'
+    source '$MEMCAP_ROOT/libexec/enforce.sh'
+    mc_kill_over_budget() { :; }
+    mc_record_roots() { :; }
+    mc_watch
+  "
+  run cat "$MEMCAP_STATE_HOME/memcap/last-outcome"
+  [ "$output" = "enforced" ]
+}
+
+@test "C5: a measurement fault nobody asked for is reported as degraded-measurement" {
+  # The contrast case: `top` is stubbed to fail outright, so the ps-RSS fallback
+  # happens WITHOUT anyone requesting it. mc_measure_status_load is the only way
+  # to see this -- mc_ps_snapshot runs inside `eval "$(... | mc_classify)"`, a
+  # pipeline in a command substitution, so a global set in there dies two
+  # subshells down. That is what made the original C4 unimplementable.
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/top" <<'SCRIPT'
+#!/usr/bin/env bash
+exit 1
+SCRIPT
+  chmod +x "$fakebin/top"
+
+  run env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=0 PATH="$fakebin:$PATH" bash -c "
     source '$MEMCAP_ROOT/libexec/common.sh'
     source '$MEMCAP_ROOT/libexec/config.sh'
     source '$MEMCAP_ROOT/libexec/budget.sh'
@@ -2591,7 +2626,7 @@ SCRIPT
 # servers), and the remaining four are CoreSimulator daemons that match no kill
 # pattern. Full-tree protection would have shipped a tier-3 fix that reclaims
 # nothing, for a new reason.
-@test "SCOPE: tier 3 reclaims an idle browser that is a descendant of a live agent session" {
+@test "SCOPE: tier 3 eventually reclaims an idle browser that belongs to a live agent session" {
   perl -e 'sleep 600' "ms-playwright-fixture" & browser=$!
   wait_spawned "$browser"
   AGENTPIDS=""
@@ -2603,6 +2638,7 @@ SCRIPT
   SIMPIDS="$browser"
   MC_DRY_RUN=1
   mkdir -p "$(mc_sims_idle_dir)"
+  # An epoch of 1 is decades of idleness -- past both graces.
   printf '1 999999\n' > "$(mc_sims_idle_stamp "$browser")"
 
   run mc_reap_sims
@@ -2611,6 +2647,76 @@ SCRIPT
 
   assert_contains "$output" "would kill"
   assert_contains "$output" "$browser"
+}
+
+@test "TREE-GRACE: an agent's own browser is held past the ordinary grace, and the hold is logged" {
+  # The whole point of the longer clock: a browser an agent launched and has not
+  # touched for eleven minutes is idle by the ordinary measure, but it still
+  # belongs to somebody. Tier 3 waits.
+  perl -e 'sleep 600' "ms-playwright-fixture" & browser=$!
+  wait_spawned "$browser"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_filter_protected and mc_reap_sims
+  PROTECTEDPIDS="$browser"
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$browser"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  # 660 seconds ago: past the 600s ordinary grace, inside the 1800s tree grace.
+  printf '%s 999999\n' "$(( $(date +%s) - 660 ))" > "$(mc_sims_idle_stamp "$browser")"
+
+  run mc_reap_sims
+
+  kill "$browser" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+  grep -q "it is a live agent session's own process" "$(mc_state_dir)/actions.log"
+}
+
+@test "TREE-GRACE: an unowned browser at the same idle age is reclaimed immediately" {
+  # The contrast that shows the longer clock applies to tree membership and not
+  # to everything: same fixture, same idle age, no session owns it.
+  perl -e 'sleep 600' "ms-playwright-fixture" & browser=$!
+  wait_spawned "$browser"
+  AGENTPIDS=""
+  PROTECTEDPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$browser"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '%s 999999\n' "$(( $(date +%s) - 660 ))" > "$(mc_sims_idle_stamp "$browser")"
+
+  run mc_reap_sims
+
+  kill "$browser" 2>/dev/null
+
+  assert_contains "$output" "would kill"
+  assert_contains "$output" "$browser"
+}
+
+@test "TREE-GRACE: a config that lowers it below the ordinary grace is clamped, not honoured" {
+  # Left unclamped, TIER3_AGENT_TREE_GRACE_SEC=0 would silently invert the rule
+  # and make a live session's own browsers the FIRST thing tier 3 reaps.
+  perl -e 'sleep 600' "ms-playwright-fixture" & browser=$!
+  wait_spawned "$browser"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_filter_protected and mc_reap_sims
+  PROTECTEDPIDS="$browser"
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$browser"
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  TIER3_AGENT_TREE_GRACE_SEC=0
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  # Only 60 seconds idle -- inside the ordinary 600s grace, so the clamp must
+  # keep it protected even though the knob says zero.
+  printf '%s 999999\n' "$(( $(date +%s) - 60 ))" > "$(mc_sims_idle_stamp "$browser")"
+
+  run mc_reap_sims
+
+  kill "$browser" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
 }
 
 @test "SCOPE: tier 3 still refuses to touch an agent CLI process itself" {
