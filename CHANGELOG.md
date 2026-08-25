@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.4.0 — 2026-08-25
 
 A six-agent forensic audit of eleven days of production logs (4,002 lines) found
 ten defects. Every one of them failed **silently** — a value became wrong, or a
