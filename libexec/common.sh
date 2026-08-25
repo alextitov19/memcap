@@ -14,6 +14,116 @@ mc_log() {
 
 mc_is_paused() { [ -f "$(mc_state_dir)/paused" ]; }
 
+# Formats an elapsed-seconds count the way a person would say "how long ago" --
+# seconds under a minute, then minutes, hours, days -- not a fixed-width
+# duration. Matches the units mc_etime_secs (enforce.sh) parses, in reverse.
+# Lives here rather than in status.sh because `memcap on` reports a pause
+# duration too, and one formatting rule shared beats two that drift.
+mc_format_age() {
+  local s="$1"
+  if [ "$s" -lt 60 ]; then printf '%ds' "$s"
+  elif [ "$s" -lt 3600 ]; then printf '%dm' $((s / 60))
+  elif [ "$s" -lt 86400 ]; then printf '%dh' $((s / 3600))
+  else printf '%dd' $((s / 86400))
+  fi
+}
+
+# Seconds of AWAKE time since boot -- kern.monotonicclock, which is derived from
+# mach_absolute_time and so does NOT advance while the machine is asleep. That
+# property is the whole point: wall-clock arithmetic cannot tell a daemon that
+# stopped from a laptop whose lid was shut, and after a lid-close `status` used
+# to shout "MEMCAP IS PROBABLY NOT RUNNING" for the ~60s until the next pass.
+# A false alarm is how a real one gets ignored.
+#
+# MC_AWAKE_SECS overrides it for tests, the same escape-hatch pattern as
+# MC_HANDS_ON_MOBILE: sleep cannot be simulated, and a machine that has never
+# slept since boot (kern.sleeptime = 0 on this one) cannot exercise the path.
+# Returns non-zero, printing nothing, when the reading is unavailable or not a
+# number; every caller must keep working on wall-clock alone in that case.
+mc_awake_secs() {
+  local v
+  if [ -n "${MC_AWAKE_SECS:-}" ]; then
+    v="$MC_AWAKE_SECS"
+  else
+    v=$(sysctl -n kern.monotonicclock 2>/dev/null) || v=""
+  fi
+  case "$v" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s' "$v"
+}
+
+# Epoch seconds of the most recent wake, falling back to the most recent boot.
+# The coarse companion to mc_awake_secs, used only for a heartbeat stamped by a
+# memcap old enough not to have written an awake stamp beside it. kern.waketime
+# reads `{ sec = 0, usec = 0 }` on a machine that has not slept since boot, so a
+# zero is "no wake recorded", not "the epoch".
+mc_last_wake() {
+  local key raw sec
+  if [ -n "${MC_LAST_WAKE:-}" ]; then
+    case "$MC_LAST_WAKE" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s' "$MC_LAST_WAKE"
+    return 0
+  fi
+  for key in kern.waketime kern.boottime; do
+    raw=$(sysctl -n "$key" 2>/dev/null) || continue
+    sec=$(printf '%s' "$raw" | sed -n 's/.*sec[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p') || sec=""
+    case "$sec" in
+      ''|0) continue ;;
+    esac
+    printf '%s' "$sec"
+    return 0
+  done
+  return 1
+}
+
+# When the pause started, for `status` and for the resume log line. Reads the
+# epoch `mc_pause` writes into the marker; falls back to the file's mtime so a
+# marker left by an older memcap (or by a hand `touch`) still dates itself.
+mc_paused_since() {
+  local f ts
+  f="$(mc_state_dir)/paused"
+  [ -f "$f" ] || return 1
+  ts=$(head -1 "$f" 2>/dev/null | tr -dc '0-9') || ts=""
+  if [ -z "$ts" ]; then
+    ts=$(stat -f %m "$f" 2>/dev/null) || ts=$(stat -c %Y "$f" 2>/dev/null) || ts=""
+  fi
+  case "$ts" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s' "$ts"
+}
+
+# `memcap off` and `memcap on` wrote NOTHING to actions.log. The log is the only
+# record of what memcap did with a day, so a week spent paused and a week spent
+# dead were indistinguishable in it after the fact -- with the pause marker
+# removed on resume, even the fact that a pause had happened was gone. Both
+# transitions are now events in the log, and the pause carries its own start
+# time so `status` and the resume line can say how long it lasted.
+mc_pause() {
+  mkdir -p "$(mc_state_dir)"
+  date +%s > "$(mc_state_dir)/paused"
+  mc_log "off: enforcement PAUSED by user -- no tier will act until 'memcap on'"
+}
+
+mc_resume() {
+  local since now ago=""
+  if since=$(mc_paused_since); then
+    now=$(date +%s)
+    [ "$now" -ge "$since" ] && ago=$(mc_format_age $((now - since)))
+  fi
+  rm -f "$(mc_state_dir)/paused"
+  if [ -n "$ago" ]; then
+    mc_log "on: enforcement RESUMED by user -- was paused for $ago"
+    echo "memcap resumed (was paused for $ago)"
+  else
+    mc_log "on: enforcement RESUMED by user"
+    echo "memcap resumed"
+  fi
+}
+
 # A stopped service looks exactly like a quiet one: `status` still prints a full
 # budget, nothing errors, no notification fires. Only the author noticing 28
 # hours of silence caught it -- not paused, not rebooted, no evidence of a
@@ -22,9 +132,24 @@ mc_is_paused() { [ -f "$(mc_state_dir)/paused" ]; }
 # paused and misconfigured-budget early returns -- it answers "is the daemon
 # ticking", a different question from "is it enforcing", which those paths
 # already report on their own.
+#
+# Stamped in two clocks, not one. The wall clock is what a person reads ("3h
+# ago"); the awake clock (mc_awake_secs, which freezes while the machine sleeps)
+# is what `status` actually judges staleness against, so a closed lid no longer
+# looks like a stopped daemon. The awake stamp is REMOVED rather than left
+# behind when the reading is unavailable -- a stale one would be read as the
+# current boot's and could hide a genuinely dead daemon, which is the failure
+# this whole file exists to make visible.
 mc_stamp_heartbeat() {
-  mkdir -p "$(mc_state_dir)"
-  date +%s > "$(mc_state_dir)/last-pass"
+  local dir awake
+  dir="$(mc_state_dir)"
+  mkdir -p "$dir"
+  date +%s > "$dir/last-pass"
+  if awake=$(mc_awake_secs); then
+    printf '%s\n' "$awake" > "$dir/last-pass-awake"
+  else
+    rm -f "$dir/last-pass-awake"
+  fi
 }
 
 # For status lines that would otherwise repeat on every single pass -- "an agent

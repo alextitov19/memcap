@@ -26,7 +26,15 @@ case "${1:-help}" in
     . "$LIB/init.sh"
     mc_run_init "$@"
     ;;
-  status) mc_render_status ;;
+  status)
+    # service.sh for the LaunchAgent row: a heartbeat proves a pass happened,
+    # not that the thing meant to run one is loaded. `status` is the command
+    # people actually type, so the check belongs here rather than only in
+    # `memcap service status`, which nobody runs.
+    # shellcheck source=/dev/null
+    . "$LIB/service.sh"
+    mc_render_status
+    ;;
   watch)
     # shellcheck source=/dev/null
     . "$LIB/enforce.sh"
@@ -68,8 +76,12 @@ case "${1:-help}" in
     mc_refuse_if_broken "apply Docker settings" || exit 3
     mc_docker_apply "$@"
     ;;
-  off)    mkdir -p "$(mc_state_dir)"; touch "$(mc_state_dir)/paused"; echo "memcap paused" ;;
-  on)     rm -f "$(mc_state_dir)/paused"; echo "memcap resumed" ;;
+  # Both write to actions.log. They used to write nothing at all, so a week
+  # spent paused and a week spent dead read identically in the audit trail --
+  # and since `on` deletes the marker, even the fact that a pause happened was
+  # gone. mc_pause also dates the marker so `status` can say how long it held.
+  off)    mc_pause; echo "memcap paused" ;;
+  on)     mc_resume ;;
   service)
     shift
     # shellcheck source=/dev/null
