@@ -177,8 +177,11 @@ log_lines() { grep -c "$1" "$(mc_state_dir)/actions.log" 2>/dev/null || echo 0; 
 
 @test "mc_source_checked sources a file that parses" {
   echo 'MC_TEST_KEY=applied' > "$BATS_TEST_TMPDIR/ok.conf"
+  # rc captured explicitly rather than testing $? inline: `run` would execute in
+  # a subshell and the assertion below needs the sourced key in THIS shell.
   mc_source_checked "$BATS_TEST_TMPDIR/ok.conf"
-  [ "$?" -eq 0 ]
+  rc=$?
+  [ "$rc" -eq 0 ]
   [ "$MC_TEST_KEY" = "applied" ]
 }
 
@@ -222,7 +225,8 @@ log_lines() { grep -c "$1" "$(mc_state_dir)/actions.log" 2>/dev/null || echo 0; 
 
 @test "mc_load_config on a machine with no config is not an error" {
   mc_load_config
-  [ "$?" -eq 0 ]
+  rc=$?
+  [ "$rc" -eq 0 ]
   [ "$MC_CONFIG_BROKEN" = "0" ]
 }
 
@@ -230,6 +234,7 @@ log_lines() { grep -c "$1" "$(mc_state_dir)/actions.log" 2>/dev/null || echo 0; 
   mkdir -p "$(mc_config_dir)"
   printf 'TOTAL_BUDGET_GB=16\nDOCKER_BUDGET_GB=6\n' > "$(mc_config_file)"
   mc_load_config
+  # shellcheck disable=SC2031  # set by mc_load_config in this shell, not a subshell
   [ "$MC_CONFIG_BROKEN" = "0" ]
   [ "$TOTAL_BUDGET_GB" = "16" ]
   [ "$DOCKER_BUDGET_GB" = "6" ]
@@ -321,6 +326,8 @@ log_lines() { grep -c "$1" "$(mc_state_dir)/actions.log" 2>/dev/null || echo 0; 
 }
 
 @test "mc_refuse_if_broken names the action and the file" {
+  # shellcheck disable=SC2030  # a bats @test body is a subshell by design; the
+  # assignment is meant to be local to this test and must not leak to the next.
   MC_CONFIG_BROKEN=1
   run mc_refuse_if_broken "sweep"
   [ "$status" -eq 1 ]
@@ -461,6 +468,7 @@ log_lines() { grep -c "$1" "$(mc_state_dir)/actions.log" 2>/dev/null || echo 0; 
   run bash -n "$(mc_config_file)"
   [ "$status" -eq 0 ]
   mc_load_config
+  # shellcheck disable=SC2031  # set by mc_load_config in this shell; a bats @test body is itself a subshell
   [ "$MC_CONFIG_BROKEN" = "0" ]
 }
 

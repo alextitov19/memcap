@@ -908,6 +908,7 @@ SCRIPT
   # is actually about. Without it mc_footprint_kb runs the REAL `top` first, and
   # pid 123 is a real process on macOS -- so the number being ranked would come
   # from the machine rather than the fixture.
+  # shellcheck disable=SC2034  # read by mc_ps_snapshot, sourced from measure.sh
   MC_NO_TOP=1
   # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
   DEVPIDS="999000 123"
@@ -2679,6 +2680,7 @@ SCRIPT
   perl -e 'sleep 600' "ms-playwright-fixture" & browser=$!
   wait_spawned "$browser"
   AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_filter_protected, sourced from enforce.sh
   PROTECTEDPIDS=""
   # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
   SIMPIDS="$browser"
@@ -3065,6 +3067,7 @@ EOS
   mc_build_held_tree "@playwright/mcp@latest"
   # shellcheck disable=SC2034  # consumed by mc_held_by_agent_server
   AGENTPIDS="$agent_pid"
+  # shellcheck disable=SC2034  # consumed by mc_filter_protected, sourced from enforce.sh
   PROTECTEDPIDS=""
   # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
   SIMPIDS="$browser_pid"
