@@ -1,5 +1,164 @@
 # Changelog
 
+## Unreleased
+
+A six-agent forensic audit of eleven days of production logs (4,002 lines) found
+ten defects. Every one of them failed **silently** — a value became wrong, or a
+guard failed open, and nothing anywhere said so. That is the same shape as every
+defect in this project's history, so the theme of this release is that memcap
+now tells you when it is not doing its job.
+
+### Consent and configuration
+
+- **Answering "no" to enforcement did not stop enforcement.** `memcap init`
+  wrote its pause marker with `touch "$(mc_state_dir)/paused"` while only the
+  *config* directory had been created. On a fresh install the state directory
+  did not exist yet, the `touch` failed silently, and memcap killed processes
+  the user had explicitly declined. Only new installs were affected — exactly
+  the population that could not tell.
+- **`"n"` was not "no".** Every yes/no prompt compared against the literal
+  string, so answering `n` to the same question also got you enforcement.
+  Anything unrecognised now lands on the side that kills nothing.
+- **A one-character config typo silently disabled everything.** The config was
+  sourced without checking the result, so on a syntax error the keys *before*
+  the error applied and the keys *after* it did not. A stray quote produced an
+  87 GB agent budget on a 24 GB machine: nothing was ever over budget, no tier
+  ever fired again, and the heartbeat reported it healthy. The file is now
+  parsed before it is sourced, so a broken config changes nothing at all, and
+  memcap refuses to enforce rather than acting on a policy the user never chose.
+- **Every numeric knob failed open.** `[` returns status 2 on a non-integer and
+  each gate sat to the left of an `&&`, so a bad value did not fail the gate —
+  it removed it. `TIER2_MIN_AGE_SEC="5m"` was not a long minimum age, it was no
+  minimum age, and a one-second-old process became a kill target. That is the
+  Linux-only-`etimes` bug of v0.1.3 reborn through configuration. Leading zeros
+  were also read as octal, so `016` silently meant a 20% tighter budget.
+
+### What gets killed
+
+- **An agent's own tooling was unprotected.** `AGENTPIDS` held only *direct*
+  agent-CLI matches; the ancestry propagation fed memory accounting but never
+  the protection list, while the dev-server list excluded only the CLI itself.
+  Every MCP server, hook, and tool subprocess under a live session was both
+  unprotected and classified as a dev server. Six of the ten real tier-2 kills
+  in the audited window were `chrome-devtools-mcp` watchdogs running as
+  grandchildren of a live `claude` session.
+- **`EXTRA_AGENTS` was spliced into a regex unvalidated.** The README advised
+  avoiding metacharacters; it is now enforced. An `a|` matched **every process
+  on the machine**, making all of them agent-classified and every working
+  directory a sweep root; a `foo,bar` matched nothing at all and left the user
+  believing they had added protection.
+
+### Measurement
+
+- **A failed measurement silently halved every total.** `top`'s exit status was
+  never checked and neither was `mktemp`, so any failure dropped every process
+  to `ps` RSS — combined 12.60 GB became 7.28 GB, a 42% under-measurement with
+  no log line and nothing in `status`. `SIM_KB` moved the *opposite* way in the
+  fallback, so the degraded state was not even a consistent bias.
+- **`mc_free_pct` returned a hardcoded 100 when `sysctl` was unavailable**,
+  permanently disabling tier 1's low-memory trigger. It now reports 0 and says
+  so — the one signal grounded in real physical memory rather than footprint.
+
+### Growth
+
+- **The learned sweep-roots file only ever grew.** Nothing pruned it; this
+  machine reached 40 rows and every new project added one permanently. Tier 1
+  costs roughly 5 ms per (orphan × root) pair, so 388 orphans against 40 roots
+  already exceeded the 60-second service interval. Roots are now bounded by
+  `ROOT_TTL_DAYS` and `ROOT_MAX`; a wrongly-dropped root is re-registered within
+  one pass, which is what makes a short TTL safe.
+
+### The enforcement tiers
+
+- **Tier 3 had never fired — not once, in the tool's entire life.** Eleven days of
+  logs: 1,973 declines, zero reclaims. The cause was `kill -0` used as a liveness
+  test, which fails for **EPERM** ("alive, but not yours to signal") exactly as it
+  does for **ESRCH** ("dead"). Root-owned `simdiskimaged` is listed in the simulator
+  pattern and appears on any Mac with Xcode installed, so every pass declared it
+  dead, deleted its idle stamp, re-saw it as never-tracked, and returned — through
+  the one unlogged return in the function. A process that is not even in the
+  reclaim pattern, and could never have been killed if selected, blocked the tier
+  permanently. It predates both the v0.3.0 and v0.3.1 "fixes", which addressed the
+  vetoes standing in front of it.
+
+- **The invariant that came out of unblocking it: memcap never reaps a process its
+  own vetoes count as evidence of active work.** With tier 3 working, the first
+  thing it selected was a Chrome browser held open by a live `@playwright/mcp`
+  server under an active session — idle *by design* between requests — while the
+  same pass counted the author's `maestro` servers as proof that mobile work was
+  happening. A resource cannot be both proof someone is working and reclaimable
+  garbage. Enforced once at the kill choke point, over whatever the veto matchers
+  return, rather than by excluding one vendor from one pattern.
+
+- **Simulator protection now has three bands**, because the populations genuinely
+  differ: a resource held open by a live server under an agent session is exempt
+  while its holder lives; a session-owned process that is *not* server-held gets a
+  longer clock (`TIER3_AGENT_TREE_GRACE_SEC`, default 1800) rather than immunity;
+  anything unowned keeps the ordinary grace. Every exclusion is logged with its
+  reason — the difference between this and the original bug is not that tier 3
+  reclaims more, but that when it reclaims nothing it says why.
+
+- **Tier 2 killed live work, reclaimed nothing, and misreported it.** Ten kills in
+  the audited window recovered 126 MB against overages of 0.5–6 GB. It never
+  consulted the mobile vetoes, so it killed the Metro bundler feeding a simulator
+  one second after tier 3 had declined to touch that simulator because the
+  developer was driving it. It ranked candidates by their own footprint and then
+  killed the whole subtree, so a fat worker outranked the server that owned the
+  worker pool — memcap fighting a supervisor that respawns. It now consults both
+  vetoes, ranks by subtree total, protects an agent's whole tree, names what it
+  actually killed, and can be switched off with `TIER2_ENABLED`.
+
+- **Tier 1 had no age gate**, while tier 2's documentation claimed an age gate
+  "keeps builds from ever being the victim" — a guarantee that existed in only one
+  of the two tiers that can kill a build. `npm run build &` reparented to init was
+  an instant target. `TIER1_MIN_AGE_SEC` (default 300) closes it. Still open, and
+  documented rather than papered over: `ppid == 1` is also what `nohup` and
+  `disown` produce, so a deliberately daemonized production server is
+  indistinguishable from a leak — a real kill of `npm exec next start -p 3100`
+  is the counter-example, and an age gate does not help because such a server is
+  old by definition.
+
+- **The 2-second SIGTERM→SIGKILL window killed recycled pids.** The recheck asked
+  "is *a* process alive at this number", not "is it the one I signalled", and fed
+  the survivors to SIGKILL **without passing back through the protection filter**.
+  At 135 pids allocated per 2-second window, a 388-orphan sweep carries roughly
+  half an expected wrong-process kill. Identity is now confirmed by start time and
+  argv, and the filter is re-applied before the kill.
+
+- **Tier 1 was on course to exceed its own service interval again.** Three process
+  forks remained inside the per-(orphan × root) loop, including canonicalizing the
+  same path twice. At 40 roots, 388 orphans measured 79 seconds against a
+  60-second interval. The inner loop now forks zero times.
+
+- **Kill records were truncated where they became informative.** All 376 records in
+  the audited window collapse to four distinct strings, because the `node` binary
+  path plus the `--require` shim consumed the entire 160-character budget and the
+  script actually executed always fell past the cut.
+
+- **An hourly liveness line is back.** The 28-hour outage was detectable only
+  because a line happened to fire every 30 minutes; v0.3.0 removed it, so the same
+  outage today would be indistinguishable from a quiet week.
+
+### Knowing whether it works
+
+- **`status` reported activity, not outcome.** It printed a heartbeat whether or
+  not the pass had enforced anything, so the states where memcap deliberately
+  refuses — an unparseable config, a Docker ceiling leaving agents no budget —
+  stamped the heartbeat and were certified healthy. The heartbeat added in
+  v0.1.4 to make non-enforcement visible had become what concealed it. `status`
+  now reports the outcome, the measurement basis, and whether the LaunchAgent is
+  actually loaded, each with its own remedy.
+- **Freshness never proved the service ran the pass** — any manual
+  `memcap watch` stamps it. `status` now asks `launchctl` directly, and reports
+  `unknown` rather than `no` when it cannot ask.
+- **A sleeping laptop produced false alarms.** Staleness is judged on a
+  monotonic clock that does not advance during sleep, so a closed lid no longer
+  reads as a dead daemon. False alarms are how a real one gets ignored.
+- **`memcap off` and `on` wrote nothing to the log**, so a paused week and a
+  dead week were indistinguishable in the audit trail forever. Both are logged,
+  and `status` says how long it has been paused.
+
+
 ## v0.3.1 — 2026-08-19
 
 ### Fixed

@@ -175,9 +175,24 @@ validation case for the formula.
 
 Escalating, and no tier ever touches an agent CLI itself:
 
-1. **Orphans** — `ppid == 1` and matching a dev-server pattern and inside a known sweep
-   root. A dead parent means no live session and no terminal owns it. Provably safe;
-   this tier alone resolved the 388-process incident.
+1. **Orphans** — `ppid == 1`, matching a dev-server pattern, inside a known sweep
+   root, and older than `TIER1_MIN_AGE_SEC` (default 300). A dead parent means no live
+   session and no terminal owns it. This tier alone resolved the 388-process incident.
+
+   > **Corrected 2026-08-25 (audit).** This said "provably safe" and had no age gate,
+   > while the tier-2 note below claimed an age gate "keeps builds from ever being the
+   > victim" — a guarantee that existed in only one of the two tiers that could kill a
+   > build. `MC_DEV_PATTERN` matches `/esbuild`, `/webpack`, `/rollup` and `/tsx`, so
+   > `npm run build &` reparented to init was an instant target. Tier 1 now has its own
+   > age gate. The asymmetry justifies it: a leak is persistent and re-detected every
+   > pass, so waiting costs nothing, while a destroyed build is unrecoverable.
+   >
+   > "Provably safe" was also too strong, and the audit found the counter-example in
+   > production: `ppid == 1` is equally what `nohup`, `disown`, `setsid` and
+   > `npm run start &` produce. A real kill of `npm exec next start -p 3100` — a
+   > production server on an ad-hoc port — cannot be distinguished from a leak by the
+   > process table, and the age gate does not help because a daemonized server is old
+   > by definition. This case remains open rather than papered over.
 2. **Over-budget dev servers** — only processes older than `TIER2_MIN_AGE_SEC` (default
    300). A dev server lives for hours; a `vite build` lives for seconds. The age gate is
    what keeps builds from ever being the victim. If every candidate is too young,
@@ -249,13 +264,30 @@ prototype:
   physical footprint for every process and no component needs its own correction.
   Falls back to RSS per-process when top has no row, and entirely under `MC_NO_TOP=1`.
   Measured cost 0.43s per pass against 0.05s for bare `ps`.
-- **Orphan status is the safety gate.** `ppid == 1` is what distinguishes garbage from a
-  process a live session or a human terminal still owns.
+- **Orphan status is a safety gate, not the safety gate.** `ppid == 1` distinguishes
+  garbage from a process a live session or terminal owns — but not from one a human
+  deliberately detached. It is one of four conditions, alongside the dev-server pattern,
+  the sweep root, and (since 2026-08-25) an age gate.
 
 ## Safety
 
-- Never killed: an agent CLI, anything in memcap's own ancestry, anything younger than
-  the age gate, anything while `memcap off` is set.
+- Never killed: an agent CLI **or anything in its process tree** — an MCP server, a
+  hook, a tool subprocess; anything in memcap's own ancestry; anything younger than its
+  tier's age gate; anything a veto counts as evidence of active work; anything while
+  `memcap off` is set.
+
+  > **Corrected 2026-08-25 (audit).** "An agent CLI" was literally true and
+  > operationally wrong: protection covered only direct CLI matches, so every MCP
+  > server and tool subprocess beneath a live session was both unprotected and
+  > classified as a dev server. Six of ten real tier-2 kills were
+  > `chrome-devtools-mcp` watchdogs running as grandchildren of a live `claude`.
+  >
+  > The last clause is the general form of a defect found twice: **memcap must never
+  > reap a process its own vetoes count as evidence of active work.** A process cannot
+  > simultaneously be proof that someone is working and be reclaimable garbage. It is
+  > enforced once, at the kill choke point, over whatever set the veto matchers return
+  > — not by editing one pattern to exclude another, which protects nothing it did not
+  > anticipate.
 - Every kill logged with pid, RSS and full command.
 - Tier 2 and 3 actions raise a rate-limited macOS notification. Kills are never silent.
 - `--dry-run` on every destructive command.
