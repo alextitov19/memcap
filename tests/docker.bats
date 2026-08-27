@@ -159,3 +159,82 @@ SCRIPT
   # absence is what actually proves the write/restart path was never reached.
   assert_not_contains "$output" "Waiting for the Docker engine"
 }
+
+# --- The ceiling memcap writes but never read back ---------------------------
+# `memcap docker apply` has written MemoryMiB since v0.1.0 and nothing has ever
+# read it. On the author's own machine the config said DOCKER_BUDGET_GB=4 while
+# Docker was enforcing 6144 MiB, because apply had never actually been run there
+# -- so every agent budget memcap computed subtracted a ceiling nothing honored,
+# and status printed "6.39 GB / 4 GB ceiling", which reads as Docker overrunning
+# a limit rather than as there being no limit at all.
+
+@test "CEILING: the enforced ceiling is read out of Docker's own settings" {
+  MC_DOCKER_STORE="$BATS_TEST_TMPDIR/settings.json"
+  printf '{"MemoryMiB": 6144, "Cpus": 8}\n' > "$MC_DOCKER_STORE"
+  run mc_docker_ceiling_gb
+  [ "$status" -eq 0 ]
+  [ "$output" = "6" ]
+}
+
+@test "CEILING: an unreadable or absent store is unknown, not a mismatch" {
+  # Never warn on missing information: a machine with no Docker Desktop, or a
+  # settings file memcap cannot parse, must produce silence rather than a claim
+  # that the user's config is wrong.
+  MC_DOCKER_STORE="$BATS_TEST_TMPDIR/does-not-exist.json"
+  run mc_docker_ceiling_gb
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+
+  MC_DOCKER_STORE="$BATS_TEST_TMPDIR/junk.json"
+  printf '{"Cpus": 8}\n' > "$MC_DOCKER_STORE"
+  run mc_docker_ceiling_gb
+  [ "$status" -ne 0 ]
+
+  printf '{"MemoryMiB": "lots"}\n' > "$MC_DOCKER_STORE"
+  run mc_docker_ceiling_gb
+  [ "$status" -ne 0 ]
+}
+
+@test "CEILING: the store is read without jq too" {
+  # jq is a formula dependency, so this is a fallback rather than the main path
+  # -- but a status command that dies because jq is missing would be worse than
+  # one that reports no ceiling.
+  MC_DOCKER_STORE="$BATS_TEST_TMPDIR/settings.json"
+  printf '{"MemoryMiB": 4096, "Cpus": 8}\n' > "$MC_DOCKER_STORE"
+  fakebin="$BATS_TEST_TMPDIR/nojq"
+  mkdir -p "$fakebin"
+  for c in sed head cat; do ln -sf "$(command -v $c)" "$fakebin/$c"; done
+  # /bin/bash by absolute path: PATH holds only the fake bin, so the shell itself
+  # would not be findable by name.
+  run env PATH="$fakebin" MC_DOCKER_STORE="$MC_DOCKER_STORE" /bin/bash -c \
+    "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/docker.sh'; mc_docker_ceiling_gb"
+  [ "$output" = "4" ]
+}
+
+@test "CEILING: a drift between config and Docker is reported with its remedy" {
+  # shellcheck disable=SC2034  # read by mc_docker_ceiling_gb, sourced from docker.sh
+  MC_DOCKER_CEILING_MIB=6144
+  run mc_docker_ceiling_drift 4
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "enforcing a 6 GB VM ceiling, not the 4 GB in your config"
+  assert_contains "$output" "memcap docker apply"
+}
+
+@test "CEILING: agreement is silent" {
+  # shellcheck disable=SC2034  # read by mc_docker_ceiling_gb, sourced from docker.sh
+  MC_DOCKER_CEILING_MIB=6144
+  run mc_docker_ceiling_drift 6
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "CEILING: an unmanaged Docker (0 GB) is not a drift" {
+  # shellcheck disable=SC2034  # read by mc_docker_ceiling_gb, sourced from docker.sh
+  # DOCKER_BUDGET_GB=0 means "memcap is not managing Docker", so whatever Docker
+  # is enforcing on its own is not a disagreement with anything.
+  MC_DOCKER_CEILING_MIB=6144
+  run mc_docker_ceiling_drift 0
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+

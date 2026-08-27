@@ -272,6 +272,26 @@ right after a restart, `docker images` and
 reloads. That is not data loss, and restarting Docker again to "fix" it only
 makes the wait longer.
 
+**`DOCKER_BUDGET_GB` is a request until `memcap docker apply` writes it into Docker's
+own settings**, and until then the agent budget above it — `TOTAL_BUDGET_GB` minus the
+Docker ceiling — is computed by subtracting a number nothing is enforcing. memcap wrote
+that setting from the beginning and never read it back, so the divergence was invisible:
+on the author's own machine the config asked for 4 GB while Docker held 6 GB, for
+memcap's entire life there. `status` now reads Docker's own value and says which one is
+real:
+
+```
+  docker VM + helpers              7.28 GB / 6 GB ceiling ENFORCED (config asks for 4 GB)
+  ...
+  Docker is enforcing a 6 GB VM ceiling, not the 4 GB in your config — the agent
+  budget is computed from a number Docker is not honoring. Fix with: memcap docker apply
+```
+
+It is reported rather than silently adopted. 16 GB total with 4 GB for Docker is the
+policy you chose; quietly enforcing against 6 instead would be memcap choosing a
+different one. `watch` logs the same line, throttled, so "why was I over budget all
+week" is answerable after the fact.
+
 `memcap docker apply` writes five settings, not just the two implied above —
 all five are printed in the command's own output so nothing here is a surprise:
 `DOCKER_BUDGET_GB` → `MemoryMiB`, `DOCKER_CPUS` → `Cpus`, plus a fixed 2 GB of
@@ -297,8 +317,8 @@ paused one, and one that declined to run because `memcap.conf` is misconfigured
   last enforcement pass            12s ago
 ```
 
-Past `STALE_PASS_SEC` (default 300, five ticks of the 60-second service
-interval) with no `memcap off` in effect, or if it has never run since install,
+Past `STALE_PASS_SEC` (default 300, four to five real ticks — see the
+measured cadence below) with no `memcap off` in effect, or if it has never run since install,
 `status` says so plainly and gives the exact command to fix it:
 
 ```
@@ -310,13 +330,18 @@ interval) with no `memcap off` in effect, or if it has never run since install,
 was never installed, was unloaded somehow, or is fine already — see "Install"
 above and `memcap service status` below.
 
-`actions.log` carries an hourly liveness line of its own — `watch: alive (60 passes
-since last mark)`, written every `LIVENESS_SEC` (default 3600). The pass count is the
-informative half: 60 passes in an hour is a healthy daemon at the default 60-second
-interval, while "alive (3 passes)" is one that has been stalling or restarting.
-Version 0.3.0 removed the periodic line that made the author's 28-hour outage visible
-at all, so the same outage would have been indistinguishable from a quiet week; this
-is that signal, back deliberately.
+`actions.log` carries an hourly liveness line of its own — `watch: alive (48 passes in
+3604s — one every 75s)`, written every `LIVENESS_SEC` (default 3600). Version 0.3.0
+removed the periodic line that made the author's 28-hour outage visible at all, so the
+same outage would have been indistinguishable from a quiet week; this is that signal,
+back deliberately.
+
+The line states its own window because the raw count is not self-interpreting. A
+`StartInterval` of 60 seconds is a request, not a guarantee: launchd coalesces timers,
+and two consecutive intervals measured on an awake production machine were **73
+seconds** apart, giving 46–58 passes in an hour rather than 60. Read against an assumed
+60, a perfectly healthy daemon looks like it is stalling — so the elapsed window and
+the derived interval are printed rather than left to be inferred.
 
 A paused service with a fresh heartbeat still reads as paused, not dead — the
 heartbeat answers "is the daemon ticking," a different question from "is it
@@ -427,7 +452,7 @@ computed default if it is absent or commented out.
 | `ROOT_MAX`                 | `64`              | Hard cap on retained roots, newest first. Tier 1 costs roughly 5 ms per (orphan × root) pair, so an unbounded list is a latent performance failure: 388 orphans against 40 roots already exceeds the 60-second service interval. |
 | `MEASURE_MISSING_PCT_MAX`  | `10`              | What share of processes may be missing a `top` footprint row before memcap treats the measurement as faulty rather than merely noisy. A few missing rows happen on every busy pass and are worth ~0.03% of the total; a wholesale fallback to `ps` RSS understates the combined figure by ~42%. One threshold for both would light permanently, which is the same as no signal at all. |
 | `NOTIFY_ICON`              | `🧠`              | The emoji memcap renders into the icon its notifications carry (see Notifications above). Must be at most 32 bytes and contain no control characters — it is passed to `sips` and written into `actions.log`, and a multi-codepoint emoji like 👨‍👩‍👧‍👦 is a legitimate choice, so the limit is measured in bytes rather than in whatever the current locale calls a character. `none` disables the bundle and returns to plain Script Editor notifications. Changing this rebuilds on the next pass. |
-| `STALE_PASS_SEC`           | `300`             | How long since the last completed `watch` pass before `status` reports the service as probably not running, rather than just "quiet." Five ticks of the default 60-second service interval — long enough to absorb one missed tick without a false alarm.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `STALE_PASS_SEC`           | `300`             | How long since the last completed `watch` pass before `status` reports the service as probably not running, rather than just "quiet." Four to five real ticks: the LaunchAgent asks for 60 seconds, but launchd's timer coalescing makes the measured interval 60–75 seconds, so 300 seconds is long enough to absorb a missed tick without a false alarm.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ## Files on disk
 

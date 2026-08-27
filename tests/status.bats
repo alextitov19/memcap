@@ -440,3 +440,34 @@ fresh_pass_with_outcome() {
   run "$MEMCAP_ROOT/bin/memcap" status
   assert_contains "$output" "THE LAST PASS DID NOT ENFORCE"
 }
+
+# --- The Docker ceiling row --------------------------------------------------
+@test "status says which Docker ceiling is actually being enforced" {
+  mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
+  cat > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" <<-'EOF'
+	TOTAL_BUDGET_GB=16
+	DOCKER_BUDGET_GB=4
+	EOF
+  # Docker holding a 6 GB ceiling against a config that asks for 4 is the state
+  # the author's machine was in for memcap's entire life there. The agent budget
+  # on the row above is computed as 16 - 4, so the row cannot keep presenting 4
+  # as the ceiling while Docker enforces something else.
+  run env MC_DOCKER_CEILING_MIB=6144 "$MEMCAP_ROOT/bin/memcap" status
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "6 GB ceiling ENFORCED (config asks for 4 GB)"
+  assert_contains "$output" "not the 4 GB in your config"
+  assert_contains "$output" "memcap docker apply"
+}
+
+@test "status leaves the Docker row alone when the ceiling matches" {
+  mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
+  cat > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" <<-'EOF'
+	TOTAL_BUDGET_GB=16
+	DOCKER_BUDGET_GB=6
+	EOF
+  run env MC_DOCKER_CEILING_MIB=6144 "$MEMCAP_ROOT/bin/memcap" status
+  assert_contains "$output" "6 GB ceiling"
+  assert_not_contains "$output" "ENFORCED"
+  assert_not_contains "$output" "memcap docker apply"
+}
+
