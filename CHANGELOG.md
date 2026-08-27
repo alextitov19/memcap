@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.1 — 2026-08-27
 
 Found by auditing 14 days of `actions.log` (4,738 lines) on the author's machine,
 two days after v0.5.0 shipped.
