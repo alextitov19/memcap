@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased
+
+Found by auditing 14 days of `actions.log` (4,738 lines) on the author's machine,
+two days after v0.5.0 shipped.
+
+### The Docker ceiling was a number nothing checked
+
+- **`DOCKER_BUDGET_GB` is only a request until `memcap docker apply` writes it into
+  Docker's own settings, and nothing ever read it back.** memcap has written
+  `MemoryMiB` since v0.1.0. On the author's machine the config said 4 GB while
+  Docker was enforcing 6144 MiB — `apply` had never actually run there, which the
+  absent `settings-store.json.memcap.bak` proves — so every agent budget memcap
+  computed on that machine subtracted a ceiling nothing honored, and the machine
+  had 2 GB more in play than the config described. `status` rendered it as
+  `6.39 GB / 4 GB ceiling`, which reads as Docker overrunning a limit rather than
+  as there being no limit at all.
+- `status` now reads the enforced value and names both, and `watch` logs the same
+  line throttled so the audit trail carries it. **Reported, never silently
+  adopted**: 16 GB total with 4 GB for Docker is the policy the user chose, and
+  enforcing against 6 instead would be memcap choosing a different one. An
+  unreadable settings file, no Docker Desktop, or a `DOCKER_BUDGET_GB` of 0 all
+  produce silence — an unknown ceiling must never be reported as a wrong one.
+- **`MC_DOCKER_STORE` could not be overridden from the environment.** It was a
+  plain assignment, and `bin/memcap` re-sources `docker.sh` on every invocation,
+  so an override set beforehand was discarded — the same clobbering AGENTS.md
+  records for function stubs. It is `${MC_DOCKER_STORE:-…}` now, like
+  `MC_DRY_RUN` on the line below it.
+
+### Logging
+
+- **The one repeating decline v0.4.0 forgot to throttle.** `tier2: over budget but
+  no candidate is both older than 300s and measurable` was written on every pass
+  that reached it: 79 identical lines in 42 hours, the most frequent line in the
+  file, on a machine that is chronically over budget with only young processes
+  running. Every other per-pass decline has been throttled since v0.4.0. Its key
+  clears the moment tier 2 finds a candidate again, so consecutive quiet spells
+  still get their own lines.
+- **The liveness line assumed a cadence the machine does not have.** It reported
+  `alive (N passes since last mark)`, and the code's own comment called 60 passes
+  "a healthy hour". Measured on an awake machine (0 seconds of sleep since boot),
+  two consecutive intervals were **73 seconds** apart, not 60: `StartInterval` is
+  a request and launchd coalesces timers. Healthy hours in the log ran 46–58
+  passes, so anyone reading the count against the documented baseline would
+  diagnose a stalling daemon that was working perfectly. The line now states its
+  own window — `alive (48 passes in 3604s -- one every 75s)` — so a real stall is
+  visible without outside knowledge.
+- **The first pass after install logged `alive (1 passes since last mark)`**, with
+  "last mark" being the epoch. It now says the clock started, and reports nothing
+  it cannot derive.
+
 ## v0.5.0 — 2026-08-25
 
 ### Notifications carry memcap's own icon

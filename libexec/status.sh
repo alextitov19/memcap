@@ -219,7 +219,7 @@ mc_render_heartbeat() {
 mc_render_status() {
   local total default_cap cap default_docker docker_budget agents_budget
   local agent_gb agent_net_gb docker_gb combined free free_marker free_label
-  local docker_ceiling_label agents_budget_label missing measure_label
+  local docker_ceiling_label agents_budget_label missing measure_label docker_drift
   local paused_since now conf
   # Locals rather than globals, and read by the mc_render_* helpers below
   # through bash's dynamic scoping: nothing survives one render into the next.
@@ -303,6 +303,22 @@ mc_render_status() {
   if [ "$docker_budget" -le 0 ]; then docker_ceiling_label="no ceiling (unmanaged, but still counted in combined below)"
   else docker_ceiling_label="${docker_budget} GB ceiling"; fi
 
+  # The ceiling in the config is a REQUEST until `memcap docker apply` writes it
+  # into Docker's own settings, and nothing ever read that back. On the author's
+  # machine the config said 4 GB while Docker was enforcing 6 -- so this row read
+  # "6.39 GB / 4 GB ceiling", which looks like Docker overrunning a limit rather
+  # than like there being no limit, and the agent budget on the row above was
+  # computed by subtracting a number nothing honored. Reported, never silently
+  # re-derived: 16 GB total with 4 GB for Docker is the policy the user chose,
+  # and acting on 6 instead would be memcap choosing a different one.
+  docker_drift=""
+  if command -v mc_docker_ceiling_drift >/dev/null 2>&1; then
+    docker_drift=$(mc_docker_ceiling_drift "$docker_budget") || docker_drift=""
+    if [ -n "$docker_drift" ]; then
+      docker_ceiling_label="$(mc_docker_ceiling_gb) GB ceiling ENFORCED (config asks for ${docker_budget} GB)"
+    fi
+  fi
+
   # The same guard on the line directly ABOVE the Docker one, where it was
   # missing: DOCKER_BUDGET_GB >= TOTAL_BUDGET_GB rendered "6.19 GB / 0 GB
   # budget", the exact nonsense the Docker line is careful about. `watch`
@@ -315,6 +331,8 @@ mc_render_status() {
   else
     agents_budget_label="${agents_budget} GB budget"
   fi
+
+  [ -n "$docker_drift" ] && mc_status_warn "$docker_drift"
 
   printf 'memcap — %s\n\n' "$conf"
   mc_status_row "agents + everything they spawn" "${agent_gb} GB / ${agents_budget_label}"

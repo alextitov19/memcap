@@ -773,10 +773,17 @@ mc_kill_over_budget() {
   done
 
   if [ -z "${ranked// /}" ]; then
-    mc_log "tier2: over budget but no candidate is both older than ${min_age}s and measurable -- not touching active work"
+    # Throttled like every other per-pass decline. v0.4.0 throttled the repeating
+    # status lines so they could not drown the kill records, and missed this one:
+    # in 42 hours of production it was the single most frequent line in
+    # actions.log (79 identical entries), because a machine that is chronically
+    # over budget with only young processes running reaches this branch on every
+    # pass. The notification below keeps its own 300-second throttle.
+    mc_log_throttled "tier2-no-candidate" "tier2: over budget but no candidate is both older than ${min_age}s and measurable -- not touching active work"
     [ "$MC_DRY_RUN" = "1" ] || mc_notify "Agents over budget. Only fresh builds running, so nothing was killed."
     return 0
   fi
+  mc_log_throttle_clear "tier2-no-candidate"
   victim=$(printf '%s' "$ranked" | sort -rn | head -1 | awk '{print $2}')
   case "$victim" in ''|*[!0-9]*) return 0 ;; esac
   vcmd=$(ps -o comm= -p "$victim" 2>/dev/null | tr -d ' ')
@@ -1196,7 +1203,7 @@ mc_finish_pass() {
 # "alive (60 passes since last mark)" is a healthy hour, "alive (3 passes)" is a
 # daemon that has been restarting or stalling.
 mc_watch_liveness() {
-  local dir count mark now every
+  local dir count mark now every elapsed
   dir="$(mc_state_dir)"
   mkdir -p "$dir" 2>/dev/null || return 0
   count=$(cat "$dir/pass-count" 2>/dev/null)
@@ -1209,16 +1216,35 @@ mc_watch_liveness() {
   [ ${#mark} -le 18 ] || mark=0
   now=$(date +%s)
   every=$(mc_enf_num "${LIVENESS_SEC:-3600}" 3600 LIVENESS_SEC)
+  # No mark yet (fresh install, or a state directory that was cleared). `now -
+  # 0` is the entire epoch, so every elapsed figure derived from it would be
+  # nonsense -- start the clock and say so instead.
+  if [ "$mark" = "0" ]; then
+    printf '%s\n' "$now" > "$dir/liveness-mark" 2>/dev/null || :
+    printf '0\n' > "$dir/pass-count" 2>/dev/null || :
+    mc_log "watch: alive (liveness clock started)"
+    return 0
+  fi
   [ $((now - mark)) -lt "$every" ] && return 0
+  elapsed=$((now - mark))
   printf '%s\n' "$now" > "$dir/liveness-mark" 2>/dev/null || :
   printf '0\n' > "$dir/pass-count" 2>/dev/null || :
-  mc_log "watch: alive ($count passes since last mark)"
+  # The interval is spelled out because the raw count is not self-interpreting
+  # and the old comment here guessed it wrong: it called 60 passes "a healthy
+  # hour", while a healthy hour on the author's Mac is 46-58. StartInterval is
+  # not a guarantee -- launchd coalesces timers, and two consecutive intervals
+  # measured on an awake machine were 73 seconds apart, not 60. Someone reading
+  # "alive (47 passes)" against the old comment would diagnose a stalling daemon
+  # that was working perfectly. A real stall shows up in the interval, which is
+  # now stated rather than left to be inferred from a number nobody has a
+  # baseline for.
+  mc_log "watch: alive ($count passes in ${elapsed}s -- one every $((elapsed / (count > 0 ? count : 1)))s)"
   return 0
 }
 
 mc_watch() {
   local total cap cap_default docker_budget docker_default agents_budget
-  local agent_net_gb over free soft min_free outcome
+  local agent_net_gb over free soft min_free outcome drift
   local agent_gb docker_gb combined_gb gross_over
 
   mc_watch_liveness
@@ -1272,6 +1298,18 @@ mc_watch() {
     mc_finish_pass refused-misconfig
     return 1
   fi
+  # Same divergence `status` renders, in the audit trail: a machine whose Docker
+  # ceiling was never applied has been enforcing against the wrong agent budget
+  # for as long as that has been true, and actions.log is where the "why was
+  # memcap over budget all week" question gets answered afterwards.
+  if command -v mc_docker_ceiling_drift >/dev/null 2>&1; then
+    if drift=$(mc_docker_ceiling_drift "$docker_budget"); then
+      mc_log_throttled "docker-ceiling-drift" "watch: $drift"
+    else
+      mc_log_throttle_clear "docker-ceiling-drift"
+    fi
+  fi
+
   # Net of sims, not the gross AGENT_KB: sims still count toward the combined cap
   # and are still reclaimed by tier 3, but tier 1's soft trigger and tier 2's
   # kill decision must not fire on an overage that belongs to a simulator neither

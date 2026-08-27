@@ -35,6 +35,11 @@ case "${1:-help}" in
     # `memcap service status`, which nobody runs.
     # shellcheck source=/dev/null
     . "$LIB/service.sh"
+    # docker.sh for the VM-ceiling row: the config's ceiling is only a request
+    # until `memcap docker apply` writes it into Docker's own settings, and the
+    # row is misleading when those two disagree.
+    # shellcheck source=/dev/null
+    . "$LIB/docker.sh"
     mc_render_status
     ;;
   watch)
@@ -42,6 +47,8 @@ case "${1:-help}" in
     . "$LIB/enforce.sh"
     # shellcheck source=/dev/null
     . "$LIB/notify.sh"
+    # shellcheck source=/dev/null
+    . "$LIB/docker.sh"
     # One file read on a pass where nothing has changed. Here rather than inside
     # mc_watch so that calling the enforcement functions directly -- which the
     # test suite does constantly -- never compiles an app bundle.

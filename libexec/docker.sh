@@ -1,8 +1,65 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-MC_DOCKER_STORE="$HOME/Library/Group Containers/group.com.docker/settings-store.json"
+# `:-` like MC_DRY_RUN directly below, and unlike the unconditional assignment
+# this used to be: bin/memcap re-sources this file for every real invocation, so
+# a plain assignment silently discarded any MC_DOCKER_STORE set in the
+# environment. That is the same override-clobbering AGENTS.md records for
+# function stubs, and it meant the store path was reachable only by tests that
+# set the variable AFTER sourcing -- never through `bin/memcap` at all.
+MC_DOCKER_STORE="${MC_DOCKER_STORE:-$HOME/Library/Group Containers/group.com.docker/settings-store.json}"
 MC_DRY_RUN="${MC_DRY_RUN:-0}"
+
+# The ceiling Docker is ACTUALLY enforcing, in whole GB, read back out of the
+# same key mc_docker_apply writes. Prints nothing and returns non-zero when the
+# answer is unknowable (no Docker Desktop, unreadable store, no jq) -- an unknown
+# ceiling must never be reported as a mismatched one.
+#
+# Written since v0.1.0, read by nobody until now, and the gap was not theoretical:
+# on the author's machine DOCKER_BUDGET_GB was 4 while Docker's own MemoryMiB was
+# 6144, because `memcap docker apply` had never been run there (no
+# settings-store.json.memcap.bak existed). Every budget memcap computed on that
+# machine subtracted a ceiling nothing was enforcing, and `status` printed
+# "6.39 GB / 4 GB ceiling" -- which reads as Docker overrunning a limit, rather
+# than as there being no limit at all.
+mc_docker_ceiling_gb() {
+  local mib
+  if [ -n "${MC_DOCKER_CEILING_MIB:-}" ]; then
+    # Escape hatch, the MC_DOCKER_RUNTIME pattern again: what Docker Desktop has
+    # in its settings file is a property of the host, not something a test can
+    # arrange.
+    mib="$MC_DOCKER_CEILING_MIB"
+  else
+    [ -f "$MC_DOCKER_STORE" ] || return 1
+    if command -v jq >/dev/null 2>&1; then
+      mib=$(jq -r '.MemoryMiB // empty' "$MC_DOCKER_STORE" 2>/dev/null)
+    else
+      # Deliberately not a JSON parser: this is a fallback for a machine without
+      # the formula's own dependency, and it either finds a plain integer or
+      # gives up. A wrong number here would produce a false mismatch warning,
+      # which is worse than no warning.
+      mib=$(sed -n 's/.*"MemoryMiB"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$MC_DOCKER_STORE" 2>/dev/null | head -1)
+    fi
+  fi
+  case "$mib" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$mib" -gt 0 ] || return 1
+  printf '%s' $((mib / 1024))
+  return 0
+}
+
+# The one-line explanation of a drift, or nothing at all when the two agree or
+# the enforced ceiling cannot be read. Shared so `status` and `watch` cannot
+# describe the same condition two different ways.
+mc_docker_ceiling_drift() {
+  local configured="${1:-0}" actual
+  case "$configured" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$configured" -gt 0 ] || return 1
+  actual=$(mc_docker_ceiling_gb) || return 1
+  [ "$actual" = "$configured" ] && return 1
+  printf "Docker is enforcing a %s GB VM ceiling, not the %s GB in your config -- the agent budget is computed from a number Docker is not honoring. Fix with: memcap docker apply" \
+    "$actual" "$configured"
+  return 0
+}
 
 mc_docker_runtime() {
   # Escape hatch, same pattern as MC_NO_TOP: this check depends entirely on what

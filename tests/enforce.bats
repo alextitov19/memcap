@@ -2335,6 +2335,51 @@ SCRIPT
   grep -q "TIER2_MIN_AGE_SEC is not a whole number" "$(mc_state_dir)/actions.log"
 }
 
+# 79 identical copies of this line in 42 hours of production, the most frequent
+# line in actions.log -- a machine that is chronically over budget with only
+# young processes reaches this branch on every pass. v0.4.0 throttled every other
+# repeating decline for exactly this reason and missed this one.
+@test "TIER2-THROTTLE: the 'no candidate' decline logs once per window, not once per pass" {
+  sleep 600 & victim=$!
+  wait_spawned "$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
+  DEVPIDS="$victim"
+  # shellcheck disable=SC2034  # nothing is old enough, so every pass declines
+  TIER2_MIN_AGE_SEC=99999
+  MC_DRY_RUN=1
+  mc_kill_over_budget
+  mc_kill_over_budget
+  mc_kill_over_budget
+
+  kill "$victim" 2>/dev/null
+
+  run grep -c "no candidate is both older" "$(mc_state_dir)/actions.log"
+  [ "$output" = "1" ]
+}
+
+@test "TIER2-THROTTLE: a state change gets its own line rather than waiting out the window" {
+  # The throttle key is cleared the moment tier 2 finds a candidate again, so a
+  # machine that goes quiet, gets busy, and goes quiet again logs both quiet
+  # spells instead of one.
+  sleep 600 & victim=$!
+  wait_spawned "$victim"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget
+  DEVPIDS="$victim"
+  MC_DRY_RUN=1
+
+  TIER2_MIN_AGE_SEC=99999
+  mc_kill_over_budget          # declines, logs
+  TIER2_MIN_AGE_SEC=0
+  mc_kill_over_budget          # finds a candidate, clears the key
+  TIER2_MIN_AGE_SEC=99999
+  mc_kill_over_budget          # declines again -- must log again
+
+  kill "$victim" 2>/dev/null
+
+  run grep -c "no candidate is both older" "$(mc_state_dir)/actions.log"
+  [ "$output" = "2" ]
+}
+
 @test "TIER2-NOTIFY: the 'only fresh builds' notification is dry-run gated too" {
   # enforce.sh's other notification was gated on mc_kill_pids actually killing
   # something; this one was gated on nothing at all, so a dry run fired a real
@@ -2554,11 +2599,31 @@ SCRIPT
 # since-removed log line happened to fire every 30 minutes. Since v0.3.0 --
 # correctly, since those lines were 94% of the file -- everything routine is
 # throttled or conditional, so the same outage would now look identical to a
-# quiet week. The pass count is what carries the information: "alive (60 passes)"
-# is a healthy hour; "alive (3 passes)" is a daemon restarting or stalling.
-@test "LIVENESS: the first pass logs an alive line with its pass count" {
+# quiet week. The pass count carries the information -- but only alongside the
+# window it was counted over: the comment here used to call 60 passes "a healthy
+# hour", and on a real Mac a healthy hour is 46-58, because launchd coalesces a
+# StartInterval timer (two consecutive intervals measured in production were 73
+# seconds apart, not 60). So the line states the elapsed window and the derived
+# interval, and a stall is visible without knowing what the number should be.
+@test "LIVENESS: the very first pass starts the clock rather than reporting a bogus window" {
+  # No mark exists yet, so `now - mark` is the whole epoch. Deriving an elapsed
+  # time or an interval from that prints nonsense.
   run "$MEMCAP_ROOT/bin/memcap" watch
-  grep -q "watch: alive (1 passes since last mark)" "$MEMCAP_STATE_HOME/memcap/actions.log"
+  grep -q "watch: alive (liveness clock started)" "$MEMCAP_STATE_HOME/memcap/actions.log"
+  run grep -c "passes in" "$MEMCAP_STATE_HOME/memcap/actions.log"
+  [ "$output" = "0" ]
+}
+
+@test "LIVENESS: the line states the interval, not just the count" {
+  d="$MEMCAP_STATE_HOME/memcap"
+  mkdir -p "$d"
+  # An hour ago, 47 passes already counted: this pass makes 48, i.e. one every
+  # 75 seconds -- the real cadence on the author's machine, which the old line
+  # would have rendered as the bare "48 passes" that reads like a fault.
+  echo "$(( $(date +%s) - 3600 ))" > "$d/liveness-mark"
+  echo 47 > "$d/pass-count"
+  run "$MEMCAP_ROOT/bin/memcap" watch
+  grep -qE "watch: alive \(48 passes in 3[0-9]{3}s -- one every 7[0-9]s\)" "$d/actions.log"
 }
 
 @test "LIVENESS: the line is hourly, not per pass -- three passes in a row log once" {
@@ -2585,7 +2650,7 @@ SCRIPT
   # counter resets when a mark is written, so the three passes counted here are
   # the two silent ones above plus this one -- the first pass wrote the mark.
   run env LIVENESS_SEC=0 "$MEMCAP_ROOT/bin/memcap" watch
-  grep -q "watch: alive (3 passes since last mark)" "$MEMCAP_STATE_HOME/memcap/actions.log"
+  grep -q "watch: alive (3 passes in " "$MEMCAP_STATE_HOME/memcap/actions.log"
 }
 
 # --- C1's fractional sibling: SOFT_TRIGGER -----------------------------------
