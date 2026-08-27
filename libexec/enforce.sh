@@ -726,8 +726,46 @@ EOF
 # either mobile veto.
 MC_TIER2_MIN_AGE_DEFAULT=300
 
+# Tier 3 owns every sim-classified process. It decides when a browser or emulator
+# is reclaimable by measuring CPU flatness across SIM_IDLE_GRACE_SEC, holds one
+# that a live server is using for as long as its holder lives, and gives an agent
+# session's own browser triple the clock. Tier 2 selects by INFERENCE and has no
+# idleness test of any kind -- so a subtree that happens to contain a browser took
+# one out from under every one of those rules.
+#
+# Not hypothetical: 2026-08-26 21:10:30, a Playwright driver plus a headed Chrome
+# (`--user-data-dir=...playwright_chromiumdev_profile-...`, sim-classified) and
+# its six helpers -- eight processes in one event, none idle-checked, ranked top
+# precisely BECAUSE a browser subtree is the largest thing on the machine.
+#
+# "Orphaned" is not "idle": a Playwright run whose shell has exited is reparented
+# to init while its tests are still running, which is exactly the shape tier 2
+# ranks first. So a candidate holding a sim that has not cleared tier 3's grace is
+# skipped, and the next candidate is considered instead.
+#
+# Fails closed. A sim pid with no readable stamp is not PROVEN idle, so it blocks:
+# tier 3 stamps every sim pid on every pass, which makes an unstamped one a pid
+# memcap has not seen yet rather than one it has watched sit still.
+mc_tier2_sim_blocker() {
+  local pid="$1" now="$2" grace="$3" p age
+  MC_TIER2_BLOCKER=""
+  [ -n "${SIMPIDS+x}" ] || return 1
+  for p in $(mc_descendants "$pid"); do
+    case " $SIMPIDS " in *" $p "*) : ;; *) continue ;; esac
+    age=0
+    if mc_read_idle_stamp "$(mc_sims_idle_stamp "$p")"; then
+      age=$((now - MC_STAMP_FIRST))
+      [ "$age" -ge "$grace" ] && continue
+      [ "$age" -lt 0 ] && age=0
+    fi
+    MC_TIER2_BLOCKER="$p $age"
+    return 0
+  done
+  return 1
+}
+
 mc_kill_over_budget() {
-  local pid age_raw ranked="" kb min_age victim vcmd
+  local pid age_raw ranked="" kb min_age victim vcmd row cand now sim_grace blocked
 
   if [ -z "${DEVPIDS+x}" ]; then
     mc_log "tier2: refusing to act -- DEVPIDS is unset, so classification did not run"
@@ -784,8 +822,32 @@ mc_kill_over_budget() {
     return 0
   fi
   mc_log_throttle_clear "tier2-no-candidate"
-  victim=$(printf '%s' "$ranked" | sort -rn | head -1 | awk '{print $2}')
-  case "$victim" in ''|*[!0-9]*) return 0 ;; esac
+  # Down the ranking rather than `head -1`: the biggest subtree is not always one
+  # tier 2 is allowed to take, and a blocked candidate must not stop a legitimate
+  # one below it from being considered.
+  now=$(date +%s)
+  sim_grace=$(mc_enf_num "${SIM_IDLE_GRACE_SEC:-600}" 600 SIM_IDLE_GRACE_SEC)
+  victim=""
+  blocked=0
+  while IFS= read -r row; do
+    cand="${row##* }"
+    case "$cand" in ''|*[!0-9]*) continue ;; esac
+    if mc_tier2_sim_blocker "$cand" "$now" "$sim_grace"; then
+      blocked=1
+      mc_log_throttled "tier2-sim-subtree" "tier2: skipping pid $cand -- its subtree holds sim pid ${MC_TIER2_BLOCKER%% *}, idle ${MC_TIER2_BLOCKER##* }s of the ${sim_grace}s grace. A browser or emulator is tier 3's to judge, not tier 2's."
+      continue
+    fi
+    victim="$cand"
+    break
+  done <<EOF
+$(printf '%s' "$ranked" | sort -rn)
+EOF
+  if [ -z "$victim" ]; then
+    [ "$blocked" = "1" ] && mc_log_throttled "tier2-all-blocked" "tier2: over budget, but every candidate's subtree holds a simulator or browser still inside its idle grace -- tier 3 will reclaim those once they have been idle long enough"
+    return 0
+  fi
+  mc_log_throttle_clear "tier2-sim-subtree"
+  mc_log_throttle_clear "tier2-all-blocked"
   vcmd=$(ps -o comm= -p "$victim" 2>/dev/null | tr -d ' ')
   vcmd="${vcmd##*/}"
   # Gated on mc_kill_pids actually killing something: a dry run, or a real pass

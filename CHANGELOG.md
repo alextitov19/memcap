@@ -28,6 +28,25 @@ two days after v0.5.0 shipped.
   records for function stubs. It is `${MC_DOCKER_STORE:-…}` now, like
   `MC_DRY_RUN` on the line below it.
 
+### Tier 2 no longer reclaims what tier 3 is still judging
+
+- **A browser subtree ranks first precisely because it is the biggest thing on the
+  machine.** On 2026-08-26 at 21:10:30 tier 2 killed a Playwright driver, a headed
+  Chrome carrying `--user-data-dir=…playwright_chromiumdev_profile-…`, and its six
+  helpers — eight processes in one event. That Chrome was sim-classified, i.e.
+  tier 3's population, which tier 3 only reclaims after measuring CPU flatness
+  across the whole grace, and which it holds indefinitely while a live server is
+  using it. Tier 2 selects by inference and has no idleness test of any kind, so
+  the subtree expansion took a browser out from under every one of those rules.
+- A candidate holding a sim that has not cleared `SIM_IDLE_GRACE_SEC` is now
+  skipped, and the walk continues **down** the ranking rather than stopping — one
+  protected browser must not turn into tier 2 never acting at all. **"Orphaned" is
+  not "idle":** a Playwright run whose shell has exited is reparented to init while
+  its tests are still running, which is exactly the shape tier 2 ranks first. A sim
+  with no readable idle stamp blocks as well, because tier 3 stamps every sim pid
+  on every pass — an unstamped one is a pid memcap has not seen yet, not one it has
+  watched sit still.
+
 ### Logging
 
 - **The one repeating decline v0.4.0 forgot to throttle.** `tier2: over budget but
