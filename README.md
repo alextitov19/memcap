@@ -158,6 +158,15 @@ agent CLI — six of the ten real tier 2 kills in the audited window were
 `TIER2_ENABLED=0` switches the tier off entirely and leaves over-budget handling to
 tier 1 and tier 3.
 
+A candidate whose subtree holds a simulator or browser that has not cleared tier 3's
+idle grace is skipped, and the next candidate down the ranking is considered instead.
+Tier 3 decides when that population is reclaimable by measuring CPU flatness; tier 2
+has no idleness test at all, and a browser subtree ranks first precisely because it is
+the biggest thing on the machine. In production it took a Playwright driver, a headed
+Chrome and its six helpers in one event. "Orphaned" is not "idle" — a Playwright run
+whose shell has exited is reparented to init while its tests are still running — so a
+sim with no idle stamp blocks too: unobserved is not proven idle.
+
 **Tier 3 — idle simulators.** iOS Simulators, Android emulators, Playwright
 browsers, and Maestro processes. Idle is measured directly, not inferred: memcap
 samples each tracked simulator's own accumulated CPU time, the same way `top`

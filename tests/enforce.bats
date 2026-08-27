@@ -2335,6 +2335,156 @@ SCRIPT
   grep -q "TIER2_MIN_AGE_SEC is not a whole number" "$(mc_state_dir)/actions.log"
 }
 
+# --- Tier 2 must not reclaim what tier 3 is still judging ---------------------
+# 2026-08-26 21:10:30, production: a Playwright driver plus a headed Chrome and
+# its six helpers, killed in one tier-2 event. The Chrome carried
+# `--user-data-dir=...playwright_chromiumdev_profile-...`, so it was
+# sim-classified -- tier 3's population, which tier 3 only reclaims after
+# measuring CPU flatness across the whole grace. Tier 2 applied none of that: it
+# ranked the subtree first BECAUSE a browser is the biggest thing on the machine.
+
+# A parent with a child, so mc_descendants has a real subtree to walk. Returns
+# "parent child" and leaves both running for the caller to kill.
+spawn_pair() {
+  local parent child i
+  # stdout and stderr detached: this function is called through a command
+  # substitution, which waits for the write end of the pipe to close -- a
+  # background process inheriting that fd holds it open for its whole 600s life
+  # and hangs the test that spawned it.
+  # `& wait`, not two sleeps: the wrapper then has exactly ONE child, so killing
+  # the pair at the end of a test leaves nothing behind. The first version left a
+  # second sleep orphaned in every test, and five of them still holding bats'
+  # descriptors is a suite that finishes its last test and then hangs.
+  bash -c 'sleep 600 & wait' >/dev/null 2>&1 &
+  parent=$!
+  i=0
+  while [ "$i" -lt 250 ]; do
+    child=$(pgrep -P "$parent" 2>/dev/null | head -1)
+    [ -n "$child" ] && break
+    sleep 0.02
+    i=$((i + 1))
+  done
+  printf '%s %s' "$parent" "$child"
+}
+
+@test "TIER2-SIM: a candidate whose subtree holds a sim inside its idle grace is skipped" {
+  read -r parent child <<<"$(spawn_pair)"
+  [ -n "$child" ]
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget, sourced from enforce.sh
+  DEVPIDS="$parent"
+  # shellcheck disable=SC2034  # consumed by mc_tier2_sim_blocker
+  SIMPIDS=" $child "
+  # shellcheck disable=SC2034  # read by mc_kill_over_budget, sourced from enforce.sh
+  TIER2_MIN_AGE_SEC=0
+  # shellcheck disable=SC2034  # read by mc_tier2_sim_blocker
+  SIM_IDLE_GRACE_SEC=600
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  # Tracked 60 seconds ago: nowhere near the 600s grace, so tier 3 would not
+  # touch it and tier 2 must not either.
+  printf '%s %s\n' "$(( $(date +%s) - 60 ))" 0 > "$(mc_sims_idle_stamp "$child")"
+
+  run mc_kill_over_budget
+  kill "$parent" "$child" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+  run cat "$(mc_state_dir)/actions.log"
+  assert_contains "$output" "its subtree holds sim pid $child"
+  assert_contains "$output" "tier 3's to judge"
+}
+
+@test "TIER2-SIM: once the sim has cleared tier 3's grace, tier 2 may take it" {
+  read -r parent child <<<"$(spawn_pair)"
+  [ -n "$child" ]
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget
+  DEVPIDS="$parent"
+  # shellcheck disable=SC2034  # consumed by mc_tier2_sim_blocker
+  SIMPIDS=" $child "
+  # shellcheck disable=SC2034  # read by mc_kill_over_budget, sourced from enforce.sh
+  TIER2_MIN_AGE_SEC=0
+  # shellcheck disable=SC2034  # read by mc_tier2_sim_blocker
+  SIM_IDLE_GRACE_SEC=600
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '%s %s\n' "$(( $(date +%s) - 5000 ))" 0 > "$(mc_sims_idle_stamp "$child")"
+
+  run mc_kill_over_budget
+  kill "$parent" "$child" 2>/dev/null
+
+  assert_contains "$output" "would kill"
+}
+
+@test "TIER2-SIM: an unstamped sim blocks -- unseen is not proven idle" {
+  # Tier 3 stamps every sim pid on every pass, so a sim with no stamp is one
+  # memcap has not observed yet, not one it has watched sit still. The wrong
+  # guess here kills a browser mid-test.
+  read -r parent child <<<"$(spawn_pair)"
+  [ -n "$child" ]
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget
+  DEVPIDS="$parent"
+  # shellcheck disable=SC2034  # consumed by mc_tier2_sim_blocker
+  SIMPIDS=" $child "
+  # shellcheck disable=SC2034  # read by mc_kill_over_budget, sourced from enforce.sh
+  TIER2_MIN_AGE_SEC=0
+  MC_DRY_RUN=1
+  rm -f "$(mc_sims_idle_stamp "$child")"
+
+  run mc_kill_over_budget
+  kill "$parent" "$child" 2>/dev/null
+
+  assert_not_contains "$output" "would kill"
+}
+
+@test "TIER2-SIM: a blocked candidate does not hide a legitimate one below it" {
+  # The guard walks DOWN the ranking. Stopping at the first blocked candidate
+  # would turn one protected browser into tier 2 never acting at all.
+  read -r parent child <<<"$(spawn_pair)"
+  [ -n "$child" ]
+  sleep 600 & plain=$!
+  wait_spawned "$plain"
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget
+  DEVPIDS="$parent $plain"
+  # shellcheck disable=SC2034  # consumed by mc_tier2_sim_blocker
+  SIMPIDS=" $child "
+  # shellcheck disable=SC2034  # read by mc_kill_over_budget, sourced from enforce.sh
+  TIER2_MIN_AGE_SEC=0
+  # shellcheck disable=SC2034  # read by mc_tier2_sim_blocker
+  SIM_IDLE_GRACE_SEC=600
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '%s %s\n' "$(date +%s)" 0 > "$(mc_sims_idle_stamp "$child")"
+
+  run mc_kill_over_budget
+  kill "$parent" "$child" "$plain" 2>/dev/null
+
+  # The pair ranks higher (two processes of subtree), so the guard must have
+  # skipped past it to reach the lone sleeper.
+  assert_contains "$output" "would kill"
+  assert_not_contains "$output" "would kill $parent"
+}
+
+@test "TIER2-SIM: when every candidate is blocked, the pass says so" {
+  read -r parent child <<<"$(spawn_pair)"
+  [ -n "$child" ]
+  # shellcheck disable=SC2034  # consumed by mc_kill_over_budget
+  DEVPIDS="$parent"
+  # shellcheck disable=SC2034  # consumed by mc_tier2_sim_blocker
+  SIMPIDS=" $child "
+  # shellcheck disable=SC2034  # read by mc_kill_over_budget, sourced from enforce.sh
+  TIER2_MIN_AGE_SEC=0
+  # shellcheck disable=SC2034  # read by mc_tier2_sim_blocker
+  SIM_IDLE_GRACE_SEC=600
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '%s %s\n' "$(date +%s)" 0 > "$(mc_sims_idle_stamp "$child")"
+
+  mc_kill_over_budget >/dev/null
+  kill "$parent" "$child" 2>/dev/null
+
+  run cat "$(mc_state_dir)/actions.log"
+  assert_contains "$output" "every candidate's subtree holds a simulator or browser"
+}
+
 # 79 identical copies of this line in 42 hours of production, the most frequent
 # line in actions.log -- a machine that is chronically over budget with only
 # young processes reaches this branch on every pass. v0.4.0 throttled every other
