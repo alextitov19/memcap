@@ -12,6 +12,16 @@ setup() { setup_common; }
   assert_contains "$output" "memcap.conf"
 }
 
+# v0.6.0: someone pasting `status` output into an issue is pasting the only
+# machine-readable record of which build produced it.
+@test "status names the version in its header" {
+  # shellcheck source=/dev/null
+  source "$MEMCAP_ROOT/libexec/common.sh"
+  run "$MEMCAP_ROOT/bin/memcap" status
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "memcap $MEMCAP_VERSION — "
+}
+
 @test "status is read-only: it never logs an enforcement action" {
   run "$MEMCAP_ROOT/bin/memcap" status
   [ "$status" -eq 0 ]
@@ -273,6 +283,12 @@ fresh_pass_with_outcome() {
   assert_contains "$output" "LaunchAgent loaded"
   assert_not_contains "$output" "NOT LOADED"
   assert_not_contains "$output" "NOT INSTALLED"
+  # v0.6.0: `brew services info memcap` says "Running: false" for this exact,
+  # healthy state, because memcap owns its own label and brew only tracks
+  # plists it wrote itself. The row names the label so the two reports can be
+  # told apart -- and takes it from service.sh rather than keeping a second
+  # copy of the string that could drift.
+  assert_contains "$output" "LaunchAgent loaded ($(mc_launchagent_label) -- memcap's own, not a brew service)"
 }
 
 # Permission-independent reasoning, the mc_pid_alive lesson: "could not be

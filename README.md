@@ -29,7 +29,7 @@ guarantee that when you join a video call, there is RAM left to join it with.
 
 ```
 $ memcap status
-memcap — /Users/you/.config/memcap/memcap.conf
+memcap 0.6.0 — /Users/you/.config/memcap/memcap.conf
 
   agents + everything they spawn   6.93 GB / 10 GB budget
     of which leaked/orphaned       0.00 GB
@@ -42,7 +42,7 @@ memcap — /Users/you/.config/memcap/memcap.conf
   memory measured by               top footprint (569 processes)
   last enforcement pass            3s ago
   last pass outcome                enforced
-  background service               loaded
+  background service               LaunchAgent loaded (com.alextitov19.memcap -- memcap's own, not a brew service)
 ```
 
 The bottom four rows answer a question the earlier versions could not. A stopped
@@ -88,6 +88,12 @@ start. (Earlier versions had Homebrew manage this via `brew services start
 memcap`; `brew upgrade` was found to remove that plist outright, so memcap now
 installs and owns it directly — `brew services start/stop memcap` is no longer
 part of the supported workflow.)
+
+One consequence of owning the label: **`brew services info memcap` reports
+`Running: false` on a perfectly healthy install**, because Homebrew only tracks
+plists it created itself and memcap's is not one of them. `memcap status` is the
+answer to "is it running", and it names the label on its `background service`
+row so the two reports can be told apart rather than believed in turn.
 
 Everything is accept-by-Enter. The proposed defaults scale with the machine:
 
@@ -235,11 +241,22 @@ background service rather than a foreground command, which is exactly how
 existence check treated it as permanently "driving a simulator" and
 reproduced the same dead-tier-3 bug this whole redesign exists to fix, with a
 different permanent veto standing in for the old one. Tooling that stays
-CPU-flat for `MOBILE_TOOLING_IDLE_SEC` (default 60 — shorter than
-`SIM_IDLE_GRACE_SEC`, since a quiet minute is likelier idle for a CLI tool or
-server than for a simulator) no longer blocks the reap; an actual `maestro`
-flow, `xcodebuild`, or `detox` run burns real CPU and keeps vetoing for as
-long as it does. One consequence worth knowing: `expo run:ios`,
+CPU-flat for `MOBILE_TOOLING_IDLE_SEC` (default 300) no longer blocks the reap;
+an actual `maestro` flow, `xcodebuild`, or `detox` run burns real CPU and keeps
+vetoing for as long as it does. That default was 60 until 0.6.0, on the theory
+that a CLI tool going quiet for a minute is likelier idle than a simulator is.
+Nine days of production logs disagreed twice over. A minute is _shorter than one
+enforcement pass_ — launchd's 60-second interval measures ~64 seconds in
+practice — so 60 bought no hysteresis at all: a `maestro` MCP server that
+handled a single request switched the veto on, and the very next pass switched
+it off again, which is how 544 "declining — active mobile tooling detected"
+lines got into nine days of one machine's `actions.log`, alternating
+minute-to-minute with the hands-on veto. And the premise was wrong anyway: a
+Maestro run goes quiet for a minute between flows, so a quiet minute is not
+evidence of idleness — it is the middle of a test suite. The window has to
+outlast a pass by enough to be a judgement rather than a coin flip.
+
+One consequence worth knowing: `expo run:ios`,
 `react-native run-ios`, and Maestro's iOS flows all launch the simulator
 through Simulator.app's own UI, so any of them keeps tier 3 switched off for
 as long as Simulator.app stays open — including well after the command that
@@ -364,11 +381,13 @@ measured cadence below) with no `memcap off` in effect, or if it has never run s
 was never installed, was unloaded somehow, or is fine already — see "Install"
 above and `memcap service status` below.
 
-`actions.log` carries an hourly liveness line of its own — `watch: alive (48 passes in
-3604s — one every 75s)`, written every `LIVENESS_SEC` (default 3600). Version 0.3.0
-removed the periodic line that made the author's 28-hour outage visible at all, so the
-same outage would have been indistinguishable from a quiet week; this is that signal,
-back deliberately.
+`actions.log` carries an hourly liveness line of its own — `watch: alive (memcap
+0.6.0, 48 passes in 3604s — one every 75s)`, written every `LIVENESS_SEC` (default
+3600). It names the build that wrote it, because the version was the one thing nine
+days of log auditing could not recover from the log itself. Version 0.3.0 removed the
+periodic line that made the author's 28-hour outage visible at all, so the same outage
+would have been indistinguishable from a quiet week; this is that signal, back
+deliberately.
 
 The line states its own window because the raw count is not self-interpreting. A
 `StartInterval` of 60 seconds is a request, not a guarantee: launchd coalesces timers,
@@ -455,6 +474,7 @@ touch your config or uninstall anything.
 | `memcap service uninstall`      | Unload and remove memcap's own LaunchAgent (and a lingering Homebrew-owned one, if present). A no-op if nothing is installed.                                                                                                                                     |
 | `memcap service status`         | Report whether memcap's LaunchAgent is installed and loaded.                                                                                                                                                                                                      |
 | `memcap uninstall`              | Remove memcap's own LaunchAgent and state. Keeps your config. See Uninstall below.                                                                                                                                                                                |
+| `memcap version`                | Print the installed version (`memcap 0.6.0`). Also `--version`/`-v`. The same string appears in `status`'s header and in `actions.log`'s liveness line, so a log excerpt says which build wrote it.                                                               |
 | `memcap help`                   | Usage summary.                                                                                                                                                                                                                                                    |
 
 ## Configuration
@@ -476,7 +496,7 @@ computed default if it is absent or commented out.
 | `TIER2_ENABLED`              | `1`               | Set to `0` to disable tier 2 entirely: memcap still measures and still reports being over budget, but never kills a dev server to get back under it, leaving that to tier 1 (orphans) and tier 3 (idle simulators). Provided because tier 2 is the one tier that acts on inference against live, parented processes — in eleven days of production logs its ten kills reclaimed 126 MB against overages of 0.5–6 GB.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `SIM_IDLE_GRACE_SEC`         | `600`             | How long a tracked simulator, emulator, or Playwright browser must show flat CPU (see `SIM_ACTIVE_CPU_SEC`) before tier 3 will shut it down, with no active-mobile-tooling or hands-on-mobile veto in effect. Each tracked process earns its own clock, starting the moment memcap first sees it, not a single clock shared by every simulator on the machine — booting a second simulator by hand does not inherit however long an unrelated, already-idle process has been sitting there. Each pid earns, and spends, its own clock: an idle one is reclaimed while a freshly-booted one alongside it is not, and for a booted iOS device the clock that counts is its own `launchd_sim`'s and no other process's. The clock for a process resets the moment its own CPU time advances meaningfully; a veto blocking the actual reap never erases accumulated idle history the way an unconditional wipe once did. |
 | `SIM_ACTIVE_CPU_SEC`         | `2`               | How many CPU-seconds a tracked simulator or active-mobile-tooling process must accumulate since its clock last reset before memcap considers it "in use" and resets the clock again. A booted-but-unused simulator, or an idle `maestro` MCP server, burns approximately zero CPU, so this is deliberately small — real work should register almost immediately, biasing toward not reclaiming when in doubt.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `MOBILE_TOOLING_IDLE_SEC`    | `60`              | How long `maestro`, `xcodebuild`, `expo`, `react-native`, or `detox` must show flat CPU (see `SIM_ACTIVE_CPU_SEC`) before it stops vetoing tier 3. Shorter than `SIM_IDLE_GRACE_SEC` by default — a CLI tool or background server going quiet for a minute is likelier genuinely idle than a simulator is.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `MOBILE_TOOLING_IDLE_SEC`    | `300`             | How long `maestro`, `xcodebuild`, `expo`, `react-native`, or `detox` must show flat CPU (see `SIM_ACTIVE_CPU_SEC`) before it stops vetoing tier 3. Must outlast one enforcement pass to mean anything: a pass takes ~64 seconds in practice, so the pre-0.6.0 default of 60 let a single handled request flip the veto on and the next pass flip it straight back off — 544 flapping decline lines in nine days of production logs. It is also a claim about the tool, not just the log: a `maestro` run goes quiet between flows, and a quiet minute there is the middle of a test suite rather than an idle process.                                                                                                                                                                                                                                                                                               |
 | `TIER3_REQUIRE_NO_SESSION`   | `0`               | Set to `1` to restore memcap's pre-0.3.0 behavior: tier 3 never reaps while any agent session is alive, full stop, regardless of CPU idleness. The original design, kept as an opt-in for anyone who wants the maximally conservative posture — see the Tier 3 section above for why it's no longer the default.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `TIER3_AGENT_TREE_GRACE_SEC` | `1800`            | The longer idle clock applied to a simulator or browser that belongs to a live agent session but is not held open by a server (see the three bands in Tier 3 above). Clamped never to be shorter than `SIM_IDLE_GRACE_SEC`, since a lower value would make agent-owned browsers the _first_ thing reclaimed rather than the last.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `EXTRA_AGENTS`               | empty             | Extra agent binary names to recognize, beyond the built-in list (`claude codex cursor-agent aider gemini amp opencode goose crush`). Names must be letters, digits, `_` or `-`; anything else is dropped with a logged line rather than spliced into the classification regex. That validation is not cosmetic: an unvalidated `a\|` previously matched **every process on the machine**, making all of them agent-classified and every cwd a sweep root, while a `foo,bar` silently matched nothing and left the user believing they had added protection they did not have.                                                                                                                                                                                                                                                                                                                                        |

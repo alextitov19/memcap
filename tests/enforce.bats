@@ -1529,13 +1529,87 @@ SCRIPT
   printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
 
   run mc_reap_sims
-  # shellcheck disable=SC2034  # consumed by mc_active_mobile_tooling, sourced from enforce.sh
+  # shellcheck disable=SC2034,SC2030  # consumed by mc_active_mobile_tooling,
+  # sourced from enforce.sh; each bats @test body is its own subshell, so this
+  # cannot leak into the default-window test below (which asserts it is unset).
   MOBILE_TOOLING_IDLE_SEC=0
   run mc_reap_sims
 
   kill "$tooling" "$sim" 2>/dev/null
 
   assert_not_contains "$output" "would kill"
+}
+
+# --- v0.6.0: the tooling veto had no hysteresis, because its window was
+# shorter than one enforcement pass. Nine days of production logs carried 544
+# "tier3: declining -- active mobile tooling detected" lines, alternating
+# minute-to-minute with the hands-on veto: a pass takes ~64 seconds (launchd
+# coalesces the 60s StartInterval), so at MOBILE_TOOLING_IDLE_SEC=60 an idle
+# maestro MCP server that handled a single request vetoed for exactly one pass
+# and stopped vetoing on the very next one -- and since each transition clears
+# the throttle key, every flap logged.
+#
+# Both assertions below deliberately leave MOBILE_TOOLING_IDLE_SEC UNSET, which
+# is the whole point: every other test in this file sets it, so nothing else
+# here would notice the default changing (or reverting). 200s must still veto --
+# it would not have at the old default of 60 -- and 400s must not, which keeps
+# this a test of the window rather than of a veto that never releases.
+@test "MOBILE_TOOLING_IDLE_SEC's default outlasts one enforcement pass" {
+  unset MC_ACTIVE_MOBILE_TOOLING
+  # Not merely absent: asserted absent, so a future setup() that sets it turns
+  # this test red rather than quietly making it test something else.
+  unset MOBILE_TOOLING_IDLE_SEC
+  # shellcheck disable=SC2031  # a @test body is its own subshell; the earlier
+  # test's assignment cannot reach this one, which is the property being pinned
+  [ -z "${MOBILE_TOOLING_IDLE_SEC:-}" ]
+  # Narrowed to this test's own fixture -- see the two tests above for why the
+  # real pattern cannot be used here (this machine runs maestro MCP servers).
+  # shellcheck disable=SC2034  # consumed by mc_mobile_tooling_pids
+  MC_MOBILE_TOOLING_ARGV_PATTERN='fake-hysteresis\.jar'
+  # shellcheck disable=SC2034  # consumed by mc_mobile_tooling_pids
+  MC_MOBILE_TOOLING_EXACT=''
+  # The shape of the real process: matches the maestro pattern, never exits,
+  # burns no meaningful CPU between requests.
+  perl -e 'sleep 600' ".maestro/lib/fake-hysteresis.jar" & tooling=$!
+  perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!
+  wait_spawned "$tooling" "$sim"
+  AGENTPIDS=""
+  SIMPIDS="$sim"
+  MC_DRY_RUN=1
+  # The sim is well past its own grace, so whatever blocks the reap here is the
+  # TOOLING veto and not the sim's clock.
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
+  mkdir -p "$(mc_mobile_tooling_idle_dir)"
+  now=$(date +%s)
+
+  # Last burst 200s ago -- more than three enforcement passes back, and still
+  # inside the 300s default. A CPU baseline above anything the fixture could
+  # have burned means the clock is never seen to advance, so the only thing
+  # deciding this is the window.
+  printf '%s 999999\n' "$((now - 200))" > "$(mc_mobile_tooling_idle_stamp "$tooling")"
+  run mc_reap_sims
+  inside="$output"
+
+  # Same process, same flat CPU, 400s since its last burst: past the default,
+  # so it releases.
+  printf '%s 999999\n' "$((now - 400))" > "$(mc_mobile_tooling_idle_stamp "$tooling")"
+  run mc_reap_sims
+  outside="$output"
+
+  # Every assertion happens AFTER this, deliberately. A `sleep 600` fixture that
+  # outlives its test holds bats's captured output open, so a test that returns
+  # early on a failed assertion hangs the run for ten minutes instead of
+  # reporting the failure -- observed while writing this test's negative
+  # control, and not fixed by redirecting the fixture's own stdout/stderr. A
+  # guard that hangs rather than going red is the "check that cannot fail" trap
+  # in a different costume, so nothing here can fail before the kill.
+  kill "$tooling" "$sim" 2>/dev/null
+
+  assert_not_contains "$inside" "would kill"
+  grep -q "declining -- active mobile tooling detected" "$(mc_state_dir)/actions.log"
+  assert_contains "$outside" "would kill"
+  assert_contains "$outside" "$sim"
 }
 
 @test "hands-on mobile work blocks the reap and preserves its stamp" {
@@ -2991,7 +3065,7 @@ SCRIPT
   # No mark exists yet, so `now - mark` is the whole epoch. Deriving an elapsed
   # time or an interval from that prints nonsense.
   run "$MEMCAP_ROOT/bin/memcap" watch
-  grep -q "watch: alive (liveness clock started)" "$MEMCAP_STATE_HOME/memcap/actions.log"
+  grep -q "watch: alive (memcap $MEMCAP_VERSION, liveness clock started)" "$MEMCAP_STATE_HOME/memcap/actions.log"
   run grep -c "passes in" "$MEMCAP_STATE_HOME/memcap/actions.log"
   [ "$output" = "0" ]
 }
@@ -3005,7 +3079,9 @@ SCRIPT
   echo "$(( $(date +%s) - 3600 ))" > "$d/liveness-mark"
   echo 47 > "$d/pass-count"
   run "$MEMCAP_ROOT/bin/memcap" watch
-  grep -qE "watch: alive \(48 passes in 3[0-9]{3}s -- one every 7[0-9]s\)" "$d/actions.log"
+  grep -qE "watch: alive \(memcap [0-9]+\.[0-9]+\.[0-9]+, 48 passes in 3[0-9]{3}s -- one every 7[0-9]s\)" "$d/actions.log"
+  # ... and specifically THIS build's version, so a log excerpt identifies it.
+  grep -q "watch: alive (memcap $MEMCAP_VERSION, 48 passes" "$d/actions.log"
 }
 
 @test "LIVENESS: the line is hourly, not per pass -- three passes in a row log once" {
@@ -3032,7 +3108,7 @@ SCRIPT
   # counter resets when a mark is written, so the three passes counted here are
   # the two silent ones above plus this one -- the first pass wrote the mark.
   run env LIVENESS_SEC=0 "$MEMCAP_ROOT/bin/memcap" watch
-  grep -q "watch: alive (3 passes in " "$MEMCAP_STATE_HOME/memcap/actions.log"
+  grep -q "watch: alive (memcap $MEMCAP_VERSION, 3 passes in " "$MEMCAP_STATE_HOME/memcap/actions.log"
 }
 
 # --- C1's fractional sibling: SOFT_TRIGGER -----------------------------------

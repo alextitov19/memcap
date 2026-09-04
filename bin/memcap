@@ -129,6 +129,11 @@ case "${1:-help}" in
     echo "Config kept at $(mc_config_file) — delete it yourself for a clean slate."
     echo "Then: brew uninstall memcap"
     ;;
-  help|--help|-h) echo "memcap — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|watch|clean|profile|docker [apply [--force]]|notify|off|on|service [install|uninstall|status]|uninstall}" ;;
+  # `memcap version` used to be "unknown command", so the only way to tell
+  # which build was installed was to read the Cellar path -- and log lines
+  # carried no version at all. Both matter when the evidence for a bug is nine
+  # days of one machine's actions.log.
+  version|--version|-v) echo "memcap $MEMCAP_VERSION" ;;
+  help|--help|-h) echo "memcap $MEMCAP_VERSION — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|watch|clean|profile|docker [apply [--force]]|notify|off|on|service [install|uninstall|status]|uninstall|version}" ;;
   *) echo "unknown command: $1" >&2; exit 1 ;;
 esac

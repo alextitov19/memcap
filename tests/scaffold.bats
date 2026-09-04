@@ -69,6 +69,52 @@ SCRIPT
   assert_contains "$output" "docker [apply [--force]]"
 }
 
+# --- v0.6.0: `memcap version` ------------------------------------------------
+# `memcap version` was "unknown command", so the installed build could only be
+# identified by reading the Cellar path -- and nothing memcap WROTE carried the
+# version at all, which is a problem when the evidence for a bug is nine days of
+# a stranger's actions.log.
+@test "memcap version prints one semantic version and nothing else" {
+  run "$MEMCAP_ROOT/bin/memcap" version
+  [ "$status" -eq 0 ]
+  assert_matches "$output" '^memcap [0-9]+\.[0-9]+\.[0-9]+$'
+  [ "$output" = "memcap $MEMCAP_VERSION" ]
+}
+
+@test "--version and -v print the same thing as version" {
+  run "$MEMCAP_ROOT/bin/memcap" --version
+  [ "$status" -eq 0 ]
+  [ "$output" = "memcap $MEMCAP_VERSION" ]
+  run "$MEMCAP_ROOT/bin/memcap" -v
+  [ "$status" -eq 0 ]
+  [ "$output" = "memcap $MEMCAP_VERSION" ]
+}
+
+@test "the usage line offers version, so it is discoverable" {
+  run "$MEMCAP_ROOT/bin/memcap" help
+  assert_contains "$output" "|version}"
+}
+
+# The release guard. A version string in the code and a version heading in the
+# CHANGELOG are two records of one fact, and this project has already shipped a
+# CHANGELOG entry whose date had to be fixed in a follow-up commit -- so tie
+# them together and let a half-done release fail here rather than in a user's
+# `brew upgrade`.
+@test "RELEASE GUARD: the CHANGELOG's top entry is MEMCAP_VERSION" {
+  local top
+  top=$(sed -n 's/^## v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*$/\1/p' \
+          "$MEMCAP_ROOT/CHANGELOG.md" | head -1)
+  if [ -z "$top" ]; then
+    echo "no '## vX.Y.Z' heading found in $MEMCAP_ROOT/CHANGELOG.md" >&2
+    return 1
+  fi
+  if [ "$top" != "$MEMCAP_VERSION" ]; then
+    echo "CHANGELOG's top entry is v$top but MEMCAP_VERSION is $MEMCAP_VERSION" >&2
+    echo "bump both, or neither" >&2
+    return 1
+  fi
+}
+
 # --- Final review follow-up: throttle the per-pass log lines ------------------
 # 24 hours of real running showed two per-pass status lines drowning the actual
 # kill records (94% of the file). mc_log_throttled must log on the first call,
