@@ -25,24 +25,41 @@ setup() {
   # `bin/memcap watch`/`clean` and would otherwise inherit no override at all.
   export MC_DRY_RUN=1
 
-  # Sandbox for tier 3's `xcrun simctl shutdown all`. Before this, `xcrun` was
+  # Sandbox for tier 3's `xcrun simctl shutdown`. Before this, `xcrun` was
   # stubbed NOWHERE in tests/ -- the two SIMPIDS="" tests could reach the shutdown
   # branch and were safe only by the accident of MC_DRY_RUN=1, so a future test
   # that forgot the flag would have shut down a developer's booted simulators for
   # real. MC_XCRUN_BIN is the same indirection service.sh uses for launchctl and
   # brew: a guarantee rather than a PATH convention, so no test can reach the real
   # binary by forgetting anything.
+  #
+  # The stub answers all three calls memcap makes and logs every one, keyed on the
+  # WHOLE argument list rather than "$2": `list devices booted` and `list devices
+  # booted -j` differ only in the last word, and a stub that fed plain text to the
+  # `-j` parse would make every device-level assertion below pass or fail
+  # depending on whether jq happens to be installed on the machine running bats.
   FAKE_XCRUN_LOG="$BATS_TEST_TMPDIR/xcrun.calls"
   FAKE_XCRUN_BOOTED="$BATS_TEST_TMPDIR/xcrun.booted"
-  export FAKE_XCRUN_LOG FAKE_XCRUN_BOOTED
+  FAKE_XCRUN_BOOTED_JSON="$BATS_TEST_TMPDIR/xcrun.booted.json"
+  FAKE_XCRUN_SHUTDOWN_RC="$BATS_TEST_TMPDIR/xcrun.shutdown-rc"
+  FAKE_XCRUN_SHUTDOWN_ERR="$BATS_TEST_TMPDIR/xcrun.shutdown-err"
+  export FAKE_XCRUN_LOG FAKE_XCRUN_BOOTED FAKE_XCRUN_BOOTED_JSON
+  export FAKE_XCRUN_SHUTDOWN_RC FAKE_XCRUN_SHUTDOWN_ERR
   : > "$FAKE_XCRUN_LOG"
   : > "$FAKE_XCRUN_BOOTED"
+  : > "$FAKE_XCRUN_BOOTED_JSON"
+  rm -f "$FAKE_XCRUN_SHUTDOWN_RC" "$FAKE_XCRUN_SHUTDOWN_ERR"
   MC_XCRUN_BIN="$BATS_TEST_TMPDIR/fake-xcrun"
   cat > "$MC_XCRUN_BIN" <<'SCRIPT'
 #!/bin/sh
 echo "$@" >> "$FAKE_XCRUN_LOG"
-case "$2" in
-  list) cat "$FAKE_XCRUN_BOOTED" 2>/dev/null ;;
+case "$*" in
+  "simctl list devices booted -j") cat "$FAKE_XCRUN_BOOTED_JSON" 2>/dev/null ;;
+  "simctl list devices booted") cat "$FAKE_XCRUN_BOOTED" 2>/dev/null ;;
+  "simctl shutdown "*)
+    if [ -f "$FAKE_XCRUN_SHUTDOWN_ERR" ]; then cat "$FAKE_XCRUN_SHUTDOWN_ERR" >&2; fi
+    if [ -f "$FAKE_XCRUN_SHUTDOWN_RC" ]; then exit "$(cat "$FAKE_XCRUN_SHUTDOWN_RC")"; fi
+    ;;
 esac
 exit 0
 SCRIPT
@@ -1761,35 +1778,202 @@ SCRIPT
   [ -z "$output" ]
 }
 
-# --- xcrun simctl shutdown all was reachable with zero bookkeeping ------------
-# all_ready was initialised to 1 at its `local` declaration while every grace and
-# CPU check lived inside `if [ -n "${SIMPIDS// /}" ]`. An EMPTY SIMPIDS therefore
+# --- Per-device simulator shutdown -------------------------------------------
+# Two bugs live in this section's history, and the second is the reason it was
+# rewritten.
+#
+# The first: all_ready was initialised to 1 at its `local` declaration while every
+# grace and CPU check lived inside `if [ -n "${SIMPIDS// /}" ]`. An EMPTY SIMPIDS
 # skipped the whole block with all_ready still 1, and every booted device on the
-# machine was shut down. The live trigger is ordinary: `simctl boot` flips a
-# device to Booted before launchd_sim appears in the `ps` snapshot.
+# machine was shut down.
+#
+# The second, found in production between 2026-08-27 and 08-29: `simctl shutdown
+# all` ran 38 times in one-minute bursts against the device a live Maestro run was
+# driving. `ios_ready` was a single machine-wide flag set by ANY ready pid
+# matching launchd_sim|SimulatorTrampoline -- and SimulatorTrampoline is a
+# CoreSimulator helper with no device affinity that stays alive, and CPU-flat, for
+# days across device boots and shutdowns. So "a device is idle" was permanently
+# true, and any device that appeared Booted was taken on the next pass. Maestro
+# re-booted it; memcap shut it down again; the user ran `memcap off`.
+#
+# The fix is per-device: the ONLY evidence about a device is the launchd_sim whose
+# argv names that device's own UDID.
+
+# Writes both representations of `simctl list devices booted` -- the `-j` JSON the
+# main path parses and the plain text the no-jq fallback parses -- from
+# "<UDID>=<name>" pairs, so a test's booted set is the same fact whichever parse
+# the machine running bats happens to take.
+set_booted() {
+  local pair udid name json=""
+  : > "$FAKE_XCRUN_BOOTED"
+  for pair in "$@"; do
+    udid="${pair%%=*}"
+    name="${pair#*=}"
+    printf '    %s (%s) (Booted)\n' "$name" "$udid" >> "$FAKE_XCRUN_BOOTED"
+    [ -n "$json" ] && json="$json,"
+    json="$json{\"udid\":\"$udid\",\"name\":\"$name\",\"state\":\"Booted\"}"
+  done
+  printf '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-26-0":[%s]}}\n' "$json" \
+    > "$FAKE_XCRUN_BOOTED_JSON"
+}
+
+# A launchd_sim fixture for exactly one device. The real argv, measured:
+#
+#   launchd_sim /Users/u/Library/Developer/CoreSimulator/Devices/<UDID>/data/var/run/launchd_bootstrap.plist
+#
+# and that UDID is the only thing tying an idle pid to a device. A fixture without
+# it is a fixture that cannot express the bug -- which is exactly why the previous
+# version of these tests, whose launchd_sim carried no device path at all, passed
+# against code that shut down every device on the machine.
+spawn_launchd_sim() {
+  perl -e 'sleep 600' "launchd_sim" \
+    "/Users/tester/Library/Developer/CoreSimulator/Devices/$1/data/var/run/launchd_bootstrap.plist" &
+  launchd_sim_pid=$!
+  wait_spawned "$launchd_sim_pid"
+}
+
+MC_UDID_X="F096B0A2-20F5-4637-BC0E-19098780FA83"
+MC_UDID_Y="0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9"
+
 @test "XCRUN: an empty SIMPIDS does not shut down a single booted device" {
-  printf 'iPhone 17 (ABC) (Booted)\n' > "$FAKE_XCRUN_BOOTED"
+  set_booted "$MC_UDID_X=iPhone 17"
   AGENTPIDS=""
   # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
   SIMPIDS=""
   # Deliberately NOT a dry run: the pre-fix behavior was safe in tests only by the
   # accident of MC_DRY_RUN=1, which is precisely the accident this asserts against.
-  # Nothing real is reachable -- MC_XCRUN_BIN is setup_common's logging fake, and
-  # there are no kill targets.
+  # Nothing real is reachable -- MC_XCRUN_BIN is setup's logging fake, and there
+  # are no kill targets.
   MC_DRY_RUN=0
 
   run mc_reap_sims
 
+  # Not merely "no shutdown": with nothing sim-classified at all there is nothing
+  # memcap could act on and nothing it could explain, so it does not even ask the
+  # device list. A booted device always has a launchd_sim, so an empty SIMPIDS
+  # means either nothing is booted or the snapshot predates the boot.
   [ ! -s "$FAKE_XCRUN_LOG" ]
 }
 
-@test "XCRUN: a booted device is shut down once a simulator pid has cleared its own grace" {
-  printf 'iPhone 17 (ABC) (Booted)\n' > "$FAKE_XCRUN_BOOTED"
-  # launchd_sim is the per-device process, so it is the evidence that a device is
-  # actually booted. It is deliberately NOT in MC_SIM_KILL_PATTERN -- a booted
-  # device is reclaimed with `simctl shutdown`, not by signalling its launchd.
-  perl -e 'sleep 600' "launchd_sim" & sim=$!
+@test "XCRUN: SimulatorTrampoline is never evidence that a booted device is idle" {
+  # THE NEGATIVE CONTROL for the production bug. SimulatorTrampoline was in
+  # MC_SIM_IOS_EXE, so this exact arrangement -- one long-idle trampoline, one
+  # booted device it has nothing to do with -- was what ran `simctl shutdown all`
+  # 38 times against a live Maestro run.
+  set_booted "$MC_UDID_X=iPhone 17"
+  perl -e 'sleep 600' "SimulatorTrampoline" & sim=$!
   wait_spawned "$sim"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$sim"
+  MC_DRY_RUN=0
+  mkdir -p "$(mc_sims_idle_dir)"
+  # Idle since 1970 and CPU-flat: past every grace this tier has.
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
+
+  run mc_reap_sims
+
+  kill "$sim" 2>/dev/null
+
+  # No shutdown of any kind -- not `all`, not this device, not any device. The
+  # whole call log is the haystack so a failure prints the call that was made.
+  assert_not_contains "$(cat "$FAKE_XCRUN_LOG")" "shutdown"
+  # And the device is reported as untouchable rather than silently skipped: a
+  # booted device with no launchd_sim in the snapshot is the fail-closed case.
+  assert_contains "$(cat "$(mc_state_dir)/actions.log")" "device $MC_UDID_X (iPhone 17) is booted but no launchd_sim"
+}
+
+@test "XCRUN: only the device whose own launchd_sim is idle is shut down" {
+  # Two booted devices. X's launchd_sim has cleared its grace; Y's was stamped
+  # this second, which is what a device Maestro just booted looks like. Under the
+  # old machine-wide flag either pid licensed `shutdown all` and took both.
+  set_booted "$MC_UDID_X=iPhone 17" "$MC_UDID_Y=iPad Pro 13-inch"
+  spawn_launchd_sim "$MC_UDID_X"; sim_x="$launchd_sim_pid"
+  spawn_launchd_sim "$MC_UDID_Y"; sim_y="$launchd_sim_pid"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$sim_x $sim_y"
+  MC_DRY_RUN=0
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim_x")"
+  printf '%s 999999\n' "$(date +%s)" > "$(mc_sims_idle_stamp "$sim_y")"
+
+  run mc_reap_sims
+
+  kill "$sim_x" "$sim_y" 2>/dev/null
+
+  calls="$(cat "$FAKE_XCRUN_LOG")"
+  assert_contains "$calls" "simctl shutdown $MC_UDID_X"
+  assert_not_contains "$calls" "simctl shutdown $MC_UDID_Y"
+  assert_not_contains "$calls" "shutdown all"
+  # The audit line names the device, the pid that spoke for it, and how long that
+  # pid had been flat -- "shutdown all" could say none of those.
+  assert_matches "$(cat "$(mc_state_dir)/actions.log")" \
+    "tier3: xcrun simctl shutdown $MC_UDID_X \\(iPhone 17\\) -- launchd_sim pid $sim_x CPU-flat for [0-9]+s"
+}
+
+@test "XCRUN: a booted device whose launchd_sim is still inside its grace is held, not shut down" {
+  # The other half of failing closed: the device IS mapped, so it is not the
+  # unmapped case, but its pid has not earned anything yet. The existing
+  # tier3-holding line is what reports it, and the launchd_sim has to be counted
+  # among the blockers for that line to exist at all.
+  set_booted "$MC_UDID_X=iPhone 17"
+  spawn_launchd_sim "$MC_UDID_X"; sim="$launchd_sim_pid"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$sim"
+  MC_DRY_RUN=0
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '%s 999999\n' "$(date +%s)" > "$(mc_sims_idle_stamp "$sim")"
+
+  run mc_reap_sims
+
+  kill "$sim" 2>/dev/null
+
+  assert_not_contains "$(cat "$FAKE_XCRUN_LOG")" "shutdown"
+  log="$(cat "$(mc_state_dir)/actions.log")"
+  assert_contains "$log" "still inside their idle grace"
+  assert_contains "$log" "blocker is pid $sim"
+  # Mapped, so the unmapped line would be a lie.
+  assert_not_contains "$log" "no launchd_sim"
+}
+
+@test "XCRUN: a booted device with no launchd_sim in the snapshot is reported once, not shut down" {
+  # A sim-classified process exists (so memcap does look at the device list) but
+  # nothing in the snapshot belongs to this device. Fail closed and say so.
+  set_booted "$MC_UDID_X=iPhone 17"
+  perl -e 'sleep 600' "ms-playwright-fixture" & other=$!
+  wait_spawned "$other"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$other"
+  MC_DRY_RUN=0
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '%s 999999\n' "$(date +%s)" > "$(mc_sims_idle_stamp "$other")"
+
+  run mc_reap_sims
+  run mc_reap_sims
+
+  kill "$other" 2>/dev/null
+
+  assert_not_contains "$(cat "$FAKE_XCRUN_LOG")" "shutdown"
+  # Throttled per UDID: two passes, one line. Unthrottled, a permanently booted
+  # device nobody is measuring would write this every 60 seconds forever, which is
+  # how 94% of a day's actions.log became two repeated lines once before.
+  run grep -c "no launchd_sim for it" "$(mc_state_dir)/actions.log"
+  [ "$output" = "1" ]
+}
+
+@test "XCRUN: a shutdown that fails is logged as a failure, with its rc and reason" {
+  # `simctl shutdown` on a device that is already down exits 149 with
+  # "Unable to shutdown device in current state: Shutdown". The old line was
+  # written BEFORE the command ran and said only "shutdown all", so actions.log
+  # could not distinguish a device memcap took down from one it never touched --
+  # the difference between "memcap did this to me" and "something else did".
+  set_booted "$MC_UDID_X=iPhone 17"
+  spawn_launchd_sim "$MC_UDID_X"; sim="$launchd_sim_pid"
+  printf '149\n' > "$FAKE_XCRUN_SHUTDOWN_RC"
+  printf 'Unable to shutdown device in current state: Shutdown\n' > "$FAKE_XCRUN_SHUTDOWN_ERR"
   AGENTPIDS=""
   # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
   SIMPIDS="$sim"
@@ -1801,15 +1985,36 @@ SCRIPT
 
   kill "$sim" 2>/dev/null
 
-  grep -q "simctl shutdown all" "$FAKE_XCRUN_LOG"
+  log="$(cat "$(mc_state_dir)/actions.log")"
+  assert_contains "$log" "tier3: simctl shutdown $MC_UDID_X (iPhone 17) failed (rc 149): Unable to shutdown device in current state: Shutdown"
+  assert_not_contains "$log" "CPU-flat for"
+}
+
+@test "XCRUN: a dry run names the device it would shut down, and shuts nothing down" {
+  set_booted "$MC_UDID_X=iPhone 17"
+  spawn_launchd_sim "$MC_UDID_X"; sim="$launchd_sim_pid"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$sim"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
+
+  run mc_reap_sims
+
+  kill "$sim" 2>/dev/null
+
+  assert_contains "$output" "would shut down device $MC_UDID_X (iPhone 17)"
+  assert_not_contains "$(cat "$FAKE_XCRUN_LOG")" "shutdown"
 }
 
 @test "XCRUN: simdiskimaged alone is not evidence that any device is booted" {
   # simdiskimaged is a root-owned daemon that runs whether or not a device is
   # booted, which is why it is excluded from MC_SIM_IOS_EXE. Treating it as
   # evidence is what made a shutdown look justified on a machine with nothing
-  # booted at all.
-  printf 'iPhone 17 (ABC) (Booted)\n' > "$FAKE_XCRUN_BOOTED"
+  # booted at all. It is sim-classified, so the device list is still consulted --
+  # what must not happen is a shutdown.
+  set_booted "$MC_UDID_X=iPhone 17"
   perl -e 'sleep 600' "/Library/Developer/CoreSimulator/simdiskimaged" & daemon=$!
   wait_spawned "$daemon"
   AGENTPIDS=""
@@ -1823,8 +2028,35 @@ SCRIPT
 
   kill "$daemon" 2>/dev/null
 
-  [ ! -s "$FAKE_XCRUN_LOG" ]
+  assert_not_contains "$(cat "$FAKE_XCRUN_LOG")" "shutdown"
 }
+
+@test "XCRUN: the booted-device list parses without jq too" {
+  # jq is a formula dependency, so the plain-text parse is a fallback -- but a
+  # tier that cannot see a booted device on a machine missing jq is a tier that
+  # silently stops working, and a fallback that misreads a UDID would shut down
+  # the wrong device. Same PATH-stripping method as docker.bats's no-jq test.
+  set_booted "$MC_UDID_X=iPhone 17" "$MC_UDID_Y=iPad Pro 13-inch"
+  fakebin="$BATS_TEST_TMPDIR/nojq"
+  mkdir -p "$fakebin"
+  for c in sed cat head grep ps date; do ln -sf "$(command -v $c)" "$fakebin/$c"; done
+  run env PATH="$fakebin" MC_XCRUN_BIN="$MC_XCRUN_BIN" /bin/bash -c \
+    "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/enforce.sh'; mc_booted_devices"
+
+  assert_contains "$output" "$MC_UDID_X iPhone 17"
+  assert_contains "$output" "$MC_UDID_Y iPad Pro 13-inch"
+  # Both parses have to agree, or the suite's meaning depends on the host.
+  run mc_booted_devices
+  assert_contains "$output" "$MC_UDID_X iPhone 17"
+  assert_contains "$output" "$MC_UDID_Y iPad Pro 13-inch"
+}
+
+@test "XCRUN: nothing booted means no devices, on either parse" {
+  set_booted
+  run mc_booted_devices
+  [ -z "$output" ]
+}
+
 
 # --- Corrupt idle stamps ------------------------------------------------------
 # Both of these were reproduced, and both are worse than they look.
