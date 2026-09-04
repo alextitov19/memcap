@@ -487,3 +487,45 @@ fresh_pass_with_outcome() {
   assert_not_contains "$output" "memcap docker apply"
 }
 
+# --- `status` is what makes the daemon's ceiling check work at all -----------
+# macOS denies launchd agents access to ~/Library/Group Containers, so `watch`
+# gets EPERM on Docker's settings file every pass and v0.5.1's drift line logged
+# ZERO times in 8 days of real running. `status` runs from a terminal and can
+# read it, so its read is what leaves a value behind for the service to use.
+@test "status seeds the ceiling cache the background service reads" {
+  mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
+  cat > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" <<-'EOF'
+	TOTAL_BUDGET_GB=16
+	DOCKER_BUDGET_GB=4
+	EOF
+  store="$BATS_TEST_TMPDIR/settings.json"
+  printf '{"MemoryMiB": 6144, "Cpus": 8}\n' > "$store"
+
+  run env MC_DOCKER_STORE="$store" "$MEMCAP_ROOT/bin/memcap" status
+  [ "$status" -eq 0 ]
+  # Read live, so the row still says ENFORCED and the number is Docker's own.
+  assert_contains "$output" "6 GB ceiling ENFORCED (config asks for 4 GB)"
+  # And a terminal's reading is never reported as a cached one.
+  assert_not_contains "$output" "unreadable from the background service"
+
+  run cat "$MEMCAP_STATE_HOME/memcap/docker-ceiling"
+  assert_matches "$output" '^6144 [0-9]+$'
+}
+
+@test "status writes the ceiling cache inside the sandboxed state dir only" {
+  # The one write `status` now performs, and the rule it has to keep: everything
+  # memcap writes goes under MEMCAP_STATE_HOME, which is how a contributor's
+  # suite run stays out of a live install's audit directory. Asserted on the path
+  # itself rather than on the absence of a real file -- a real
+  # ~/.local/state/memcap/docker-ceiling is expected to exist on any machine
+  # where memcap is actually installed and running, so its absence proves
+  # nothing.
+  # shellcheck source=/dev/null
+  source "$MEMCAP_ROOT/libexec/common.sh"
+  # shellcheck source=/dev/null
+  source "$MEMCAP_ROOT/libexec/docker.sh"
+  run mc_docker_ceiling_cache_file
+  [ "$output" = "$MEMCAP_STATE_HOME/memcap/docker-ceiling" ]
+  assert_contains "$output" "$BATS_TEST_TMPDIR"
+}
+

@@ -819,6 +819,274 @@ SCRIPT
   [ "$output" = "1" ]
 }
 
+# --- EPERM: watch must say when it cannot read Docker's settings at all -------
+# The daemon-side half of the fix in tests/docker.bats. `watch` sources docker.sh
+# (bin/memcap does) but every module-sourcing test below must do the same, or the
+# `command -v mc_docker_ceiling_drift` guard in mc_watch skips the whole block
+# and the test passes having exercised nothing.
+#
+# MC_DOCKER_STORE is always pointed somewhere deliberate here. Left alone it
+# defaults to the REAL settings-store.json on the developer's machine, which is
+# readable from a terminal and holds whatever ceiling that machine happens to
+# have -- a test whose result depends on what the developer is running, which is
+# the class of test AGENTS.md rules out.
+mc_watch_modules() {
+  printf "%s" "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/measure.sh'
+    source '$MEMCAP_ROOT/libexec/classify.sh'
+    source '$MEMCAP_ROOT/libexec/roots.sh'
+    source '$MEMCAP_ROOT/libexec/status.sh'
+    source '$MEMCAP_ROOT/libexec/enforce.sh'
+    source '$MEMCAP_ROOT/libexec/docker.sh'
+    mc_kill_over_budget() { :; }
+    mc_record_roots() { :; }
+  "
+}
+
+@test "EPERM: watch logs that the ceiling check is blind, once, and throttles it" {
+  if [ "$(id -u)" -eq 0 ]; then skip "chmod 000 is not a barrier to root"; fi
+  store="$BATS_TEST_TMPDIR/locked.json"
+  printf '{"MemoryMiB": 6144}\n' > "$store"
+  chmod 000 "$store"
+
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() { printf '9001 1 2000000 /usr/local/bin/claude\n'; }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 MC_DOCKER_STORE="$store" bash -c "$pass" >/dev/null
+  log="$MEMCAP_STATE_HOME/memcap/actions.log"
+  run grep -c "VM-ceiling check is blind" "$log"
+  [ "$output" = "1" ]
+  run cat "$log"
+  assert_contains "$output" "macOS denies launchd agents access"
+  assert_contains "$output" "memcap status"
+
+  # Second pass, same window: one line per condition, not one per 60 seconds.
+  # 186 combined-cap lines in eight days is what an unthrottled per-pass line
+  # looks like in this log.
+  env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 MC_DOCKER_STORE="$store" bash -c "$pass" >/dev/null
+  run grep -c "VM-ceiling check is blind" "$log"
+  [ "$output" = "1" ]
+}
+
+@test "EPERM: with a cached reading watch logs the drift, not the blind line" {
+  if [ "$(id -u)" -eq 0 ]; then skip "chmod 000 is not a barrier to root"; fi
+  store="$BATS_TEST_TMPDIR/locked.json"
+  printf '{"MemoryMiB": 6144}\n' > "$store"
+  chmod 000 "$store"
+  mkdir -p "$MEMCAP_STATE_HOME/memcap"
+  printf '6144 %s\n' "$(( $(date +%s) - 7200 ))" > "$MEMCAP_STATE_HOME/memcap/docker-ceiling"
+
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() { printf '9001 1 2000000 /usr/local/bin/claude\n'; }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 MC_DOCKER_STORE="$store" bash -c "$pass" >/dev/null
+
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  # This is the line v0.5.1 promised and never once produced on the author's
+  # machine: the daemon now reports the drift from the value `status` cached for
+  # it, and says that is where the number came from.
+  assert_contains "$output" "Docker is enforcing a 6 GB VM ceiling, not the 4 GB in your config"
+  assert_contains "$output" "last read from a terminal, 2h ago"
+  # The negative control: a cached reading is not a blind check, so the blind
+  # line must NOT also fire. Two lines describing the same pass two different
+  # ways is how a log stops being read.
+  assert_not_contains "$output" "VM-ceiling check is blind"
+}
+
+@test "EPERM: a readable store clears the blind key so the next outage re-logs" {
+  store="$BATS_TEST_TMPDIR/settings.json"
+  printf '{"MemoryMiB": 4096}\n' > "$store"
+  mkdir -p "$MEMCAP_STATE_HOME/memcap/log-throttle"
+  # Both keys stamped as though an earlier pass had logged them. A window left
+  # ticking after its condition has gone is how a state change gets swallowed.
+  date +%s > "$MEMCAP_STATE_HOME/memcap/log-throttle/docker-ceiling-unreadable"
+  date +%s > "$MEMCAP_STATE_HOME/memcap/log-throttle/docker-ceiling-drift"
+
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() { printf '9001 1 2000000 /usr/local/bin/claude\n'; }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 MC_DOCKER_STORE="$store" bash -c "$pass" >/dev/null
+
+  [ ! -f "$MEMCAP_STATE_HOME/memcap/log-throttle/docker-ceiling-unreadable" ]
+  # 4096 MiB is exactly the 4 GB the config asks for, so there is no drift either.
+  [ ! -f "$MEMCAP_STATE_HOME/memcap/log-throttle/docker-ceiling-drift" ]
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_not_contains "$output" "VM-ceiling check is blind"
+  # And the pass that could read the file leaves the cache behind for the passes
+  # that cannot -- this is the whole mechanism, seeded here by `watch` itself
+  # because this test's shell CAN read the fixture store.
+  run cat "$MEMCAP_STATE_HOME/memcap/docker-ceiling"
+  assert_matches "$output" '^4096 [0-9]+$'
+}
+
+@test "EPERM: an unmanaged Docker is not told its ceiling check is blind" {
+  if [ "$(id -u)" -eq 0 ]; then skip "chmod 000 is not a barrier to root"; fi
+  # DOCKER_BUDGET_GB=0 is "memcap is not managing Docker". There is no ceiling
+  # check to be blind about, so an unreadable settings file is not news.
+  store="$BATS_TEST_TMPDIR/locked.json"
+  printf '{"MemoryMiB": 6144}\n' > "$store"
+  chmod 000 "$store"
+
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() { printf '9001 1 2000000 /usr/local/bin/claude\n'; }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=1 MC_DOCKER_STORE="$store" bash -c "$pass" >/dev/null
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_not_contains "$output" "VM-ceiling check is blind"
+}
+
+# --- ATTRIBUTION: the combined-over-cap line must name the real excess --------
+# 186 of these lines since 08-27, every one of them blaming simulators. The
+# morning that made it undeniable: combined 17.20 GB against a 16 GB cap, agents
+# net of sims 9.45 GB, sims about 1.15 GB -- and Docker holding 6.6 GB against a
+# 4 GB budget, because the ceiling had never been applied. Tier 3 could have
+# reclaimed every simulator on the machine and it would STILL have been over the
+# cap. The line promised a reclaim that could not happen, and never named the one
+# action that would have fixed it.
+#
+# Three fixtures, one per attribution, with the store pointed at a path that does
+# not exist so no drift string is appended and the assertions stay exact.
+# Footprints are given in KB (1 GB = 1048576 KB) so the rendered GB figures are
+# exact rather than nearly right.
+@test "ATTRIBUTION: a Docker overage names Docker, not the simulators" {
+  # claude 9.50 + sims 0.50 = 10.00 GB of agent footprint, net 9.50 against a
+  # 12 GB agent budget (so tier 2 correctly declines), Docker 7.50 GB against a
+  # 4 GB budget. Combined 17.50 against a 16 GB cap: an overage of 1.50 GB, of
+  # which Docker is 3.50 GB over on its own and the simulators only 0.50 GB.
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() {
+      printf '9001 1 9961472 /usr/local/bin/claude\n'
+      printf '9002 1 524288 /path/ms-playwright/chromium/chrome\n'
+      printf '9003 1 7864320 /Applications/Docker.app/Contents/MacOS/com.docker.backend\n'
+    }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=16 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 \
+    MC_DOCKER_STORE="$BATS_TEST_TMPDIR/no-such-store.json" bash -c "$pass" >/dev/null
+
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_contains "$output" "combined 17.50 GB exceeds the 16 GB cap"
+  assert_contains "$output" "the excess is Docker's: 7.50 GB against its 4 GB budget"
+  assert_contains "$output" "No tier reclaims Docker memory"
+  assert_contains "$output" "memcap docker apply"
+  # The negative control, and the whole point of the finding: the promise that
+  # tier 3 will fix this must not appear, because tier 3 cannot. Reclaiming
+  # every simulator here would leave the machine 1.00 GB over its cap.
+  assert_not_contains "$output" "the excess is simulator/browser memory"
+  assert_not_contains "$output" "tier 3 will reclaim it"
+}
+
+@test "ATTRIBUTION: a simulator overage still reads exactly as it did" {
+  # Docker present but INSIDE its budget (2 GB against 4), so the sim wording is
+  # reached by the real arithmetic rather than by Docker being absent. claude
+  # 11.50 + sims 3.00 = 14.50, net 11.50 under the 12 GB agent budget, Docker
+  # 2.00: combined 16.50 against a 16 GB cap, an overage of 0.50 GB that the
+  # simulators cover on their own.
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() {
+      printf '9001 1 12058624 /usr/local/bin/claude\n'
+      printf '9002 1 3145728 /path/ms-playwright/chromium/chrome\n'
+      printf '9003 1 2097152 /Applications/Docker.app/Contents/MacOS/com.docker.backend\n'
+    }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=16 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 \
+    MC_DOCKER_STORE="$BATS_TEST_TMPDIR/no-such-store.json" bash -c "$pass" >/dev/null
+
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_contains "$output" "combined 16.50 GB exceeds the 16 GB cap"
+  assert_contains "$output" "the excess is simulator/browser memory tier 2 cannot reclaim"
+  assert_contains "$output" "tier 3 will reclaim it once it has been idle past its grace"
+  assert_not_contains "$output" "the excess is Docker's"
+  assert_not_contains "$output" "memcap docker apply"
+}
+
+@test "ATTRIBUTION: when both contribute, both are named and only one is promised" {
+  # claude 11.50 + sims 1.00 = 12.50, net 11.50 under the 12 GB budget, Docker
+  # 5.00 against 4: combined 17.50 against a 16 GB cap. The overage is 1.50 GB
+  # and NEITHER component covers it alone -- Docker is 1.00 GB over, the sims are
+  # 1.00 GB. Saying either one is "the excess" would be false.
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() {
+      printf '9001 1 12058624 /usr/local/bin/claude\n'
+      printf '9002 1 1048576 /path/ms-playwright/chromium/chrome\n'
+      printf '9003 1 5242880 /Applications/Docker.app/Contents/MacOS/com.docker.backend\n'
+    }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=16 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 \
+    MC_DOCKER_STORE="$BATS_TEST_TMPDIR/no-such-store.json" bash -c "$pass" >/dev/null
+
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_contains "$output" "combined 17.50 GB exceeds the 16 GB cap"
+  assert_contains "$output" "Docker is 1.00 GB over its 4 GB budget and 1.00 GB is simulator/browser memory"
+  assert_contains "$output" "tier 3 can reclaim at most the latter"
+  assert_contains "$output" "the Docker part needs: memcap docker apply"
+  assert_not_contains "$output" "the excess is Docker's"
+  assert_not_contains "$output" "the excess is simulator/browser memory"
+}
+
+@test "ATTRIBUTION: the Docker variant carries the drift that explains it" {
+  # "Docker is over its budget" and "the ceiling in your config was never
+  # applied" are the same sentence read from two ends. The same fixture as the
+  # Docker test above, with Docker's own settings readable and holding 6 GB
+  # against the 4 GB the config asks for.
+  store="$BATS_TEST_TMPDIR/settings.json"
+  printf '{"MemoryMiB": 6144}\n' > "$store"
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() {
+      printf '9001 1 9961472 /usr/local/bin/claude\n'
+      printf '9002 1 524288 /path/ms-playwright/chromium/chrome\n'
+      printf '9003 1 7864320 /Applications/Docker.app/Contents/MacOS/com.docker.backend\n'
+    }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=16 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 MC_DOCKER_STORE="$store" bash -c "$pass" >/dev/null
+
+  run grep "exceeds the 16 GB cap" "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_contains "$output" "the excess is Docker's"
+  assert_contains "$output" "Docker is enforcing a 6 GB VM ceiling, not the 4 GB in your config"
+}
+
+@test "ATTRIBUTION: the notification matches the variant the log chose" {
+  # MC_DRY_RUN=0 to prove the REAL path notifies, as the SILENT-GAP tests do.
+  # Nothing here can touch anything real: the snapshot is a fixture, tier 2 is
+  # stubbed out, and osascript is a capture file. The notification is the only
+  # part of this a user sees on the day it happens, so it must not still be
+  # blaming simulators after the log line stopped.
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  capture="$BATS_TEST_TMPDIR/osascript-arg"
+  cat > "$fakebin/osascript" <<SCRIPT
+#!/usr/bin/env bash
+printf '%s' "\$2" >> "$capture"
+SCRIPT
+  chmod +x "$fakebin/osascript"
+
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() {
+      printf '9001 1 9961472 /usr/local/bin/claude\n'
+      printf '9002 1 524288 /path/ms-playwright/chromium/chrome\n'
+      printf '9003 1 7864320 /Applications/Docker.app/Contents/MacOS/com.docker.backend\n'
+    }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=16 DOCKER_BUDGET_GB=4 MC_DRY_RUN=0 PATH="$fakebin:$PATH" \
+    MC_DOCKER_STORE="$BATS_TEST_TMPDIR/no-such-store.json" bash -c "$pass" >/dev/null
+
+  run cat "$capture"
+  assert_contains "$output" "Docker is holding 7.50 GB against its 4 GB budget"
+  assert_contains "$output" "memcap docker apply"
+  assert_not_contains "$output" "simulator/browser memory"
+}
+
 @test "watch refuses to act when DOCKER_BUDGET_GB leaves no room for agents" {
   mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
   cat > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" <<-'EOF'

@@ -343,6 +343,34 @@ policy you chose; quietly enforcing against 6 instead would be memcap choosing a
 different one. `watch` logs the same line, throttled, so "why was I over budget all
 week" is answerable after the fact.
 
+**Run `memcap status` once from a terminal, or the background service cannot see any
+of this.** macOS protects `~/Library/Group Containers`, where Docker Desktop keeps
+`settings-store.json`, and a LaunchAgent is denied access to it: from the daemon that
+file tests as present and every read of it fails with "Operation not permitted", while
+the same read from your own terminal succeeds. So `watch` uses the last value
+`memcap status` (or `memcap docker apply`) managed to read — kept as `docker-ceiling`
+in the state directory — and says that is what it is doing:
+
+```
+  Docker is enforcing a 6 GB VM ceiling, not the 4 GB in your config — ... (Docker's
+  settings file is unreadable from the background service; this is the value memcap
+  last read from a terminal, 3h ago — run 'memcap status' to refresh it)
+```
+
+Until something has run from a terminal there is no such value, and rather than guess,
+`watch` logs once that the check is blind:
+
+```
+  watch: cannot read Docker's settings store from the background service — macOS denies
+  launchd agents access to ~/Library/Group Containers — so the VM-ceiling check is blind
+  here until 'memcap status' has been run once from a terminal
+```
+
+Worth knowing because the quiet version of this shipped: v0.5.1 added the drift warning
+above and it logged **zero** times in eight days and roughly ten thousand service
+passes, while `status` showed the drift every single time it was typed. A read that
+fails on a permission error looked exactly like a machine with no Docker Desktop on it.
+
 `memcap docker apply` writes five settings, not just the two implied above —
 all five are printed in the command's own output so nothing here is a surprise:
 `DOCKER_BUDGET_GB` → `MemoryMiB`, `DOCKER_CPUS` → `Cpus`, plus a fixed 2 GB of
@@ -525,8 +553,10 @@ State, at `~/.local/state/memcap/` (override with `MEMCAP_STATE_HOME`):
   mobile tooling or hands-on mobile work is in progress (or, with
   `TIER3_REQUIRE_NO_SESSION=1`, because an agent session is alive), `watch`
   refusing to act against a misconfigured budget, and the combined cap being
-  exceeded by simulator memory that tier 2 correctly won't touch. If you're
-  wondering why memcap did or didn't do something, this is where to look. Kill
+  exceeded — attributed to Docker sitting over its ceiling, to simulator memory
+  tier 2 correctly won't touch, or to both, since only the second of those is
+  something a tier can reclaim. If you're wondering why memcap did or didn't do
+  something, this is where to look. Kill
   records are logged every time; the two lines that would otherwise repeat on
   every single pass — tier 3 declining, and the combined cap being exceeded —
   are throttled to at most one per `LOG_THROTTLE_SEC` so they don't drown the
@@ -534,6 +564,13 @@ State, at `~/.local/state/memcap/` (override with `MEMCAP_STATE_HOME`):
 - `log-throttle/` — one stamp per throttled log key (see `LOG_THROTTLE_SEC`
   above), cleared the moment that key's condition stops holding so the next
   occurrence logs immediately rather than waiting out a stale window.
+- `docker-ceiling` — `<MiB> <epoch>`: the VM ceiling Docker's own settings last
+  reported, and when it was read. Written by `memcap status` and by `memcap
+  docker apply`, which run from a terminal and can open Docker's settings file;
+  read by the background service, which cannot — macOS denies LaunchAgents
+  access to `~/Library/Group Containers`. Without it `watch` has no way to tell
+  whether the ceiling in your config is the one Docker is enforcing (see the
+  Docker section above). Delete it and the next `memcap status` writes it again.
 - `roots` — the learned sweep roots, newest first, one `EPOCH<TAB>PATH` row per line.
   Plain-path lines written by older versions are still read. A row you add by hand is
   kept if it resolves somewhere safe, whether or not it is already canonical.

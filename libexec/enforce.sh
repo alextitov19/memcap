@@ -1459,6 +1459,12 @@ mc_watch() {
   local total cap cap_default docker_budget docker_default agents_budget
   local agent_net_gb over free soft min_free outcome drift
   local agent_gb docker_gb combined_gb gross_over
+  # The combined-over-cap attribution (below): which of Docker and the simulators
+  # the overage actually belongs to. Declared here with everything else mc_watch
+  # owns -- bash is dynamically scoped, so a name left undeclared here is a name
+  # every function mc_watch calls can see and shadow.
+  local overage sim_gb docker_excess docker_covers sim_covers docker_none
+  local docker_against docker_over docker_remedy docker_note
 
   mc_watch_liveness
 
@@ -1516,10 +1522,33 @@ mc_watch() {
   # for as long as that has been true, and actions.log is where the "why was
   # memcap over budget all week" question gets answered afterwards.
   if command -v mc_docker_ceiling_drift >/dev/null 2>&1; then
-    if drift=$(mc_docker_ceiling_drift "$docker_budget"); then
+    # Called IN-PROCESS, with the message read back out of a global, rather than
+    # through the command substitution this used to be. A subshell returns the
+    # drift text and nothing else, and "nothing else" is where the whole of
+    # v0.5.1's silence lived: launchd denies this process access to
+    # ~/Library/Group Containers, the read failed with EPERM on every pass, and a
+    # failed read is indistinguishable from "the ceilings agree" once it has been
+    # squeezed through an exit status. This line logged ZERO times in 8 days
+    # while `memcap status`, run from a terminal, printed the drift every time.
+    mc_docker_ceiling_drift "$docker_budget" >/dev/null || :
+    drift="${MC_DOCKER_CEILING_DRIFT:-}"
+    if [ -n "$drift" ]; then
       mc_log_throttled "docker-ceiling-drift" "watch: $drift"
     else
       mc_log_throttle_clear "docker-ceiling-drift"
+    fi
+    # The blind case gets its own line and its own key. It is NOT a drift -- memcap
+    # does not know whether the ceilings agree -- and reporting it as one would be
+    # inventing a number. It is also not silence, which is what the previous
+    # version amounted to: a check that cannot run must say so, once, rather than
+    # look like a check that ran and found nothing. Only when there is no cached
+    # reading to fall back on, and only when a ceiling is actually being asked for
+    # (DOCKER_BUDGET_GB=0 means Docker is unmanaged by choice, so there is no
+    # check to be blind about).
+    if [ "${MC_DOCKER_CEILING_UNREADABLE:-0}" = "1" ] && [ "$docker_budget" -gt 0 ]; then
+      mc_log_throttled "docker-ceiling-unreadable" "watch: cannot read Docker's settings store from the background service -- macOS denies launchd agents access to ~/Library/Group Containers -- so the VM-ceiling check is blind here until 'memcap status' has been run once from a terminal"
+    else
+      mc_log_throttle_clear "docker-ceiling-unreadable"
     fi
   fi
 
@@ -1557,8 +1586,61 @@ mc_watch() {
     combined_gb=$(awk -v a="$agent_gb" -v d="$docker_gb" 'BEGIN{printf "%.2f", a+d}')
     gross_over=$(awk -v c="$combined_gb" -v cap="$cap" 'BEGIN{print (c > cap) ? 1 : 0}')
     if [ "$gross_over" = "1" ]; then
-      mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the ${cap} GB cap, but agents net of sims are ${agent_net_gb} GB / ${agents_budget} GB budget -- the excess is simulator/browser memory tier 2 cannot reclaim by killing a dev server; tier 3 will reclaim it once it has been idle past its grace"
-      [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over your ${cap} GB combined budget from simulator/browser memory -- tier 2 won't kill a dev server for it, and tier 3 will reclaim it once it has been idle long enough."
+      # WHICH excess, not just that there is one. This line blamed simulators
+      # unconditionally for 186 occurrences since 08-27, including the morning it
+      # read: combined 17.20 GB against a 16 GB cap, agents net of sims 9.45 GB,
+      # sims about 1.15 GB -- and Docker at 6.6 GB against a 4 GB budget, because
+      # the ceiling had never been applied. Tier 3 could have reclaimed every
+      # simulator on the machine and it would still have been over the cap. The
+      # line promised a reclaim that could not happen and never named the actual
+      # cause, so the one action that would have fixed it (memcap docker apply)
+      # was never suggested. Attribute the overage instead, and say only what the
+      # attributed part can actually do.
+      #
+      # The arithmetic identity that makes this exhaustive: cap is
+      # agents_budget + docker_budget by construction, and this branch runs only
+      # when agent_net <= agents_budget, so
+      #   overage = combined - cap <= sim_gb + max(0, docker_gb - docker_budget).
+      # One of the two components therefore always covers it, or both contribute.
+      overage=$(awk -v c="$combined_gb" -v cap="$cap" 'BEGIN{printf "%.2f", c - cap}')
+      sim_gb=$(mc_gb "$SIM_KB")
+      docker_excess=$(awk -v d="$docker_gb" -v b="$docker_budget" 'BEGIN{e = d - b; if (e < 0) e = 0; printf "%.2f", e}')
+      docker_covers=$(awk -v e="$docker_excess" -v o="$overage" 'BEGIN{print (e >= o) ? 1 : 0}')
+      sim_covers=$(awk -v s="$sim_gb" -v o="$overage" 'BEGIN{print (s >= o) ? 1 : 0}')
+      docker_none=$(awk -v e="$docker_excess" 'BEGIN{print (e <= 0) ? 1 : 0}')
+      # DOCKER_BUDGET_GB=0 is "memcap is not managing Docker", not "Docker may use
+      # zero" -- status.sh renders it as "no ceiling (unmanaged)" for the same
+      # reason. Telling that user to run `memcap docker apply` would be telling
+      # them to apply a 0 GB ceiling, so the remedy names the missing setting
+      # first. Both strings are built once and shared by the two Docker variants.
+      if [ "$docker_budget" -gt 0 ]; then
+        docker_against="against its ${docker_budget} GB budget"
+        docker_over="Docker is ${docker_excess} GB over its ${docker_budget} GB budget"
+        docker_remedy="memcap docker apply"
+      else
+        docker_against="with no ceiling asked for (DOCKER_BUDGET_GB=0)"
+        docker_over="Docker is holding ${docker_gb} GB with no ceiling asked for (DOCKER_BUDGET_GB=0)"
+        docker_remedy="set DOCKER_BUDGET_GB in memcap.conf, then: memcap docker apply"
+      fi
+      # The drift, when it is known, belongs on the Docker variants specifically:
+      # "Docker is over its budget" and "the ceiling in your config was never
+      # applied" are the same sentence read from two ends, and a user seeing the
+      # first without the second has no way to get from one to the other.
+      # `${drift:-}`, not `$drift`: the block that sets it is guarded on docker.sh
+      # having been sourced at all, which `bin/memcap watch` always does and a
+      # test sourcing the modules by hand may not.
+      docker_note=""
+      [ -n "${drift:-}" ] && docker_note=" -- ${drift}"
+      if [ "$docker_covers" = "1" ]; then
+        mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the ${cap} GB cap -- the excess is Docker's: ${docker_gb} GB ${docker_against}. No tier reclaims Docker memory; enforce the ceiling with: ${docker_remedy}${docker_note}"
+        [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over your ${cap} GB combined budget: Docker is holding ${docker_gb} GB ${docker_against}. No tier can reclaim Docker memory -- ${docker_remedy}"
+      elif [ "$sim_covers" = "1" ] && [ "$docker_none" = "1" ]; then
+        mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the ${cap} GB cap, but agents net of sims are ${agent_net_gb} GB / ${agents_budget} GB budget -- the excess is simulator/browser memory tier 2 cannot reclaim by killing a dev server; tier 3 will reclaim it once it has been idle past its grace"
+        [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over your ${cap} GB combined budget from simulator/browser memory -- tier 2 won't kill a dev server for it, and tier 3 will reclaim it once it has been idle long enough."
+      else
+        mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the ${cap} GB cap -- ${docker_over} and ${sim_gb} GB is simulator/browser memory; tier 3 can reclaim at most the latter, and only once it has been idle past its grace; the Docker part needs: ${docker_remedy}${docker_note}"
+        [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over your ${cap} GB combined budget: ${docker_over}, and ${sim_gb} GB is simulator/browser memory. Tier 3 can reclaim only the simulators -- the Docker part needs ${docker_remedy}"
+      fi
     else
       mc_log_throttle_clear "combined-over-cap"
     fi
