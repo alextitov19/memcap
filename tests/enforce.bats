@@ -1033,6 +1033,36 @@ mc_watch_modules() {
   assert_not_contains "$output" "the excess is simulator/browser memory"
 }
 
+@test "ATTRIBUTION: independent rounding cannot blame a Docker that is exactly at budget" {
+  # agent_gb, sim_gb and agent_net_gb are each rounded to two decimals on their
+  # own, and the overage is computed from the rounded combined figure, so the
+  # identity "sims cover the overage when Docker is within budget" holds only in
+  # exact arithmetic. Here: claude 12.002 GB + sims 0.994 GB = 12.996 GB gross,
+  # which renders as 13.00; sims render as 0.99; net renders as 12.00 (inside the
+  # 12 GB budget, so this branch is reached); Docker exactly 4.00 GB against 4.
+  # Combined 17.00, overage 1.00, and 0.99 < 1.00 -- so a test on "do the sims
+  # cover it" fails by a rounding penny and the pass fell through to the variant
+  # that reads "Docker is 0.00 GB over its 4 GB budget ... the Docker part needs:
+  # memcap docker apply". A false Docker blame from the change meant to end
+  # misattribution. Docker being within budget is decisive on its own.
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() {
+      printf '9001 1 12585006 /usr/local/bin/claude\n'
+      printf '9002 1 1042285 /path/ms-playwright/chromium/chrome\n'
+      printf '9003 1 4194304 /Applications/Docker.app/Contents/MacOS/com.docker.backend\n'
+    }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=16 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 \
+    MC_DOCKER_STORE="$BATS_TEST_TMPDIR/no-such-store.json" bash -c "$pass" >/dev/null
+
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_contains "$output" "combined 17.00 GB exceeds the 16 GB cap"
+  assert_contains "$output" "the excess is simulator/browser memory tier 2 cannot reclaim"
+  assert_not_contains "$output" "Docker is 0.00 GB over"
+  assert_not_contains "$output" "memcap docker apply"
+}
+
 @test "ATTRIBUTION: the Docker variant carries the drift that explains it" {
   # "Docker is over its budget" and "the ceiling in your config was never
   # applied" are the same sentence read from two ends. The same fixture as the

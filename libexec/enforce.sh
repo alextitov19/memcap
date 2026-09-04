@@ -1463,7 +1463,7 @@ mc_watch() {
   # the overage actually belongs to. Declared here with everything else mc_watch
   # owns -- bash is dynamically scoped, so a name left undeclared here is a name
   # every function mc_watch calls can see and shadow.
-  local overage sim_gb docker_excess docker_covers sim_covers docker_none
+  local overage sim_gb docker_excess docker_covers docker_none
   local docker_against docker_over docker_remedy docker_note
 
   mc_watch_liveness
@@ -1606,7 +1606,6 @@ mc_watch() {
       sim_gb=$(mc_gb "$SIM_KB")
       docker_excess=$(awk -v d="$docker_gb" -v b="$docker_budget" 'BEGIN{e = d - b; if (e < 0) e = 0; printf "%.2f", e}')
       docker_covers=$(awk -v e="$docker_excess" -v o="$overage" 'BEGIN{print (e >= o) ? 1 : 0}')
-      sim_covers=$(awk -v s="$sim_gb" -v o="$overage" 'BEGIN{print (s >= o) ? 1 : 0}')
       docker_none=$(awk -v e="$docker_excess" 'BEGIN{print (e <= 0) ? 1 : 0}')
       # DOCKER_BUDGET_GB=0 is "memcap is not managing Docker", not "Docker may use
       # zero" -- status.sh renders it as "no ceiling (unmanaged)" for the same
@@ -1634,7 +1633,16 @@ mc_watch() {
       if [ "$docker_covers" = "1" ]; then
         mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the ${cap} GB cap -- the excess is Docker's: ${docker_gb} GB ${docker_against}. No tier reclaims Docker memory; enforce the ceiling with: ${docker_remedy}${docker_note}"
         [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over your ${cap} GB combined budget: Docker is holding ${docker_gb} GB ${docker_against}. No tier can reclaim Docker memory -- ${docker_remedy}"
-      elif [ "$sim_covers" = "1" ] && [ "$docker_none" = "1" ]; then
+      # Docker being within its budget is decisive on its own, whether or not
+      # sim_covers agrees. The identity above says the simulators cover the
+      # overage when Docker does not -- but agent_gb, sim_gb and agent_net_gb are
+      # each rounded to two decimals independently and overage comes from the
+      # rounded combined figure, so "0.99 >= 1.00" can be false by a rounding
+      # penny while the arithmetic it stands for is true. Requiring sim_covers
+      # here sent exactly that fixture to the variant below, which then read
+      # "Docker is 0.00 GB over its 4 GB budget ... memcap docker apply": a false
+      # Docker blame from the change meant to end misattribution.
+      elif [ "$docker_none" = "1" ]; then
         mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the ${cap} GB cap, but agents net of sims are ${agent_net_gb} GB / ${agents_budget} GB budget -- the excess is simulator/browser memory tier 2 cannot reclaim by killing a dev server; tier 3 will reclaim it once it has been idle past its grace"
         [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over your ${cap} GB combined budget from simulator/browser memory -- tier 2 won't kill a dev server for it, and tier 3 will reclaim it once it has been idle long enough."
       else
