@@ -311,11 +311,25 @@ mc_render_status() {
   # computed by subtracting a number nothing honored. Reported, never silently
   # re-derived: 16 GB total with 4 GB for Docker is the policy the user chose,
   # and acting on 6 instead would be memcap choosing a different one.
+  #
+  # `status` is also the half of this that can actually READ Docker's settings
+  # file: macOS denies launchd agents access to ~/Library/Group Containers, so
+  # the background service gets EPERM on every pass and has been blind to this
+  # divergence for its whole life. A successful read here seeds the cache in the
+  # state directory (docker.sh writes it) that `watch` falls back on, which is
+  # why running `memcap status` once from a terminal is what makes the daemon's
+  # ceiling check work at all.
+  #
+  # Called in-process, with both the message and the value read back out of
+  # globals, rather than through the two command substitutions this used to be:
+  # a subshell discards the read's diagnosis, and the second substitution re-read
+  # the settings file to recover a number the first one already had.
   docker_drift=""
   if command -v mc_docker_ceiling_drift >/dev/null 2>&1; then
-    docker_drift=$(mc_docker_ceiling_drift "$docker_budget") || docker_drift=""
+    mc_docker_ceiling_drift "$docker_budget" >/dev/null || :
+    docker_drift="${MC_DOCKER_CEILING_DRIFT:-}"
     if [ -n "$docker_drift" ]; then
-      docker_ceiling_label="$(mc_docker_ceiling_gb) GB ceiling ENFORCED (config asks for ${docker_budget} GB)"
+      docker_ceiling_label="${MC_DOCKER_CEILING_GB} GB ceiling ENFORCED (config asks for ${docker_budget} GB)"
     fi
   fi
 
