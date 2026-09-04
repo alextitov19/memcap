@@ -137,7 +137,18 @@ mc_render_outcome() {
 # memcap, however fresh the heartbeat above it looked.
 mc_render_launchagent() {
   case "$(mc_launchagent_state)" in
-    loaded)        mc_status_row "background service" "LaunchAgent loaded" ;;
+    # The label is named because `brew services info memcap` reports
+    # "Running: false" for a perfectly healthy install: memcap writes and owns
+    # its own agent under its own label (see service.sh's comment on why -- brew
+    # upgrade DELETED the Homebrew-owned plist twice), and brew only knows about
+    # plists it created. Someone checking the wrong tool needs this row to tell
+    # them which agent is the real one. mc_launchagent_label is service.sh's
+    # single copy of it; reaching `loaded` at all proves service.sh is sourced,
+    # since mc_launchagent_state returns `unavailable` otherwise.
+    loaded)
+      mc_status_row "background service" \
+        "LaunchAgent loaded ($(mc_launchagent_label) -- memcap's own, not a brew service)"
+      ;;
     not-loaded)
       mc_status_row "background service" "LaunchAgent NOT LOADED"
       mc_status_warn "MEMCAP'S LAUNCHAGENT IS NOT LOADED -- the plist exists but launchd is not running it, so nothing schedules a pass: memcap service install"
@@ -311,11 +322,25 @@ mc_render_status() {
   # computed by subtracting a number nothing honored. Reported, never silently
   # re-derived: 16 GB total with 4 GB for Docker is the policy the user chose,
   # and acting on 6 instead would be memcap choosing a different one.
+  #
+  # `status` is also the half of this that can actually READ Docker's settings
+  # file: macOS denies launchd agents access to ~/Library/Group Containers, so
+  # the background service gets EPERM on every pass and has been blind to this
+  # divergence for its whole life. A successful read here seeds the cache in the
+  # state directory (docker.sh writes it) that `watch` falls back on, which is
+  # why running `memcap status` once from a terminal is what makes the daemon's
+  # ceiling check work at all.
+  #
+  # Called in-process, with both the message and the value read back out of
+  # globals, rather than through the two command substitutions this used to be:
+  # a subshell discards the read's diagnosis, and the second substitution re-read
+  # the settings file to recover a number the first one already had.
   docker_drift=""
   if command -v mc_docker_ceiling_drift >/dev/null 2>&1; then
-    docker_drift=$(mc_docker_ceiling_drift "$docker_budget") || docker_drift=""
+    mc_docker_ceiling_drift "$docker_budget" >/dev/null || :
+    docker_drift="${MC_DOCKER_CEILING_DRIFT:-}"
     if [ -n "$docker_drift" ]; then
-      docker_ceiling_label="$(mc_docker_ceiling_gb) GB ceiling ENFORCED (config asks for ${docker_budget} GB)"
+      docker_ceiling_label="${MC_DOCKER_CEILING_GB} GB ceiling ENFORCED (config asks for ${docker_budget} GB)"
     fi
   fi
 
@@ -334,7 +359,7 @@ mc_render_status() {
 
   [ -n "$docker_drift" ] && mc_status_warn "$docker_drift"
 
-  printf 'memcap — %s\n\n' "$conf"
+  printf 'memcap %s — %s\n\n' "${MEMCAP_VERSION:-unknown}" "$conf"
   mc_status_row "agents + everything they spawn" "${agent_gb} GB / ${agents_budget_label}"
   mc_status_row "  of which leaked/orphaned" "$(mc_gb "$ORPHAN_KB") GB"
   mc_status_row "  of which sims/playwright" "$(mc_gb "$SIM_KB") GB"

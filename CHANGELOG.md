@@ -1,5 +1,116 @@
 # Changelog
 
+## v0.6.0 — 2026-09-04
+
+Found by auditing nine days of `actions.log` (1,463 lines) on the author's machine
+since v0.5.1 shipped, and confirmed live: a device was booted and shut down by hand to
+read what `launchd_sim` actually carries in its argv, and a throwaway launchd job was
+run to see what the daemon can and cannot read.
+
+### Tier 3 shut down a simulator out from under a live Maestro run, 38 times
+
+- **The evidence that "a device is idle" was a process with no device.**
+  `MC_SIM_IOS_EXE` matched `launchd_sim|SimulatorTrampoline`, and one machine-wide
+  flag was set by any ready pid matching either. SimulatorTrampoline is a
+  CoreSimulator helper with no device affinity — measured on the author's machine at
+  40 hours alive, 11 CPU-seconds total, the same pid across a device booting _and_
+  being shut down — so "a simulator is idle" was permanently true and permanently
+  CPU-flat. The moment `simctl list devices booted` showed anything Booted,
+  `xcrun simctl shutdown all` took every device on the machine. Between 2026-08-27
+  and 08-29 that ran 38 times in bursts a minute apart against the simulator a live
+  Maestro run was driving: Maestro re-booted the device, memcap shut it down again
+  on the next pass, and the user stopped the daemon with `memcap off` at 01:48 on
+  the 28th.
+- **Devices are now judged one at a time, by their own process.** CoreSimulator
+  starts a `launchd_sim` per device whose argv names that device's data directory —
+  `.../CoreSimulator/Devices/<UDID>/data/var/run/launchd_bootstrap.plist` — so the
+  pid, its idle clock and the UDID `simctl shutdown` takes are one fact. Booted
+  devices are enumerated with `simctl list devices booted -j` (with a plain-text
+  fallback for a machine without jq, the same shape as docker.sh's), and a device is
+  shut down individually only when a `launchd_sim` naming its UDID is in the ready
+  set. `shutdown all` is gone. SimulatorTrampoline still counts toward the budget in
+  `classify.sh`; it is simply never evidence about a device.
+- **Both ways of not knowing mean not touching it.** A booted device whose
+  `launchd_sim` is tracked but still inside its grace is held, and the existing
+  tier3-holding line names the blocking pid. A booted device with nothing in the
+  snapshot mapping to it gets its own line, throttled per UDID, saying memcap will
+  not shut down a device it cannot prove is idle.
+- **The shutdown's result was never recorded.** The old line was written _before_
+  the command ran and named no device, so `actions.log` could not distinguish a
+  device memcap took down from one that refused. Each device now gets one line
+  either way, carrying the pid that spoke for it and how long that pid had been
+  flat, or the rc and the first line of stderr (`simctl shutdown` on an already-down
+  device exits 149 with `Unable to shutdown device in current state: Shutdown`).
+
+### The tooling veto flapped, because its window was shorter than one pass
+
+- **`MOBILE_TOOLING_IDLE_SEC` defaulted to 60 seconds, and an enforcement pass takes
+  about 64.** A 60-second veto window bought no hysteresis at all: an idle `maestro`
+  MCP server that handled a single request switched the tier-3 veto on, and the very
+  next pass switched it back off. A state change clears the throttle key, so every
+  flap logged — **544 `tier3: declining -- active mobile tooling detected` lines in
+  nine days**, alternating minute-to-minute with the hands-on veto. It is also the
+  gap the shutdown loop above fired through: on the passes where the veto was off.
+- **The rationale behind 60 was wrong too.** It read "a CLI tool going quiet for a
+  minute is likelier idle than a simulator is." A Maestro run goes quiet for a minute
+  between flows: that quiet minute is the middle of a test suite. The default is
+  **300** now, in `memcap init`'s template and in the code's own fallback — which a
+  test pins to each other, since they are two copies of one number. An existing
+  `memcap.conf` keeps whatever it already says; edit it by hand to pick this up.
+
+### `watch` could not read Docker's settings store, and said nothing about it
+
+- **The drift warning v0.5.1 shipped logged zero times in eight days and roughly
+  ten thousand passes**, while `memcap status`, typed in a terminal, showed the
+  drift every single time. macOS denies LaunchAgents access to
+  `~/Library/Group Containers`: from the daemon, `settings-store.json` tests as
+  present and every read of it fails with "Operation not permitted" (reproduced
+  with a transient launchd job under the daemon's own PATH). memcap treated that
+  permission error exactly as it treats a missing file — a silent "no Docker
+  Desktop here" — so the one process that needed the warning was the one process
+  structurally unable to produce it. Unreadable is now its own outcome.
+- **`status` and `docker apply` run from a terminal, so their reads are cached** in
+  `docker-ceiling` in the state directory; `watch` falls back to that and says how
+  old the number is rather than stating a ceiling in the present tense on the
+  strength of a file it cannot open. With nothing cached it logs, once, that the
+  check is blind. **Run `memcap status` once after upgrading** — that is what gives
+  the background service a value to work from.
+- Both readers now run in-process and leave their diagnosis in globals: capturing
+  them through a command substitution was how the difference between "no Docker"
+  and "launchd cannot open the file" got thrown away in the first place.
+
+### The "combined over cap" line blamed simulators when Docker was the excess
+
+- **186 of these lines in eight days, every one naming simulators.** On 09-04:
+  combined 17.20 GB against a 16 GB cap, agents net of sims 9.45 GB, sims about
+  1.15 GB — and Docker holding 6.6 GB against a 4 GB budget, because the ceiling
+  had never been applied. Tier 3 could have reclaimed every simulator on the
+  machine and it would still have been over the cap, so the line promised a
+  reclaim that could not happen and never named the one action that would have
+  fixed it (`memcap docker apply`). The overage is now attributed to Docker, to
+  the simulators, or to both, and each version promises only what the tier that
+  owns it can actually do. The notification matches. An unmanaged Docker
+  (`DOCKER_BUDGET_GB=0`) is told to set a budget first, since `docker apply` with
+  that config would write a 0 MiB ceiling.
+
+### memcap can say which memcap it is
+
+- **`memcap version` was "unknown command", and nothing memcap wrote carried a
+  version at all.** That is the problem when the evidence for a bug is nine days of
+  someone else's `actions.log`. `memcap version` (also `--version`, `-v`) prints
+  `memcap 0.6.0`; `status`'s header reads `memcap 0.6.0 — <conf>`; the liveness line
+  is now `watch: alive (memcap 0.6.0, 48 passes in 3604s -- one every 75s)`.
+- A release-guard test extracts the top `## vX.Y.Z` heading from this file and
+  asserts it equals `MEMCAP_VERSION`, so a release cannot bump one without the other.
+
+### `status` names the LaunchAgent
+
+- **`brew services info memcap` reports `Running: false` on a perfectly healthy
+  install**, because memcap writes and owns its own LaunchAgent and Homebrew only
+  tracks plists it created itself. The row now reads
+  `LaunchAgent loaded (com.alextitov19.memcap -- memcap's own, not a brew service)`,
+  with the label taken from `service.sh` rather than a second copy of the string.
+
 ## v0.5.1 — 2026-08-27
 
 Found by auditing 14 days of `actions.log` (4,738 lines) on the author's machine,

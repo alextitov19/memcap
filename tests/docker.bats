@@ -238,3 +238,234 @@ SCRIPT
   [ -z "$output" ]
 }
 
+# --- EPERM: the daemon cannot read Docker's settings store -------------------
+# v0.5.1 shipped the drift line above and it logged ZERO times in 8 days and
+# ~10,000 passes of the real service, while `memcap status` from a terminal
+# showed the drift every single time. macOS denies launchd agents access to
+# ~/Library/Group Containers: reproduced with a transient launchd job running
+# /bin/sh under the LaunchAgent's own PATH, `test -f` said OK, `read` said FAIL,
+# and jq said "Operation not permitted". mc_docker_ceiling_gb collapsed that into
+# the same silent `return 1` it uses for "there is no Docker Desktop here", so
+# the daemon ran blind and looked healthy doing it.
+#
+# chmod 000 is the reachable stand-in for EPERM: the suite runs as a non-root
+# user, so `[ -f ]` is true and every read fails -- the same shape as the
+# sandbox denial, which no test can arrange for real.
+#
+# The three outcomes are asserted separately below because collapsing any two of
+# them is precisely the bug.
+
+# Neither `run` NOR a command substitution: both put the call in a subshell, and
+# every assertion below is about a global the function sets there. Written this
+# way after the first draft used `MC_CEILING_OUT=$(mc_docker_ceiling_gb)` and
+# three tests passed while asserting on docker.sh's top-level defaults rather
+# than on anything the function had done -- the same subshell-swallows-the-
+# diagnosis mistake that hid the EPERM case in production. stdout goes to a file
+# so the printed value can still be checked.
+ceiling_read() {
+  MC_CEILING_RC=0
+  mc_docker_ceiling_gb > "$BATS_TEST_TMPDIR/ceiling.out" || MC_CEILING_RC=$?
+  MC_CEILING_OUT=$(cat "$BATS_TEST_TMPDIR/ceiling.out")
+}
+
+@test "EPERM: an unreadable store is 2 with a reason, not a silent 1" {
+  if [ "$(id -u)" -eq 0 ]; then skip "chmod 000 is not a barrier to root"; fi
+  MC_DOCKER_STORE="$BATS_TEST_TMPDIR/locked.json"
+  printf '{"MemoryMiB": 6144}\n' > "$MC_DOCKER_STORE"
+  chmod 000 "$MC_DOCKER_STORE"
+
+  ceiling_read
+  # 2, not 1: 1 means "no Docker Desktop on this machine, nothing to say", and
+  # saying nothing is what left the service blind for 8 days.
+  [ "$MC_CEILING_RC" -eq 2 ]
+  # Prints nothing at all -- a caller must never receive a number it could
+  # compare against the config.
+  [ -z "$MC_CEILING_OUT" ]
+  assert_contains "$MC_DOCKER_CEILING_ERR" "cannot read"
+  assert_contains "$MC_DOCKER_CEILING_ERR" "Group Containers"
+  [ "$MC_DOCKER_CEILING_UNREADABLE" = "1" ]
+}
+
+@test "EPERM: an absent store is still a silent 1, not the unreadable case" {
+  # The negative control for the test above, and the CI case: GitHub's macOS
+  # runners have no Docker Desktop at all. A machine that does not run Docker
+  # must produce no diagnosis, no log line and no cache lookup.
+  MC_DOCKER_STORE="$BATS_TEST_TMPDIR/does-not-exist.json"
+  ceiling_read
+  [ "$MC_CEILING_RC" -eq 1 ]
+  [ -z "$MC_CEILING_OUT" ]
+  [ "$MC_DOCKER_CEILING_UNREADABLE" = "0" ]
+  [ -z "$MC_DOCKER_CEILING_ERR" ]
+}
+
+@test "EPERM: an empty but readable store is unknown, not unreadable" {
+  # An empty file opens fine and simply records no ceiling. Distinguished here
+  # because the obvious readability probe -- the shell's own `read` -- fails at
+  # end-of-file, which would file a perfectly readable file as a permission
+  # problem and put a launchd-denial line in actions.log about it.
+  MC_DOCKER_STORE="$BATS_TEST_TMPDIR/empty.json"
+  : > "$MC_DOCKER_STORE"
+  ceiling_read
+  [ "$MC_CEILING_RC" -eq 1 ]
+  [ "$MC_DOCKER_CEILING_UNREADABLE" = "0" ]
+}
+
+@test "EPERM: a successful read caches the value, as two integers" {
+  MC_DOCKER_STORE="$BATS_TEST_TMPDIR/settings.json"
+  printf '{"MemoryMiB": 6144, "Cpus": 8}\n' > "$MC_DOCKER_STORE"
+  ceiling_read
+  [ "$MC_CEILING_RC" -eq 0 ]
+  [ "$MC_CEILING_OUT" = "6" ]
+
+  # This file is the entire mechanism by which the background service ever
+  # learns the ceiling: it cannot read Docker's own settings, so it reads what a
+  # terminal last saw. In the sandboxed state dir -- MEMCAP_STATE_HOME, set by
+  # setup_common -- never the real one.
+  cache="$MEMCAP_STATE_HOME/memcap/docker-ceiling"
+  [ -f "$cache" ]
+  run cat "$cache"
+  assert_matches "$output" '^[0-9]+ [0-9]+$'
+  assert_matches "$output" '^6144 '
+}
+
+@test "EPERM: the escape hatch does not seed the cache" {
+  # MC_DOCKER_CEILING_MIB is a test fixture, not a reading of anything. If it
+  # wrote the cache, a suite run would leave a number behind that a later pass
+  # would report to the user as what Docker is enforcing.
+  #
+  # The store is pointed at a path that does not exist even though the override
+  # means it is never opened: left at its default it is a path under $HOME, and
+  # a test whose behaviour could turn on whether the developer runs Docker is
+  # exactly what the no-Docker suite run exists to catch.
+  MC_DOCKER_STORE="$BATS_TEST_TMPDIR/does-not-exist.json"
+  # shellcheck disable=SC2034  # read by mc_docker_ceiling_gb, sourced from docker.sh
+  MC_DOCKER_CEILING_MIB=6144
+  ceiling_read
+  [ "$MC_CEILING_RC" -eq 0 ]
+  [ ! -f "$MEMCAP_STATE_HOME/memcap/docker-ceiling" ]
+}
+
+@test "EPERM: an unreadable store falls back to the cached reading" {
+  if [ "$(id -u)" -eq 0 ]; then skip "chmod 000 is not a barrier to root"; fi
+  MC_DOCKER_STORE="$BATS_TEST_TMPDIR/locked.json"
+  printf '{"MemoryMiB": 6144}\n' > "$MC_DOCKER_STORE"
+  chmod 000 "$MC_DOCKER_STORE"
+  mkdir -p "$MEMCAP_STATE_HOME/memcap"
+  printf '6144 %s\n' "$(date +%s)" > "$MEMCAP_STATE_HOME/memcap/docker-ceiling"
+
+  ceiling_read
+  [ "$MC_CEILING_RC" -eq 0 ]
+  [ "$MC_CEILING_OUT" = "6" ]
+  assert_contains "$MC_DOCKER_CEILING_SOURCE" "cached"
+  assert_contains "$MC_DOCKER_CEILING_SOURCE" "from a terminal"
+  # Still not a live read, so the daemon must not be told the check is fine --
+  # but it is also not blind, so it must not log that it is.
+  [ "$MC_DOCKER_CEILING_UNREADABLE" = "0" ]
+}
+
+@test "EPERM: the cached reading dates itself in the drift line" {
+  if [ "$(id -u)" -eq 0 ]; then skip "chmod 000 is not a barrier to root"; fi
+  MC_DOCKER_STORE="$BATS_TEST_TMPDIR/locked.json"
+  printf '{"MemoryMiB": 6144}\n' > "$MC_DOCKER_STORE"
+  chmod 000 "$MC_DOCKER_STORE"
+  mkdir -p "$MEMCAP_STATE_HOME/memcap"
+  # Two hours old, so the age is a real interval rather than "0s" -- a stale
+  # cache reported as though it were current is the failure this note exists to
+  # prevent.
+  printf '6144 %s\n' "$(( $(date +%s) - 7200 ))" > "$MEMCAP_STATE_HOME/memcap/docker-ceiling"
+
+  run mc_docker_ceiling_drift 4
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "enforcing a 6 GB VM ceiling, not the 4 GB in your config"
+  assert_contains "$output" "unreadable from the background service"
+  assert_contains "$output" "last read from a terminal, 2h ago"
+  assert_contains "$output" "memcap status"
+}
+
+@test "EPERM: a live read does not carry the cache note" {
+  # The negative control for the test above: the note must appear only when the
+  # number is remembered. A drift line that always claimed to be quoting a cache
+  # would be as wrong as one that never did.
+  MC_DOCKER_STORE="$BATS_TEST_TMPDIR/settings.json"
+  printf '{"MemoryMiB": 6144}\n' > "$MC_DOCKER_STORE"
+  run mc_docker_ceiling_drift 4
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "enforcing a 6 GB VM ceiling"
+  assert_not_contains "$output" "unreadable from the background service"
+}
+
+@test "EPERM: a malformed cache is ignored rather than half-read" {
+  if [ "$(id -u)" -eq 0 ]; then skip "chmod 000 is not a barrier to root"; fi
+  MC_DOCKER_STORE="$BATS_TEST_TMPDIR/locked.json"
+  printf '{"MemoryMiB": 6144}\n' > "$MC_DOCKER_STORE"
+  chmod 000 "$MC_DOCKER_STORE"
+  mkdir -p "$MEMCAP_STATE_HOME/memcap"
+  cache="$MEMCAP_STATE_HOME/memcap/docker-ceiling"
+
+  # Every shape a torn or hand-edited file can take. Each must land back on
+  # "unreadable, and nothing remembered" -- a garbage value here is reported to
+  # the user as the ceiling Docker is enforcing, with a remedy attached.
+  for bad in '6144' 'lots 1756900000' '6144 yesterday' '' '6144 1756900000 extra' '0 1756900000'; do
+    printf '%s\n' "$bad" > "$cache"
+    ceiling_read
+    [ "$MC_CEILING_RC" -eq 2 ]
+    [ -z "$MC_CEILING_OUT" ]
+    [ "$MC_DOCKER_CEILING_UNREADABLE" = "1" ]
+  done
+}
+
+@test "EPERM: a torn half-written cache line is never read" {
+  # The write is temp-plus-mv so this cannot happen through memcap itself, which
+  # is the point: the reader is strict enough that it would not matter if it did.
+  mkdir -p "$MEMCAP_STATE_HOME/memcap"
+  printf '61' > "$MEMCAP_STATE_HOME/memcap/docker-ceiling"
+  run mc_docker_ceiling_cache_read
+  # `-eq 1`, not `-ne 0`: with `-ne 0` this test passed against the version that
+  # has no such function at all, on bats' 127 for "command not found". A test
+  # that a missing implementation satisfies is the "passing test confirms the
+  # bug" trap in AGENTS.md, found here by running the whole file against a
+  # stashed working tree.
+  [ "$status" -eq 1 ]
+}
+
+@test "EPERM: the cache write is atomic and leaves no temp file behind" {
+  run mc_docker_ceiling_cache_write 4096
+  [ "$status" -eq 0 ]
+  run cat "$MEMCAP_STATE_HOME/memcap/docker-ceiling"
+  assert_matches "$output" '^4096 [0-9]+$'
+  run ls "$MEMCAP_STATE_HOME/memcap/"
+  assert_not_contains "$output" "docker-ceiling."
+}
+
+@test "EPERM: docker apply refreshes the cache from the value it just wrote" {
+  # `docker apply` runs from a terminal and is the only other place that knows
+  # the enforced ceiling for certain. Without this, the service would keep
+  # reporting the PREVIOUS ceiling -- and keep advising `memcap docker apply` --
+  # until someone happened to run `status`.
+  #
+  # Nothing here reaches real Docker: pgrep says Docker Desktop is not running
+  # (so no osascript quit), `docker` and `open` are stubbed, and `sleep` is
+  # stubbed so the engine-wait loop costs nothing. The store is a temp file. The
+  # function still returns 1 at the end, because the fake engine never comes up
+  # -- the cache write is what is under test, and it must survive that.
+  store="$BATS_TEST_TMPDIR/apply-store.json"
+  printf '{"MemoryMiB":2048,"Cpus":4}\n' > "$store"
+
+  run env MC_DOCKER_RUNTIME=desktop DOCKER_BUDGET_GB=5 DOCKER_CPUS=4 \
+    MEMCAP_STATE_HOME="$MEMCAP_STATE_HOME" MC_DOCKER_STORE="$store" bash -c "
+      source '$MEMCAP_ROOT/libexec/common.sh'
+      source '$MEMCAP_ROOT/libexec/docker.sh'
+      pgrep() { return 1; }
+      docker() { return 1; }
+      open() { echo OPEN_STUBBED; }
+      sleep() { return 0; }
+      MC_DRY_RUN=0
+      mc_docker_apply
+    "
+  assert_contains "$output" "OPEN_STUBBED"
+  run cat "$MEMCAP_STATE_HOME/memcap/docker-ceiling"
+  # 5 GB, as MiB: the number written into Docker's settings, not the one that
+  # was in them beforehand.
+  assert_matches "$output" '^5120 [0-9]+$'
+}
+

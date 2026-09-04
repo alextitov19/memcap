@@ -25,24 +25,41 @@ setup() {
   # `bin/memcap watch`/`clean` and would otherwise inherit no override at all.
   export MC_DRY_RUN=1
 
-  # Sandbox for tier 3's `xcrun simctl shutdown all`. Before this, `xcrun` was
+  # Sandbox for tier 3's `xcrun simctl shutdown`. Before this, `xcrun` was
   # stubbed NOWHERE in tests/ -- the two SIMPIDS="" tests could reach the shutdown
   # branch and were safe only by the accident of MC_DRY_RUN=1, so a future test
   # that forgot the flag would have shut down a developer's booted simulators for
   # real. MC_XCRUN_BIN is the same indirection service.sh uses for launchctl and
   # brew: a guarantee rather than a PATH convention, so no test can reach the real
   # binary by forgetting anything.
+  #
+  # The stub answers all three calls memcap makes and logs every one, keyed on the
+  # WHOLE argument list rather than "$2": `list devices booted` and `list devices
+  # booted -j` differ only in the last word, and a stub that fed plain text to the
+  # `-j` parse would make every device-level assertion below pass or fail
+  # depending on whether jq happens to be installed on the machine running bats.
   FAKE_XCRUN_LOG="$BATS_TEST_TMPDIR/xcrun.calls"
   FAKE_XCRUN_BOOTED="$BATS_TEST_TMPDIR/xcrun.booted"
-  export FAKE_XCRUN_LOG FAKE_XCRUN_BOOTED
+  FAKE_XCRUN_BOOTED_JSON="$BATS_TEST_TMPDIR/xcrun.booted.json"
+  FAKE_XCRUN_SHUTDOWN_RC="$BATS_TEST_TMPDIR/xcrun.shutdown-rc"
+  FAKE_XCRUN_SHUTDOWN_ERR="$BATS_TEST_TMPDIR/xcrun.shutdown-err"
+  export FAKE_XCRUN_LOG FAKE_XCRUN_BOOTED FAKE_XCRUN_BOOTED_JSON
+  export FAKE_XCRUN_SHUTDOWN_RC FAKE_XCRUN_SHUTDOWN_ERR
   : > "$FAKE_XCRUN_LOG"
   : > "$FAKE_XCRUN_BOOTED"
+  : > "$FAKE_XCRUN_BOOTED_JSON"
+  rm -f "$FAKE_XCRUN_SHUTDOWN_RC" "$FAKE_XCRUN_SHUTDOWN_ERR"
   MC_XCRUN_BIN="$BATS_TEST_TMPDIR/fake-xcrun"
   cat > "$MC_XCRUN_BIN" <<'SCRIPT'
 #!/bin/sh
 echo "$@" >> "$FAKE_XCRUN_LOG"
-case "$2" in
-  list) cat "$FAKE_XCRUN_BOOTED" 2>/dev/null ;;
+case "$*" in
+  "simctl list devices booted -j") cat "$FAKE_XCRUN_BOOTED_JSON" 2>/dev/null ;;
+  "simctl list devices booted") cat "$FAKE_XCRUN_BOOTED" 2>/dev/null ;;
+  "simctl shutdown "*)
+    if [ -f "$FAKE_XCRUN_SHUTDOWN_ERR" ]; then cat "$FAKE_XCRUN_SHUTDOWN_ERR" >&2; fi
+    if [ -f "$FAKE_XCRUN_SHUTDOWN_RC" ]; then exit "$(cat "$FAKE_XCRUN_SHUTDOWN_RC")"; fi
+    ;;
 esac
 exit 0
 SCRIPT
@@ -802,6 +819,304 @@ SCRIPT
   [ "$output" = "1" ]
 }
 
+# --- EPERM: watch must say when it cannot read Docker's settings at all -------
+# The daemon-side half of the fix in tests/docker.bats. `watch` sources docker.sh
+# (bin/memcap does) but every module-sourcing test below must do the same, or the
+# `command -v mc_docker_ceiling_drift` guard in mc_watch skips the whole block
+# and the test passes having exercised nothing.
+#
+# MC_DOCKER_STORE is always pointed somewhere deliberate here. Left alone it
+# defaults to the REAL settings-store.json on the developer's machine, which is
+# readable from a terminal and holds whatever ceiling that machine happens to
+# have -- a test whose result depends on what the developer is running, which is
+# the class of test AGENTS.md rules out.
+mc_watch_modules() {
+  printf "%s" "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/budget.sh'
+    source '$MEMCAP_ROOT/libexec/detect.sh'
+    source '$MEMCAP_ROOT/libexec/measure.sh'
+    source '$MEMCAP_ROOT/libexec/classify.sh'
+    source '$MEMCAP_ROOT/libexec/roots.sh'
+    source '$MEMCAP_ROOT/libexec/status.sh'
+    source '$MEMCAP_ROOT/libexec/enforce.sh'
+    source '$MEMCAP_ROOT/libexec/docker.sh'
+    mc_kill_over_budget() { :; }
+    mc_record_roots() { :; }
+  "
+}
+
+@test "EPERM: watch logs that the ceiling check is blind, once, and throttles it" {
+  if [ "$(id -u)" -eq 0 ]; then skip "chmod 000 is not a barrier to root"; fi
+  store="$BATS_TEST_TMPDIR/locked.json"
+  printf '{"MemoryMiB": 6144}\n' > "$store"
+  chmod 000 "$store"
+
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() { printf '9001 1 2000000 /usr/local/bin/claude\n'; }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 MC_DOCKER_STORE="$store" bash -c "$pass" >/dev/null
+  log="$MEMCAP_STATE_HOME/memcap/actions.log"
+  run grep -c "VM-ceiling check is blind" "$log"
+  [ "$output" = "1" ]
+  run cat "$log"
+  assert_contains "$output" "macOS denies launchd agents access"
+  assert_contains "$output" "memcap status"
+
+  # Second pass, same window: one line per condition, not one per 60 seconds.
+  # 186 combined-cap lines in eight days is what an unthrottled per-pass line
+  # looks like in this log.
+  env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 MC_DOCKER_STORE="$store" bash -c "$pass" >/dev/null
+  run grep -c "VM-ceiling check is blind" "$log"
+  [ "$output" = "1" ]
+}
+
+@test "EPERM: with a cached reading watch logs the drift, not the blind line" {
+  if [ "$(id -u)" -eq 0 ]; then skip "chmod 000 is not a barrier to root"; fi
+  store="$BATS_TEST_TMPDIR/locked.json"
+  printf '{"MemoryMiB": 6144}\n' > "$store"
+  chmod 000 "$store"
+  mkdir -p "$MEMCAP_STATE_HOME/memcap"
+  printf '6144 %s\n' "$(( $(date +%s) - 7200 ))" > "$MEMCAP_STATE_HOME/memcap/docker-ceiling"
+
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() { printf '9001 1 2000000 /usr/local/bin/claude\n'; }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 MC_DOCKER_STORE="$store" bash -c "$pass" >/dev/null
+
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  # This is the line v0.5.1 promised and never once produced on the author's
+  # machine: the daemon now reports the drift from the value `status` cached for
+  # it, and says that is where the number came from.
+  assert_contains "$output" "Docker is enforcing a 6 GB VM ceiling, not the 4 GB in your config"
+  assert_contains "$output" "last read from a terminal, 2h ago"
+  # The negative control: a cached reading is not a blind check, so the blind
+  # line must NOT also fire. Two lines describing the same pass two different
+  # ways is how a log stops being read.
+  assert_not_contains "$output" "VM-ceiling check is blind"
+}
+
+@test "EPERM: a readable store clears the blind key so the next outage re-logs" {
+  store="$BATS_TEST_TMPDIR/settings.json"
+  printf '{"MemoryMiB": 4096}\n' > "$store"
+  mkdir -p "$MEMCAP_STATE_HOME/memcap/log-throttle"
+  # Both keys stamped as though an earlier pass had logged them. A window left
+  # ticking after its condition has gone is how a state change gets swallowed.
+  date +%s > "$MEMCAP_STATE_HOME/memcap/log-throttle/docker-ceiling-unreadable"
+  date +%s > "$MEMCAP_STATE_HOME/memcap/log-throttle/docker-ceiling-drift"
+
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() { printf '9001 1 2000000 /usr/local/bin/claude\n'; }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 MC_DOCKER_STORE="$store" bash -c "$pass" >/dev/null
+
+  [ ! -f "$MEMCAP_STATE_HOME/memcap/log-throttle/docker-ceiling-unreadable" ]
+  # 4096 MiB is exactly the 4 GB the config asks for, so there is no drift either.
+  [ ! -f "$MEMCAP_STATE_HOME/memcap/log-throttle/docker-ceiling-drift" ]
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_not_contains "$output" "VM-ceiling check is blind"
+  # And the pass that could read the file leaves the cache behind for the passes
+  # that cannot -- this is the whole mechanism, seeded here by `watch` itself
+  # because this test's shell CAN read the fixture store.
+  run cat "$MEMCAP_STATE_HOME/memcap/docker-ceiling"
+  assert_matches "$output" '^4096 [0-9]+$'
+}
+
+@test "EPERM: an unmanaged Docker is not told its ceiling check is blind" {
+  if [ "$(id -u)" -eq 0 ]; then skip "chmod 000 is not a barrier to root"; fi
+  # DOCKER_BUDGET_GB=0 is "memcap is not managing Docker". There is no ceiling
+  # check to be blind about, so an unreadable settings file is not news.
+  store="$BATS_TEST_TMPDIR/locked.json"
+  printf '{"MemoryMiB": 6144}\n' > "$store"
+  chmod 000 "$store"
+
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() { printf '9001 1 2000000 /usr/local/bin/claude\n'; }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 MC_DRY_RUN=1 MC_DOCKER_STORE="$store" bash -c "$pass" >/dev/null
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_not_contains "$output" "VM-ceiling check is blind"
+}
+
+# --- ATTRIBUTION: the combined-over-cap line must name the real excess --------
+# 186 of these lines since 08-27, every one of them blaming simulators. The
+# morning that made it undeniable: combined 17.20 GB against a 16 GB cap, agents
+# net of sims 9.45 GB, sims about 1.15 GB -- and Docker holding 6.6 GB against a
+# 4 GB budget, because the ceiling had never been applied. Tier 3 could have
+# reclaimed every simulator on the machine and it would STILL have been over the
+# cap. The line promised a reclaim that could not happen, and never named the one
+# action that would have fixed it.
+#
+# Three fixtures, one per attribution, with the store pointed at a path that does
+# not exist so no drift string is appended and the assertions stay exact.
+# Footprints are given in KB (1 GB = 1048576 KB) so the rendered GB figures are
+# exact rather than nearly right.
+@test "ATTRIBUTION: a Docker overage names Docker, not the simulators" {
+  # claude 9.50 + sims 0.50 = 10.00 GB of agent footprint, net 9.50 against a
+  # 12 GB agent budget (so tier 2 correctly declines), Docker 7.50 GB against a
+  # 4 GB budget. Combined 17.50 against a 16 GB cap: an overage of 1.50 GB, of
+  # which Docker is 3.50 GB over on its own and the simulators only 0.50 GB.
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() {
+      printf '9001 1 9961472 /usr/local/bin/claude\n'
+      printf '9002 1 524288 /path/ms-playwright/chromium/chrome\n'
+      printf '9003 1 7864320 /Applications/Docker.app/Contents/MacOS/com.docker.backend\n'
+    }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=16 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 \
+    MC_DOCKER_STORE="$BATS_TEST_TMPDIR/no-such-store.json" bash -c "$pass" >/dev/null
+
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_contains "$output" "combined 17.50 GB exceeds the 16 GB cap"
+  assert_contains "$output" "the excess is Docker's: 7.50 GB against its 4 GB budget"
+  assert_contains "$output" "No tier reclaims Docker memory"
+  assert_contains "$output" "memcap docker apply"
+  # The negative control, and the whole point of the finding: the promise that
+  # tier 3 will fix this must not appear, because tier 3 cannot. Reclaiming
+  # every simulator here would leave the machine 1.00 GB over its cap.
+  assert_not_contains "$output" "the excess is simulator/browser memory"
+  assert_not_contains "$output" "tier 3 will reclaim it"
+}
+
+@test "ATTRIBUTION: a simulator overage still reads exactly as it did" {
+  # Docker present but INSIDE its budget (2 GB against 4), so the sim wording is
+  # reached by the real arithmetic rather than by Docker being absent. claude
+  # 11.50 + sims 3.00 = 14.50, net 11.50 under the 12 GB agent budget, Docker
+  # 2.00: combined 16.50 against a 16 GB cap, an overage of 0.50 GB that the
+  # simulators cover on their own.
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() {
+      printf '9001 1 12058624 /usr/local/bin/claude\n'
+      printf '9002 1 3145728 /path/ms-playwright/chromium/chrome\n'
+      printf '9003 1 2097152 /Applications/Docker.app/Contents/MacOS/com.docker.backend\n'
+    }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=16 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 \
+    MC_DOCKER_STORE="$BATS_TEST_TMPDIR/no-such-store.json" bash -c "$pass" >/dev/null
+
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_contains "$output" "combined 16.50 GB exceeds the 16 GB cap"
+  assert_contains "$output" "the excess is simulator/browser memory tier 2 cannot reclaim"
+  assert_contains "$output" "tier 3 will reclaim it once it has been idle past its grace"
+  assert_not_contains "$output" "the excess is Docker's"
+  assert_not_contains "$output" "memcap docker apply"
+}
+
+@test "ATTRIBUTION: when both contribute, both are named and only one is promised" {
+  # claude 11.50 + sims 1.00 = 12.50, net 11.50 under the 12 GB budget, Docker
+  # 5.00 against 4: combined 17.50 against a 16 GB cap. The overage is 1.50 GB
+  # and NEITHER component covers it alone -- Docker is 1.00 GB over, the sims are
+  # 1.00 GB. Saying either one is "the excess" would be false.
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() {
+      printf '9001 1 12058624 /usr/local/bin/claude\n'
+      printf '9002 1 1048576 /path/ms-playwright/chromium/chrome\n'
+      printf '9003 1 5242880 /Applications/Docker.app/Contents/MacOS/com.docker.backend\n'
+    }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=16 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 \
+    MC_DOCKER_STORE="$BATS_TEST_TMPDIR/no-such-store.json" bash -c "$pass" >/dev/null
+
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_contains "$output" "combined 17.50 GB exceeds the 16 GB cap"
+  assert_contains "$output" "Docker is 1.00 GB over its 4 GB budget and 1.00 GB is simulator/browser memory"
+  assert_contains "$output" "tier 3 can reclaim at most the latter"
+  assert_contains "$output" "the Docker part needs: memcap docker apply"
+  assert_not_contains "$output" "the excess is Docker's"
+  assert_not_contains "$output" "the excess is simulator/browser memory"
+}
+
+@test "ATTRIBUTION: independent rounding cannot blame a Docker that is exactly at budget" {
+  # agent_gb, sim_gb and agent_net_gb are each rounded to two decimals on their
+  # own, and the overage is computed from the rounded combined figure, so the
+  # identity "sims cover the overage when Docker is within budget" holds only in
+  # exact arithmetic. Here: claude 12.002 GB + sims 0.994 GB = 12.996 GB gross,
+  # which renders as 13.00; sims render as 0.99; net renders as 12.00 (inside the
+  # 12 GB budget, so this branch is reached); Docker exactly 4.00 GB against 4.
+  # Combined 17.00, overage 1.00, and 0.99 < 1.00 -- so a test on "do the sims
+  # cover it" fails by a rounding penny and the pass fell through to the variant
+  # that reads "Docker is 0.00 GB over its 4 GB budget ... the Docker part needs:
+  # memcap docker apply". A false Docker blame from the change meant to end
+  # misattribution. Docker being within budget is decisive on its own.
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() {
+      printf '9001 1 12585006 /usr/local/bin/claude\n'
+      printf '9002 1 1042285 /path/ms-playwright/chromium/chrome\n'
+      printf '9003 1 4194304 /Applications/Docker.app/Contents/MacOS/com.docker.backend\n'
+    }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=16 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 \
+    MC_DOCKER_STORE="$BATS_TEST_TMPDIR/no-such-store.json" bash -c "$pass" >/dev/null
+
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_contains "$output" "combined 17.00 GB exceeds the 16 GB cap"
+  assert_contains "$output" "the excess is simulator/browser memory tier 2 cannot reclaim"
+  assert_not_contains "$output" "Docker is 0.00 GB over"
+  assert_not_contains "$output" "memcap docker apply"
+}
+
+@test "ATTRIBUTION: the Docker variant carries the drift that explains it" {
+  # "Docker is over its budget" and "the ceiling in your config was never
+  # applied" are the same sentence read from two ends. The same fixture as the
+  # Docker test above, with Docker's own settings readable and holding 6 GB
+  # against the 4 GB the config asks for.
+  store="$BATS_TEST_TMPDIR/settings.json"
+  printf '{"MemoryMiB": 6144}\n' > "$store"
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() {
+      printf '9001 1 9961472 /usr/local/bin/claude\n'
+      printf '9002 1 524288 /path/ms-playwright/chromium/chrome\n'
+      printf '9003 1 7864320 /Applications/Docker.app/Contents/MacOS/com.docker.backend\n'
+    }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=16 DOCKER_BUDGET_GB=4 MC_DRY_RUN=1 MC_DOCKER_STORE="$store" bash -c "$pass" >/dev/null
+
+  run grep "exceeds the 16 GB cap" "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_contains "$output" "the excess is Docker's"
+  assert_contains "$output" "Docker is enforcing a 6 GB VM ceiling, not the 4 GB in your config"
+}
+
+@test "ATTRIBUTION: the notification matches the variant the log chose" {
+  # MC_DRY_RUN=0 to prove the REAL path notifies, as the SILENT-GAP tests do.
+  # Nothing here can touch anything real: the snapshot is a fixture, tier 2 is
+  # stubbed out, and osascript is a capture file. The notification is the only
+  # part of this a user sees on the day it happens, so it must not still be
+  # blaming simulators after the log line stopped.
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  capture="$BATS_TEST_TMPDIR/osascript-arg"
+  cat > "$fakebin/osascript" <<SCRIPT
+#!/usr/bin/env bash
+printf '%s' "\$2" >> "$capture"
+SCRIPT
+  chmod +x "$fakebin/osascript"
+
+  pass="$(mc_watch_modules)
+    mc_ps_snapshot() {
+      printf '9001 1 9961472 /usr/local/bin/claude\n'
+      printf '9002 1 524288 /path/ms-playwright/chromium/chrome\n'
+      printf '9003 1 7864320 /Applications/Docker.app/Contents/MacOS/com.docker.backend\n'
+    }
+    mc_watch
+  "
+  env TOTAL_BUDGET_GB=16 DOCKER_BUDGET_GB=4 MC_DRY_RUN=0 PATH="$fakebin:$PATH" \
+    MC_DOCKER_STORE="$BATS_TEST_TMPDIR/no-such-store.json" bash -c "$pass" >/dev/null
+
+  run cat "$capture"
+  assert_contains "$output" "Docker is holding 7.50 GB against its 4 GB budget"
+  assert_contains "$output" "memcap docker apply"
+  assert_not_contains "$output" "simulator/browser memory"
+}
+
 @test "watch refuses to act when DOCKER_BUDGET_GB leaves no room for agents" {
   mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
   cat > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" <<-'EOF'
@@ -1512,13 +1827,87 @@ SCRIPT
   printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
 
   run mc_reap_sims
-  # shellcheck disable=SC2034  # consumed by mc_active_mobile_tooling, sourced from enforce.sh
+  # shellcheck disable=SC2034,SC2030  # consumed by mc_active_mobile_tooling,
+  # sourced from enforce.sh; each bats @test body is its own subshell, so this
+  # cannot leak into the default-window test below (which asserts it is unset).
   MOBILE_TOOLING_IDLE_SEC=0
   run mc_reap_sims
 
   kill "$tooling" "$sim" 2>/dev/null
 
   assert_not_contains "$output" "would kill"
+}
+
+# --- v0.6.0: the tooling veto had no hysteresis, because its window was
+# shorter than one enforcement pass. Nine days of production logs carried 544
+# "tier3: declining -- active mobile tooling detected" lines, alternating
+# minute-to-minute with the hands-on veto: a pass takes ~64 seconds (launchd
+# coalesces the 60s StartInterval), so at MOBILE_TOOLING_IDLE_SEC=60 an idle
+# maestro MCP server that handled a single request vetoed for exactly one pass
+# and stopped vetoing on the very next one -- and since each transition clears
+# the throttle key, every flap logged.
+#
+# Both assertions below deliberately leave MOBILE_TOOLING_IDLE_SEC UNSET, which
+# is the whole point: every other test in this file sets it, so nothing else
+# here would notice the default changing (or reverting). 200s must still veto --
+# it would not have at the old default of 60 -- and 400s must not, which keeps
+# this a test of the window rather than of a veto that never releases.
+@test "MOBILE_TOOLING_IDLE_SEC's default outlasts one enforcement pass" {
+  unset MC_ACTIVE_MOBILE_TOOLING
+  # Not merely absent: asserted absent, so a future setup() that sets it turns
+  # this test red rather than quietly making it test something else.
+  unset MOBILE_TOOLING_IDLE_SEC
+  # shellcheck disable=SC2031  # a @test body is its own subshell; the earlier
+  # test's assignment cannot reach this one, which is the property being pinned
+  [ -z "${MOBILE_TOOLING_IDLE_SEC:-}" ]
+  # Narrowed to this test's own fixture -- see the two tests above for why the
+  # real pattern cannot be used here (this machine runs maestro MCP servers).
+  # shellcheck disable=SC2034  # consumed by mc_mobile_tooling_pids
+  MC_MOBILE_TOOLING_ARGV_PATTERN='fake-hysteresis\.jar'
+  # shellcheck disable=SC2034  # consumed by mc_mobile_tooling_pids
+  MC_MOBILE_TOOLING_EXACT=''
+  # The shape of the real process: matches the maestro pattern, never exits,
+  # burns no meaningful CPU between requests.
+  perl -e 'sleep 600' ".maestro/lib/fake-hysteresis.jar" & tooling=$!
+  perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!
+  wait_spawned "$tooling" "$sim"
+  AGENTPIDS=""
+  SIMPIDS="$sim"
+  MC_DRY_RUN=1
+  # The sim is well past its own grace, so whatever blocks the reap here is the
+  # TOOLING veto and not the sim's clock.
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
+  mkdir -p "$(mc_mobile_tooling_idle_dir)"
+  now=$(date +%s)
+
+  # Last burst 200s ago -- more than three enforcement passes back, and still
+  # inside the 300s default. A CPU baseline above anything the fixture could
+  # have burned means the clock is never seen to advance, so the only thing
+  # deciding this is the window.
+  printf '%s 999999\n' "$((now - 200))" > "$(mc_mobile_tooling_idle_stamp "$tooling")"
+  run mc_reap_sims
+  inside="$output"
+
+  # Same process, same flat CPU, 400s since its last burst: past the default,
+  # so it releases.
+  printf '%s 999999\n' "$((now - 400))" > "$(mc_mobile_tooling_idle_stamp "$tooling")"
+  run mc_reap_sims
+  outside="$output"
+
+  # Every assertion happens AFTER this, deliberately. A `sleep 600` fixture that
+  # outlives its test holds bats's captured output open, so a test that returns
+  # early on a failed assertion hangs the run for ten minutes instead of
+  # reporting the failure -- observed while writing this test's negative
+  # control, and not fixed by redirecting the fixture's own stdout/stderr. A
+  # guard that hangs rather than going red is the "check that cannot fail" trap
+  # in a different costume, so nothing here can fail before the kill.
+  kill "$tooling" "$sim" 2>/dev/null
+
+  assert_not_contains "$inside" "would kill"
+  grep -q "declining -- active mobile tooling detected" "$(mc_state_dir)/actions.log"
+  assert_contains "$outside" "would kill"
+  assert_contains "$outside" "$sim"
 }
 
 @test "hands-on mobile work blocks the reap and preserves its stamp" {
@@ -1761,35 +2150,202 @@ SCRIPT
   [ -z "$output" ]
 }
 
-# --- xcrun simctl shutdown all was reachable with zero bookkeeping ------------
-# all_ready was initialised to 1 at its `local` declaration while every grace and
-# CPU check lived inside `if [ -n "${SIMPIDS// /}" ]`. An EMPTY SIMPIDS therefore
+# --- Per-device simulator shutdown -------------------------------------------
+# Two bugs live in this section's history, and the second is the reason it was
+# rewritten.
+#
+# The first: all_ready was initialised to 1 at its `local` declaration while every
+# grace and CPU check lived inside `if [ -n "${SIMPIDS// /}" ]`. An EMPTY SIMPIDS
 # skipped the whole block with all_ready still 1, and every booted device on the
-# machine was shut down. The live trigger is ordinary: `simctl boot` flips a
-# device to Booted before launchd_sim appears in the `ps` snapshot.
+# machine was shut down.
+#
+# The second, found in production between 2026-08-27 and 08-29: `simctl shutdown
+# all` ran 38 times in one-minute bursts against the device a live Maestro run was
+# driving. `ios_ready` was a single machine-wide flag set by ANY ready pid
+# matching launchd_sim|SimulatorTrampoline -- and SimulatorTrampoline is a
+# CoreSimulator helper with no device affinity that stays alive, and CPU-flat, for
+# days across device boots and shutdowns. So "a device is idle" was permanently
+# true, and any device that appeared Booted was taken on the next pass. Maestro
+# re-booted it; memcap shut it down again; the user ran `memcap off`.
+#
+# The fix is per-device: the ONLY evidence about a device is the launchd_sim whose
+# argv names that device's own UDID.
+
+# Writes both representations of `simctl list devices booted` -- the `-j` JSON the
+# main path parses and the plain text the no-jq fallback parses -- from
+# "<UDID>=<name>" pairs, so a test's booted set is the same fact whichever parse
+# the machine running bats happens to take.
+set_booted() {
+  local pair udid name json=""
+  : > "$FAKE_XCRUN_BOOTED"
+  for pair in "$@"; do
+    udid="${pair%%=*}"
+    name="${pair#*=}"
+    printf '    %s (%s) (Booted)\n' "$name" "$udid" >> "$FAKE_XCRUN_BOOTED"
+    [ -n "$json" ] && json="$json,"
+    json="$json{\"udid\":\"$udid\",\"name\":\"$name\",\"state\":\"Booted\"}"
+  done
+  printf '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-26-0":[%s]}}\n' "$json" \
+    > "$FAKE_XCRUN_BOOTED_JSON"
+}
+
+# A launchd_sim fixture for exactly one device. The real argv, measured:
+#
+#   launchd_sim /Users/u/Library/Developer/CoreSimulator/Devices/<UDID>/data/var/run/launchd_bootstrap.plist
+#
+# and that UDID is the only thing tying an idle pid to a device. A fixture without
+# it is a fixture that cannot express the bug -- which is exactly why the previous
+# version of these tests, whose launchd_sim carried no device path at all, passed
+# against code that shut down every device on the machine.
+spawn_launchd_sim() {
+  perl -e 'sleep 600' "launchd_sim" \
+    "/Users/tester/Library/Developer/CoreSimulator/Devices/$1/data/var/run/launchd_bootstrap.plist" &
+  launchd_sim_pid=$!
+  wait_spawned "$launchd_sim_pid"
+}
+
+MC_UDID_X="F096B0A2-20F5-4637-BC0E-19098780FA83"
+MC_UDID_Y="0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9"
+
 @test "XCRUN: an empty SIMPIDS does not shut down a single booted device" {
-  printf 'iPhone 17 (ABC) (Booted)\n' > "$FAKE_XCRUN_BOOTED"
+  set_booted "$MC_UDID_X=iPhone 17"
   AGENTPIDS=""
   # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
   SIMPIDS=""
   # Deliberately NOT a dry run: the pre-fix behavior was safe in tests only by the
   # accident of MC_DRY_RUN=1, which is precisely the accident this asserts against.
-  # Nothing real is reachable -- MC_XCRUN_BIN is setup_common's logging fake, and
-  # there are no kill targets.
+  # Nothing real is reachable -- MC_XCRUN_BIN is setup's logging fake, and there
+  # are no kill targets.
   MC_DRY_RUN=0
 
   run mc_reap_sims
 
+  # Not merely "no shutdown": with nothing sim-classified at all there is nothing
+  # memcap could act on and nothing it could explain, so it does not even ask the
+  # device list. A booted device always has a launchd_sim, so an empty SIMPIDS
+  # means either nothing is booted or the snapshot predates the boot.
   [ ! -s "$FAKE_XCRUN_LOG" ]
 }
 
-@test "XCRUN: a booted device is shut down once a simulator pid has cleared its own grace" {
-  printf 'iPhone 17 (ABC) (Booted)\n' > "$FAKE_XCRUN_BOOTED"
-  # launchd_sim is the per-device process, so it is the evidence that a device is
-  # actually booted. It is deliberately NOT in MC_SIM_KILL_PATTERN -- a booted
-  # device is reclaimed with `simctl shutdown`, not by signalling its launchd.
-  perl -e 'sleep 600' "launchd_sim" & sim=$!
+@test "XCRUN: SimulatorTrampoline is never evidence that a booted device is idle" {
+  # THE NEGATIVE CONTROL for the production bug. SimulatorTrampoline was in
+  # MC_SIM_IOS_EXE, so this exact arrangement -- one long-idle trampoline, one
+  # booted device it has nothing to do with -- was what ran `simctl shutdown all`
+  # 38 times against a live Maestro run.
+  set_booted "$MC_UDID_X=iPhone 17"
+  perl -e 'sleep 600' "SimulatorTrampoline" & sim=$!
   wait_spawned "$sim"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$sim"
+  MC_DRY_RUN=0
+  mkdir -p "$(mc_sims_idle_dir)"
+  # Idle since 1970 and CPU-flat: past every grace this tier has.
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
+
+  run mc_reap_sims
+
+  kill "$sim" 2>/dev/null
+
+  # No shutdown of any kind -- not `all`, not this device, not any device. The
+  # whole call log is the haystack so a failure prints the call that was made.
+  assert_not_contains "$(cat "$FAKE_XCRUN_LOG")" "shutdown"
+  # And the device is reported as untouchable rather than silently skipped: a
+  # booted device with no launchd_sim in the snapshot is the fail-closed case.
+  assert_contains "$(cat "$(mc_state_dir)/actions.log")" "device $MC_UDID_X (iPhone 17) is booted but no launchd_sim"
+}
+
+@test "XCRUN: only the device whose own launchd_sim is idle is shut down" {
+  # Two booted devices. X's launchd_sim has cleared its grace; Y's was stamped
+  # this second, which is what a device Maestro just booted looks like. Under the
+  # old machine-wide flag either pid licensed `shutdown all` and took both.
+  set_booted "$MC_UDID_X=iPhone 17" "$MC_UDID_Y=iPad Pro 13-inch"
+  spawn_launchd_sim "$MC_UDID_X"; sim_x="$launchd_sim_pid"
+  spawn_launchd_sim "$MC_UDID_Y"; sim_y="$launchd_sim_pid"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$sim_x $sim_y"
+  MC_DRY_RUN=0
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim_x")"
+  printf '%s 999999\n' "$(date +%s)" > "$(mc_sims_idle_stamp "$sim_y")"
+
+  run mc_reap_sims
+
+  kill "$sim_x" "$sim_y" 2>/dev/null
+
+  calls="$(cat "$FAKE_XCRUN_LOG")"
+  assert_contains "$calls" "simctl shutdown $MC_UDID_X"
+  assert_not_contains "$calls" "simctl shutdown $MC_UDID_Y"
+  assert_not_contains "$calls" "shutdown all"
+  # The audit line names the device, the pid that spoke for it, and how long that
+  # pid had been flat -- "shutdown all" could say none of those.
+  assert_matches "$(cat "$(mc_state_dir)/actions.log")" \
+    "tier3: xcrun simctl shutdown $MC_UDID_X \\(iPhone 17\\) -- launchd_sim pid $sim_x CPU-flat for [0-9]+s"
+}
+
+@test "XCRUN: a booted device whose launchd_sim is still inside its grace is held, not shut down" {
+  # The other half of failing closed: the device IS mapped, so it is not the
+  # unmapped case, but its pid has not earned anything yet. The existing
+  # tier3-holding line is what reports it, and the launchd_sim has to be counted
+  # among the blockers for that line to exist at all.
+  set_booted "$MC_UDID_X=iPhone 17"
+  spawn_launchd_sim "$MC_UDID_X"; sim="$launchd_sim_pid"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$sim"
+  MC_DRY_RUN=0
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '%s 999999\n' "$(date +%s)" > "$(mc_sims_idle_stamp "$sim")"
+
+  run mc_reap_sims
+
+  kill "$sim" 2>/dev/null
+
+  assert_not_contains "$(cat "$FAKE_XCRUN_LOG")" "shutdown"
+  log="$(cat "$(mc_state_dir)/actions.log")"
+  assert_contains "$log" "still inside their idle grace"
+  assert_contains "$log" "blocker is pid $sim"
+  # Mapped, so the unmapped line would be a lie.
+  assert_not_contains "$log" "no launchd_sim"
+}
+
+@test "XCRUN: a booted device with no launchd_sim in the snapshot is reported once, not shut down" {
+  # A sim-classified process exists (so memcap does look at the device list) but
+  # nothing in the snapshot belongs to this device. Fail closed and say so.
+  set_booted "$MC_UDID_X=iPhone 17"
+  perl -e 'sleep 600' "ms-playwright-fixture" & other=$!
+  wait_spawned "$other"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$other"
+  MC_DRY_RUN=0
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '%s 999999\n' "$(date +%s)" > "$(mc_sims_idle_stamp "$other")"
+
+  run mc_reap_sims
+  run mc_reap_sims
+
+  kill "$other" 2>/dev/null
+
+  assert_not_contains "$(cat "$FAKE_XCRUN_LOG")" "shutdown"
+  # Throttled per UDID: two passes, one line. Unthrottled, a permanently booted
+  # device nobody is measuring would write this every 60 seconds forever, which is
+  # how 94% of a day's actions.log became two repeated lines once before.
+  run grep -c "no launchd_sim for it" "$(mc_state_dir)/actions.log"
+  [ "$output" = "1" ]
+}
+
+@test "XCRUN: a shutdown that fails is logged as a failure, with its rc and reason" {
+  # `simctl shutdown` on a device that is already down exits 149 with
+  # "Unable to shutdown device in current state: Shutdown". The old line was
+  # written BEFORE the command ran and said only "shutdown all", so actions.log
+  # could not distinguish a device memcap took down from one it never touched --
+  # the difference between "memcap did this to me" and "something else did".
+  set_booted "$MC_UDID_X=iPhone 17"
+  spawn_launchd_sim "$MC_UDID_X"; sim="$launchd_sim_pid"
+  printf '149\n' > "$FAKE_XCRUN_SHUTDOWN_RC"
+  printf 'Unable to shutdown device in current state: Shutdown\n' > "$FAKE_XCRUN_SHUTDOWN_ERR"
   AGENTPIDS=""
   # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
   SIMPIDS="$sim"
@@ -1801,15 +2357,36 @@ SCRIPT
 
   kill "$sim" 2>/dev/null
 
-  grep -q "simctl shutdown all" "$FAKE_XCRUN_LOG"
+  log="$(cat "$(mc_state_dir)/actions.log")"
+  assert_contains "$log" "tier3: simctl shutdown $MC_UDID_X (iPhone 17) failed (rc 149): Unable to shutdown device in current state: Shutdown"
+  assert_not_contains "$log" "CPU-flat for"
+}
+
+@test "XCRUN: a dry run names the device it would shut down, and shuts nothing down" {
+  set_booted "$MC_UDID_X=iPhone 17"
+  spawn_launchd_sim "$MC_UDID_X"; sim="$launchd_sim_pid"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034  # consumed by mc_reap_sims, sourced from enforce.sh
+  SIMPIDS="$sim"
+  MC_DRY_RUN=1
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
+
+  run mc_reap_sims
+
+  kill "$sim" 2>/dev/null
+
+  assert_contains "$output" "would shut down device $MC_UDID_X (iPhone 17)"
+  assert_not_contains "$(cat "$FAKE_XCRUN_LOG")" "shutdown"
 }
 
 @test "XCRUN: simdiskimaged alone is not evidence that any device is booted" {
   # simdiskimaged is a root-owned daemon that runs whether or not a device is
   # booted, which is why it is excluded from MC_SIM_IOS_EXE. Treating it as
   # evidence is what made a shutdown look justified on a machine with nothing
-  # booted at all.
-  printf 'iPhone 17 (ABC) (Booted)\n' > "$FAKE_XCRUN_BOOTED"
+  # booted at all. It is sim-classified, so the device list is still consulted --
+  # what must not happen is a shutdown.
+  set_booted "$MC_UDID_X=iPhone 17"
   perl -e 'sleep 600' "/Library/Developer/CoreSimulator/simdiskimaged" & daemon=$!
   wait_spawned "$daemon"
   AGENTPIDS=""
@@ -1823,8 +2400,35 @@ SCRIPT
 
   kill "$daemon" 2>/dev/null
 
-  [ ! -s "$FAKE_XCRUN_LOG" ]
+  assert_not_contains "$(cat "$FAKE_XCRUN_LOG")" "shutdown"
 }
+
+@test "XCRUN: the booted-device list parses without jq too" {
+  # jq is a formula dependency, so the plain-text parse is a fallback -- but a
+  # tier that cannot see a booted device on a machine missing jq is a tier that
+  # silently stops working, and a fallback that misreads a UDID would shut down
+  # the wrong device. Same PATH-stripping method as docker.bats's no-jq test.
+  set_booted "$MC_UDID_X=iPhone 17" "$MC_UDID_Y=iPad Pro 13-inch"
+  fakebin="$BATS_TEST_TMPDIR/nojq"
+  mkdir -p "$fakebin"
+  for c in sed cat head grep ps date; do ln -sf "$(command -v $c)" "$fakebin/$c"; done
+  run env PATH="$fakebin" MC_XCRUN_BIN="$MC_XCRUN_BIN" /bin/bash -c \
+    "source '$MEMCAP_ROOT/libexec/common.sh'; source '$MEMCAP_ROOT/libexec/enforce.sh'; mc_booted_devices"
+
+  assert_contains "$output" "$MC_UDID_X iPhone 17"
+  assert_contains "$output" "$MC_UDID_Y iPad Pro 13-inch"
+  # Both parses have to agree, or the suite's meaning depends on the host.
+  run mc_booted_devices
+  assert_contains "$output" "$MC_UDID_X iPhone 17"
+  assert_contains "$output" "$MC_UDID_Y iPad Pro 13-inch"
+}
+
+@test "XCRUN: nothing booted means no devices, on either parse" {
+  set_booted
+  run mc_booted_devices
+  [ -z "$output" ]
+}
+
 
 # --- Corrupt idle stamps ------------------------------------------------------
 # Both of these were reproduced, and both are worse than they look.
@@ -2759,7 +3363,7 @@ SCRIPT
   # No mark exists yet, so `now - mark` is the whole epoch. Deriving an elapsed
   # time or an interval from that prints nonsense.
   run "$MEMCAP_ROOT/bin/memcap" watch
-  grep -q "watch: alive (liveness clock started)" "$MEMCAP_STATE_HOME/memcap/actions.log"
+  grep -q "watch: alive (memcap $MEMCAP_VERSION, liveness clock started)" "$MEMCAP_STATE_HOME/memcap/actions.log"
   run grep -c "passes in" "$MEMCAP_STATE_HOME/memcap/actions.log"
   [ "$output" = "0" ]
 }
@@ -2773,7 +3377,9 @@ SCRIPT
   echo "$(( $(date +%s) - 3600 ))" > "$d/liveness-mark"
   echo 47 > "$d/pass-count"
   run "$MEMCAP_ROOT/bin/memcap" watch
-  grep -qE "watch: alive \(48 passes in 3[0-9]{3}s -- one every 7[0-9]s\)" "$d/actions.log"
+  grep -qE "watch: alive \(memcap [0-9]+\.[0-9]+\.[0-9]+, 48 passes in 3[0-9]{3}s -- one every 7[0-9]s\)" "$d/actions.log"
+  # ... and specifically THIS build's version, so a log excerpt identifies it.
+  grep -q "watch: alive (memcap $MEMCAP_VERSION, 48 passes" "$d/actions.log"
 }
 
 @test "LIVENESS: the line is hourly, not per pass -- three passes in a row log once" {
@@ -2800,7 +3406,7 @@ SCRIPT
   # counter resets when a mark is written, so the three passes counted here are
   # the two silent ones above plus this one -- the first pass wrote the mark.
   run env LIVENESS_SEC=0 "$MEMCAP_ROOT/bin/memcap" watch
-  grep -q "watch: alive (3 passes in " "$MEMCAP_STATE_HOME/memcap/actions.log"
+  grep -q "watch: alive (memcap $MEMCAP_VERSION, 3 passes in " "$MEMCAP_STATE_HOME/memcap/actions.log"
 }
 
 # --- C1's fractional sibling: SOFT_TRIGGER -----------------------------------

@@ -903,6 +903,17 @@ mc_mobile_tooling_pids() {
 # pass -- the same conservative bootstrapping mc_reap_sims uses for a freshly
 # tracked sim.
 #
+# MOBILE_TOOLING_IDLE_SEC has to outlast one enforcement pass or it is not
+# hysteresis at all, which is why the default is 300 and not the 60 it shipped
+# as. A real pass takes ~64s (launchd coalesces the 60s StartInterval), so at 60
+# a maestro MCP server that handled a single request flipped the veto on and the
+# very next pass flipped it back off. Nine days of production logs held 544
+# "declining -- active mobile tooling detected" lines alternating minute-to-
+# minute with the hands-on veto, each transition clearing the throttle key and
+# so logging again. The window is a claim about the TOOL, too, not just about
+# the log: a Maestro run goes quiet for a minute between flows, and treating
+# that gap as idle is how tier 3 gets to shut a simulator out from under it.
+#
 # The MC_ACTIVE_MOBILE_TOOLING escape hatch (same pattern as MC_DOCKER_RUNTIME)
 # forces the answer: this check depends entirely on what is running on the host,
 # with no way to make it deterministic in an environment that happens to have one
@@ -937,7 +948,7 @@ mc_active_mobile_tooling() {
 
   mkdir -p "$dir"
   now=$(date +%s)
-  window=$(mc_enf_num "${MOBILE_TOOLING_IDLE_SEC:-60}" 60 MOBILE_TOOLING_IDLE_SEC)
+  window=$(mc_enf_num "${MOBILE_TOOLING_IDLE_SEC:-300}" 300 MOBILE_TOOLING_IDLE_SEC)
   active_cpu_sec=$(mc_enf_num "${SIM_ACTIVE_CPU_SEC:-2}" 2 SIM_ACTIVE_CPU_SEC)
   for pid in $pids; do
     stamp="$(mc_mobile_tooling_idle_stamp "$pid")"
@@ -993,17 +1004,101 @@ mc_no_live_session() {
 }
 
 MC_SIM_KILL_PATTERN='qemu-system|/emulator( |$)|emulator64|ms-playwright|headless_shell|\.maestro/lib'
-# The CoreSimulator processes that mean "an iOS device is actually booted".
-# simdiskimaged is deliberately NOT here: it is a root-owned daemon that runs
-# whether or not any device is booted, so treating it as evidence of a booted
-# device is what made `xcrun simctl shutdown all` look justified on a machine
-# with nothing booted at all.
-MC_SIM_IOS_EXE='launchd_sim|SimulatorTrampoline'
+# The ONE process that means "this specific iOS device is booted": launchd_sim,
+# which CoreSimulator starts per device and whose argv names the device's own
+# data directory --
+#
+#   launchd_sim /Users/u/Library/Developer/CoreSimulator/Devices/<UDID>/data/var/run/launchd_bootstrap.plist
+#
+# so the pid, its idle clock, and the UDID `simctl shutdown` takes are all the
+# same fact. A freshly booted device gets a NEW launchd_sim pid, so its idle
+# clock starts at zero rather than inheriting anything.
+#
+# Two processes are deliberately NOT here, for the same reason in two forms --
+# a process that outlives every device cannot be evidence that one is booted:
+#
+#   simdiskimaged     a root-owned daemon that runs whether or not anything is
+#                     booted. Including it made `simctl shutdown all` look
+#                     justified on a machine with nothing booted at all.
+#   SimulatorTrampoline
+#                     a CoreSimulator helper with no device affinity: measured
+#                     on the author's machine at 40 h alive, 11 CPU-seconds
+#                     total, same pid across a device boot AND shutdown. As
+#                     tier-3 evidence it is permanently true and permanently
+#                     idle, so between 08-27 and 08-29 tier 3 ran `simctl
+#                     shutdown all` 38 times in one-minute bursts against the
+#                     simulator a live Maestro run was driving -- Maestro
+#                     re-booted it, memcap shut it down again next pass, and the
+#                     user stopped the daemon with `memcap off`. It stays in
+#                     classify.sh's MC_SIM_EXE, because its memory is real and
+#                     belongs in the budget; it is never evidence about a device.
+MC_SIM_IOS_EXE='launchd_sim'
 
 # `xcrun` through a variable, the same way service.sh reaches launchctl and brew:
 # a PATH-based stub is a test convention, this is a guarantee. No test can reach
-# the real `xcrun simctl shutdown all` by forgetting a flag.
+# a real `xcrun simctl shutdown` by forgetting a flag.
 MC_XCRUN_BIN="${MC_XCRUN_BIN:-xcrun}"
+
+# The booted devices, one "<UDID> <name>" line each; no output means nothing is
+# booted (or that xcrun is not installed, which is the same thing here). Purely
+# read-only -- the dry-run path calls it too, because without it a dry run
+# announces a shutdown of devices that do not exist.
+#
+# jq is a formula dependency and `-j` is the parse we trust. The plain-text
+# fallback follows docker.sh's sed fallback exactly: it is for a machine missing
+# the formula's own dependency, and it either finds a UDID-shaped token on a
+# `(Booted)` line or gives up. Giving up is safe -- an unrecognised device is a
+# device memcap will not shut down.
+mc_booted_devices() {
+  local json
+  command -v "$MC_XCRUN_BIN" >/dev/null 2>&1 || return 0
+  if command -v jq >/dev/null 2>&1; then
+    json=$("$MC_XCRUN_BIN" simctl list devices booted -j 2>/dev/null)
+    if [ -n "$json" ]; then
+      printf '%s' "$json" | jq -r '
+        .devices // {} | to_entries[] | .value[]?
+        | select(.state == "Booted") | "\(.udid) \(.name)"' 2>/dev/null
+      return 0
+    fi
+  fi
+  # `    iPhone 17 (F096B0A2-20F5-4637-BC0E-19098780FA83) (Booted)`
+  "$MC_XCRUN_BIN" simctl list devices booted 2>/dev/null |
+    sed -n 's/^[[:space:]]*\(.*\) (\([0-9A-Fa-f][0-9A-Fa-f-]*\)) (Booted).*$/\2 \1/p'
+  return 0
+}
+
+# The pid in $2 (a newline-separated "<pid> <command line>" list) whose command
+# line names device $1. `/Devices/<UDID>/` with both slashes so a UDID that is a
+# prefix of another cannot match the wrong device.
+mc_sim_device_pid() {
+  local udid="$1" line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      *"/Devices/$udid/"*) printf '%s' "${line%% *}"; return 0 ;;
+    esac
+  done <<EOF
+$2
+EOF
+  return 1
+}
+
+# Is device $1 represented AT ALL among the tracked pids in $2 -- ready or not?
+# Only asked about a booted device that no ready launchd_sim claimed, to separate
+# "tracked, still inside its grace" (already reported by the tier3-holding line)
+# from "not in the snapshot at all" (reported once per UDID, throttled). One `ps`
+# per tracked pid, which it can afford: nothing calls it on a pass where every
+# booted device mapped cleanly.
+mc_sim_device_tracked() {
+  local udid="$1" pid cmd
+  for pid in $2; do
+    cmd=$(ps -o command= -p "$pid" 2>/dev/null)
+    case "$cmd" in
+      *"/Devices/$udid/"*) return 0 ;;
+    esac
+  done
+  return 1
+}
 
 # SIM_IDLE_GRACE_SEC gives a hand-booted simulator a reprieve. Without it, someone
 # running Simulator.app or `simctl` directly -- no Xcode open, no agent session --
@@ -1050,7 +1145,11 @@ mc_sim_is_target() {
 
 mc_reap_sims() {
   local pid dir stamp now grace tree_grace pid_grace active_cpu_sec cmd
-  local ready="" targets="" ios_ready=0 held=0 held_pid="" held_age=-1 age
+  local ready="" targets="" held=0 held_pid="" held_age=-1 age
+  # Per-device bookkeeping. ios_ready_map is "<pid> <command line>" lines for
+  # every ready, non-evidence launchd_sim; shutdowns is "<UDID> <pid> <name>"
+  # lines for the devices this pass has actually proven idle.
+  local ios_ready_map="" devices="" shutdowns="" device="" udid="" name="" dev_pid="" rc=0 err=""
 
   if [ -z "${SIMPIDS+x}" ]; then
     mc_log "tier3: refusing to act -- SIMPIDS is unset, so classification did not run"
@@ -1176,22 +1275,62 @@ mc_reap_sims() {
 
   for pid in $ready; do
     cmd=$(ps -o command= -p "$pid" 2>/dev/null)
-    # A booted iOS device is reclaimed by `simctl shutdown`, not by signalling
-    # launchd_sim -- so evidence that one is idle is a separate question from
-    # whether any pid is a kill target, and is answered over the ready set rather
-    # than the target set.
-    if printf '%s' "$cmd" | grep -Eq "$MC_SIM_IOS_EXE"; then
-      mc_pid_is_evidence "$pid" || ios_ready=1
+    # A booted iOS device is reclaimed by `simctl shutdown <UDID>`, not by
+    # signalling launchd_sim -- so "is a device idle" is a separate question from
+    # "is any pid a kill target", answered over the ready set rather than the
+    # target set. Recorded PER PID with its command line, because that command
+    # line carries the UDID: the pid's own idle clock is the readiness of exactly
+    # one device, and of no other.
+    if printf '%s' "$cmd" | grep -Eq "$MC_SIM_IOS_EXE" && ! mc_pid_is_evidence "$pid"; then
+      ios_ready_map="${ios_ready_map}${pid} ${cmd}
+"
     fi
     mc_sim_is_target "$pid" "$cmd" || continue
     targets="$targets $pid"
   done
+
+  # Which booted devices, if any, this pass may shut down. Decided BEFORE the
+  # nothing-to-do return below, because a device shutdown is a reclaim in its own
+  # right and the unmapped diagnostic below has to be reachable on a pass that
+  # reclaims nothing.
+  #
+  # Gated on SIMPIDS being non-empty rather than running unconditionally: with no
+  # sim-classified process at all, memcap knows of nothing to act on and nothing
+  # to explain, and the query is a subprocess on every 60-second pass. A booted
+  # device always has a launchd_sim, so an empty SIMPIDS means either nothing is
+  # booted or the ps snapshot predates the boot -- and in both cases fail closed.
+  if [ -n "${SIMPIDS// /}" ]; then
+    devices="$(mc_booted_devices)"
+  fi
+  while IFS= read -r device; do
+    [ -n "$device" ] || continue
+    udid="${device%% *}"
+    name="${device#* }"
+    if dev_pid="$(mc_sim_device_pid "$udid" "$ios_ready_map")"; then
+      shutdowns="${shutdowns}${udid} ${dev_pid} ${name}
+"
+      continue
+    fi
+    # Fail closed, both ways round. A device whose launchd_sim is tracked but
+    # still inside its grace is held, and the tier3-holding line below already
+    # names it -- the pid counted toward `held` in the bookkeeping loop like any
+    # other. A device with no launchd_sim in the snapshot at all is the case that
+    # has no other voice, so it gets a line: unmapped is not idle, and the whole
+    # of this bug was treating a process with no device affinity as proof about a
+    # device.
+    if ! mc_sim_device_tracked "$udid" "$SIMPIDS"; then
+      mc_log_throttled "tier3-device-unmapped-$udid" "tier3: device $udid ($name) is booted but no launchd_sim for it is in this pass's snapshot -- memcap will not shut down a device it cannot prove is idle"
+    fi
+  done <<EOF
+$devices
+EOF
+
   # A ready pid that is not a target is not a failure to report, but a pass that
   # reclaims nothing while pids sit inside the grace used to be the ONLY unlogged
   # return in this function -- and it is the one that fired 1,973 times. A line
   # naming the blocking pid and its idle age turns eleven days of silence into
   # five minutes of diagnosis.
-  if [ -z "${targets// /}" ] && [ "$ios_ready" != "1" ]; then
+  if [ -z "${targets// /}" ] && [ -z "$shutdowns" ]; then
     if [ "$held" -gt 0 ]; then
       mc_log_throttled "tier3-holding" "tier3: reclaimed nothing -- $held sim pid(s) still inside their idle grace (${grace}s, or ${tree_grace}s for a live session's own processes); longest-idle blocker is pid $held_pid at ${held_age}s"
     fi
@@ -1199,29 +1338,41 @@ mc_reap_sims() {
   fi
   mc_log_throttle_clear "tier3-holding"
 
-  # `xcrun simctl shutdown all` shuts down booted DEVICES, and it used to be
-  # reachable with no bookkeeping at all: all_ready was initialised to 1 at its
-  # declaration while every grace check lived inside `if [ -n "$SIMPIDS" ]`, so an
-  # EMPTY SIMPIDS skipped the whole block and shut down every booted device
-  # unconditionally. Proven with a stubbed xcrun; the live trigger is `simctl
-  # boot`, which flips a device to Booted before launchd_sim appears in the `ps`
-  # snapshot. It now requires a launchd_sim/SimulatorTrampoline pid that has
-  # itself been tracked and has cleared its own grace.
+  # One `simctl shutdown <UDID>` per device that earned it, never `shutdown all`.
+  # `all` was the whole defect: it takes every booted device on the machine on the
+  # authority of one pid that need not have anything to do with any of them, and
+  # for 38 real shutdowns that pid was SimulatorTrampoline while the device it
+  # took down was running somebody's Maestro flow.
   #
-  # The `list devices booted` query runs on the dry-run path too. It is
-  # read-only, and without it a dry run announces a shutdown on a machine with
-  # nothing booted -- which is exactly the misreport this section is about.
-  # SimulatorTrampoline can outlive every booted device, and does on this
-  # machine.
-  if [ "$ios_ready" = "1" ] && command -v "$MC_XCRUN_BIN" >/dev/null 2>&1 &&
-     "$MC_XCRUN_BIN" simctl list devices booted 2>/dev/null | grep -q Booted; then
-    if [ "$MC_DRY_RUN" = "1" ]; then
-      echo "would shut down booted simulators (xcrun simctl shutdown all)"
+  # rc and stderr are captured, because the previous line was written before the
+  # command ran and said only "shutdown all": actions.log could not distinguish a
+  # device that went down from one that refused, which is the difference between
+  # "memcap did this to me" and "memcap tried and something else did".
+  # `2>&1 >/dev/null` in that order: stderr into the substitution, stdout away.
+  while IFS= read -r device; do
+    [ -n "$device" ] || continue
+    udid="${device%% *}"
+    dev_pid="${device#* }"; dev_pid="${dev_pid%% *}"
+    name="${device#* * }"
+    if mc_read_idle_stamp "$(mc_sims_idle_stamp "$dev_pid")"; then
+      age=$(( now - MC_STAMP_FIRST ))
     else
-      mc_log "tier3: xcrun simctl shutdown all"
-      "$MC_XCRUN_BIN" simctl shutdown all >/dev/null 2>&1
+      age=0
     fi
-  fi
+    if [ "$MC_DRY_RUN" = "1" ]; then
+      echo "would shut down device $udid ($name)"
+      continue
+    fi
+    rc=0
+    err="$("$MC_XCRUN_BIN" simctl shutdown "$udid" 2>&1 >/dev/null)" || rc=$?
+    if [ "$rc" = "0" ]; then
+      mc_log "tier3: xcrun simctl shutdown $udid ($name) -- launchd_sim pid $dev_pid CPU-flat for ${age}s"
+    else
+      mc_log "tier3: simctl shutdown $udid ($name) failed (rc $rc): $(printf '%s' "$err" | head -1)"
+    fi
+  done <<EOF
+$shutdowns
+EOF
 
   # A booted device shut down above is a complete reclaim on its own; there does
   # not have to be a signalable process left over.
@@ -1284,7 +1435,7 @@ mc_watch_liveness() {
   if [ "$mark" = "0" ]; then
     printf '%s\n' "$now" > "$dir/liveness-mark" 2>/dev/null || :
     printf '0\n' > "$dir/pass-count" 2>/dev/null || :
-    mc_log "watch: alive (liveness clock started)"
+    mc_log "watch: alive (memcap ${MEMCAP_VERSION:-unknown}, liveness clock started)"
     return 0
   fi
   [ $((now - mark)) -lt "$every" ] && return 0
@@ -1300,7 +1451,7 @@ mc_watch_liveness() {
   # that was working perfectly. A real stall shows up in the interval, which is
   # now stated rather than left to be inferred from a number nobody has a
   # baseline for.
-  mc_log "watch: alive ($count passes in ${elapsed}s -- one every $((elapsed / (count > 0 ? count : 1)))s)"
+  mc_log "watch: alive (memcap ${MEMCAP_VERSION:-unknown}, $count passes in ${elapsed}s -- one every $((elapsed / (count > 0 ? count : 1)))s)"
   return 0
 }
 
@@ -1308,6 +1459,12 @@ mc_watch() {
   local total cap cap_default docker_budget docker_default agents_budget
   local agent_net_gb over free soft min_free outcome drift
   local agent_gb docker_gb combined_gb gross_over
+  # The combined-over-cap attribution (below): which of Docker and the simulators
+  # the overage actually belongs to. Declared here with everything else mc_watch
+  # owns -- bash is dynamically scoped, so a name left undeclared here is a name
+  # every function mc_watch calls can see and shadow.
+  local overage sim_gb docker_excess docker_covers docker_none
+  local docker_against docker_over docker_remedy docker_note
 
   mc_watch_liveness
 
@@ -1365,10 +1522,33 @@ mc_watch() {
   # for as long as that has been true, and actions.log is where the "why was
   # memcap over budget all week" question gets answered afterwards.
   if command -v mc_docker_ceiling_drift >/dev/null 2>&1; then
-    if drift=$(mc_docker_ceiling_drift "$docker_budget"); then
+    # Called IN-PROCESS, with the message read back out of a global, rather than
+    # through the command substitution this used to be. A subshell returns the
+    # drift text and nothing else, and "nothing else" is where the whole of
+    # v0.5.1's silence lived: launchd denies this process access to
+    # ~/Library/Group Containers, the read failed with EPERM on every pass, and a
+    # failed read is indistinguishable from "the ceilings agree" once it has been
+    # squeezed through an exit status. This line logged ZERO times in 8 days
+    # while `memcap status`, run from a terminal, printed the drift every time.
+    mc_docker_ceiling_drift "$docker_budget" >/dev/null || :
+    drift="${MC_DOCKER_CEILING_DRIFT:-}"
+    if [ -n "$drift" ]; then
       mc_log_throttled "docker-ceiling-drift" "watch: $drift"
     else
       mc_log_throttle_clear "docker-ceiling-drift"
+    fi
+    # The blind case gets its own line and its own key. It is NOT a drift -- memcap
+    # does not know whether the ceilings agree -- and reporting it as one would be
+    # inventing a number. It is also not silence, which is what the previous
+    # version amounted to: a check that cannot run must say so, once, rather than
+    # look like a check that ran and found nothing. Only when there is no cached
+    # reading to fall back on, and only when a ceiling is actually being asked for
+    # (DOCKER_BUDGET_GB=0 means Docker is unmanaged by choice, so there is no
+    # check to be blind about).
+    if [ "${MC_DOCKER_CEILING_UNREADABLE:-0}" = "1" ] && [ "$docker_budget" -gt 0 ]; then
+      mc_log_throttled "docker-ceiling-unreadable" "watch: cannot read Docker's settings store from the background service -- macOS denies launchd agents access to ~/Library/Group Containers -- so the VM-ceiling check is blind here until 'memcap status' has been run once from a terminal"
+    else
+      mc_log_throttle_clear "docker-ceiling-unreadable"
     fi
   fi
 
@@ -1406,8 +1586,69 @@ mc_watch() {
     combined_gb=$(awk -v a="$agent_gb" -v d="$docker_gb" 'BEGIN{printf "%.2f", a+d}')
     gross_over=$(awk -v c="$combined_gb" -v cap="$cap" 'BEGIN{print (c > cap) ? 1 : 0}')
     if [ "$gross_over" = "1" ]; then
-      mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the ${cap} GB cap, but agents net of sims are ${agent_net_gb} GB / ${agents_budget} GB budget -- the excess is simulator/browser memory tier 2 cannot reclaim by killing a dev server; tier 3 will reclaim it once it has been idle past its grace"
-      [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over your ${cap} GB combined budget from simulator/browser memory -- tier 2 won't kill a dev server for it, and tier 3 will reclaim it once it has been idle long enough."
+      # WHICH excess, not just that there is one. This line blamed simulators
+      # unconditionally for 186 occurrences since 08-27, including the morning it
+      # read: combined 17.20 GB against a 16 GB cap, agents net of sims 9.45 GB,
+      # sims about 1.15 GB -- and Docker at 6.6 GB against a 4 GB budget, because
+      # the ceiling had never been applied. Tier 3 could have reclaimed every
+      # simulator on the machine and it would still have been over the cap. The
+      # line promised a reclaim that could not happen and never named the actual
+      # cause, so the one action that would have fixed it (memcap docker apply)
+      # was never suggested. Attribute the overage instead, and say only what the
+      # attributed part can actually do.
+      #
+      # The arithmetic identity that makes this exhaustive: cap is
+      # agents_budget + docker_budget by construction, and this branch runs only
+      # when agent_net <= agents_budget, so
+      #   overage = combined - cap <= sim_gb + max(0, docker_gb - docker_budget).
+      # One of the two components therefore always covers it, or both contribute.
+      overage=$(awk -v c="$combined_gb" -v cap="$cap" 'BEGIN{printf "%.2f", c - cap}')
+      sim_gb=$(mc_gb "$SIM_KB")
+      docker_excess=$(awk -v d="$docker_gb" -v b="$docker_budget" 'BEGIN{e = d - b; if (e < 0) e = 0; printf "%.2f", e}')
+      docker_covers=$(awk -v e="$docker_excess" -v o="$overage" 'BEGIN{print (e >= o) ? 1 : 0}')
+      docker_none=$(awk -v e="$docker_excess" 'BEGIN{print (e <= 0) ? 1 : 0}')
+      # DOCKER_BUDGET_GB=0 is "memcap is not managing Docker", not "Docker may use
+      # zero" -- status.sh renders it as "no ceiling (unmanaged)" for the same
+      # reason. Telling that user to run `memcap docker apply` would be telling
+      # them to apply a 0 GB ceiling, so the remedy names the missing setting
+      # first. Both strings are built once and shared by the two Docker variants.
+      if [ "$docker_budget" -gt 0 ]; then
+        docker_against="against its ${docker_budget} GB budget"
+        docker_over="Docker is ${docker_excess} GB over its ${docker_budget} GB budget"
+        docker_remedy="memcap docker apply"
+      else
+        docker_against="with no ceiling asked for (DOCKER_BUDGET_GB=0)"
+        docker_over="Docker is holding ${docker_gb} GB with no ceiling asked for (DOCKER_BUDGET_GB=0)"
+        docker_remedy="set DOCKER_BUDGET_GB in memcap.conf, then: memcap docker apply"
+      fi
+      # The drift, when it is known, belongs on the Docker variants specifically:
+      # "Docker is over its budget" and "the ceiling in your config was never
+      # applied" are the same sentence read from two ends, and a user seeing the
+      # first without the second has no way to get from one to the other.
+      # `${drift:-}`, not `$drift`: the block that sets it is guarded on docker.sh
+      # having been sourced at all, which `bin/memcap watch` always does and a
+      # test sourcing the modules by hand may not.
+      docker_note=""
+      [ -n "${drift:-}" ] && docker_note=" -- ${drift}"
+      if [ "$docker_covers" = "1" ]; then
+        mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the ${cap} GB cap -- the excess is Docker's: ${docker_gb} GB ${docker_against}. No tier reclaims Docker memory; enforce the ceiling with: ${docker_remedy}${docker_note}"
+        [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over your ${cap} GB combined budget: Docker is holding ${docker_gb} GB ${docker_against}. No tier can reclaim Docker memory -- ${docker_remedy}"
+      # Docker being within its budget is decisive on its own, whether or not
+      # sim_covers agrees. The identity above says the simulators cover the
+      # overage when Docker does not -- but agent_gb, sim_gb and agent_net_gb are
+      # each rounded to two decimals independently and overage comes from the
+      # rounded combined figure, so "0.99 >= 1.00" can be false by a rounding
+      # penny while the arithmetic it stands for is true. Requiring sim_covers
+      # here sent exactly that fixture to the variant below, which then read
+      # "Docker is 0.00 GB over its 4 GB budget ... memcap docker apply": a false
+      # Docker blame from the change meant to end misattribution.
+      elif [ "$docker_none" = "1" ]; then
+        mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the ${cap} GB cap, but agents net of sims are ${agent_net_gb} GB / ${agents_budget} GB budget -- the excess is simulator/browser memory tier 2 cannot reclaim by killing a dev server; tier 3 will reclaim it once it has been idle past its grace"
+        [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over your ${cap} GB combined budget from simulator/browser memory -- tier 2 won't kill a dev server for it, and tier 3 will reclaim it once it has been idle long enough."
+      else
+        mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the ${cap} GB cap -- ${docker_over} and ${sim_gb} GB is simulator/browser memory; tier 3 can reclaim at most the latter, and only once it has been idle past its grace; the Docker part needs: ${docker_remedy}${docker_note}"
+        [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over your ${cap} GB combined budget: ${docker_over}, and ${sim_gb} GB is simulator/browser memory. Tier 3 can reclaim only the simulators -- the Docker part needs ${docker_remedy}"
+      fi
     else
       mc_log_throttle_clear "combined-over-cap"
     fi

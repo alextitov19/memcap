@@ -463,6 +463,20 @@ log_lines() { grep -c "$1" "$(mc_state_dir)/actions.log" 2>/dev/null || echo 0; 
   done
 }
 
+# v0.6.0: the config template and the code's own fallback are two copies of
+# every default, and a user who ran `memcap init` before a default changed keeps
+# the old value forever -- which is fine, and exactly why the two must not drift
+# silently for everyone else. This pins the one that just changed (60 -> 300, for
+# the tooling veto's hysteresis) at both ends.
+@test "init writes the same MOBILE_TOOLING_IDLE_SEC the code falls back to" {
+  run bash -c "printf '16\n6\nno\n' | env HOME='$HOME_SANDBOX' '$MEMCAP_ROOT/bin/memcap' init --no-service"
+  [ "$status" -eq 0 ]
+  run grep -c '^MOBILE_TOOLING_IDLE_SEC=300$' "$(mc_config_file)"
+  [ "$output" = "1" ]
+  run grep -c 'MOBILE_TOOLING_IDLE_SEC:-300' "$MEMCAP_ROOT/libexec/enforce.sh"
+  [ "$output" = "1" ]
+}
+
 @test "the config init writes parses cleanly and loads without breaking" {
   bash -c "printf '16\n6\nno\n' | env HOME='$HOME_SANDBOX' '$MEMCAP_ROOT/bin/memcap' init --no-service" >/dev/null
   run bash -n "$(mc_config_file)"

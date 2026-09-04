@@ -2,6 +2,19 @@
 # Shared paths, config access, logging. Sourced by every other module.
 set -uo pipefail
 
+# The version of memcap this checkout IS. Lives here because common.sh is the
+# one module everything sources, and it is deliberately a plain string rather
+# than something derived from git or the Homebrew Cellar path: an installed copy
+# has no .git, and a Cellar path is absent when someone runs bin/memcap straight
+# out of a clone.
+#
+# Every line memcap writes that someone might later audit -- the liveness
+# heartbeat, the status header -- carries it, because nine days of production
+# log analysis had no way to tell which build wrote which line. A test ties this
+# string to CHANGELOG.md's top heading so a release cannot bump one alone.
+# shellcheck disable=SC2034  # read by bin/memcap, status.sh and enforce.sh
+MEMCAP_VERSION="0.6.0"
+
 mc_config_dir() { printf '%s/memcap\n' "${MEMCAP_CONFIG_HOME:-$HOME/.config}"; }
 mc_config_file() { printf '%s/memcap.conf\n' "$(mc_config_dir)"; }
 mc_state_dir() { printf '%s/memcap\n' "${MEMCAP_STATE_HOME:-$HOME/.local/state}"; }
