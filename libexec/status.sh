@@ -137,7 +137,18 @@ mc_render_outcome() {
 # memcap, however fresh the heartbeat above it looked.
 mc_render_launchagent() {
   case "$(mc_launchagent_state)" in
-    loaded)        mc_status_row "background service" "LaunchAgent loaded" ;;
+    # The label is named because `brew services info memcap` reports
+    # "Running: false" for a perfectly healthy install: memcap writes and owns
+    # its own agent under its own label (see service.sh's comment on why -- brew
+    # upgrade DELETED the Homebrew-owned plist twice), and brew only knows about
+    # plists it created. Someone checking the wrong tool needs this row to tell
+    # them which agent is the real one. mc_launchagent_label is service.sh's
+    # single copy of it; reaching `loaded` at all proves service.sh is sourced,
+    # since mc_launchagent_state returns `unavailable` otherwise.
+    loaded)
+      mc_status_row "background service" \
+        "LaunchAgent loaded ($(mc_launchagent_label) -- memcap's own, not a brew service)"
+      ;;
     not-loaded)
       mc_status_row "background service" "LaunchAgent NOT LOADED"
       mc_status_warn "MEMCAP'S LAUNCHAGENT IS NOT LOADED -- the plist exists but launchd is not running it, so nothing schedules a pass: memcap service install"
@@ -334,7 +345,7 @@ mc_render_status() {
 
   [ -n "$docker_drift" ] && mc_status_warn "$docker_drift"
 
-  printf 'memcap — %s\n\n' "$conf"
+  printf 'memcap %s — %s\n\n' "${MEMCAP_VERSION:-unknown}" "$conf"
   mc_status_row "agents + everything they spawn" "${agent_gb} GB / ${agents_budget_label}"
   mc_status_row "  of which leaked/orphaned" "$(mc_gb "$ORPHAN_KB") GB"
   mc_status_row "  of which sims/playwright" "$(mc_gb "$SIM_KB") GB"

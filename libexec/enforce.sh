@@ -903,6 +903,17 @@ mc_mobile_tooling_pids() {
 # pass -- the same conservative bootstrapping mc_reap_sims uses for a freshly
 # tracked sim.
 #
+# MOBILE_TOOLING_IDLE_SEC has to outlast one enforcement pass or it is not
+# hysteresis at all, which is why the default is 300 and not the 60 it shipped
+# as. A real pass takes ~64s (launchd coalesces the 60s StartInterval), so at 60
+# a maestro MCP server that handled a single request flipped the veto on and the
+# very next pass flipped it back off. Nine days of production logs held 544
+# "declining -- active mobile tooling detected" lines alternating minute-to-
+# minute with the hands-on veto, each transition clearing the throttle key and
+# so logging again. The window is a claim about the TOOL, too, not just about
+# the log: a Maestro run goes quiet for a minute between flows, and treating
+# that gap as idle is how tier 3 gets to shut a simulator out from under it.
+#
 # The MC_ACTIVE_MOBILE_TOOLING escape hatch (same pattern as MC_DOCKER_RUNTIME)
 # forces the answer: this check depends entirely on what is running on the host,
 # with no way to make it deterministic in an environment that happens to have one
@@ -937,7 +948,7 @@ mc_active_mobile_tooling() {
 
   mkdir -p "$dir"
   now=$(date +%s)
-  window=$(mc_enf_num "${MOBILE_TOOLING_IDLE_SEC:-60}" 60 MOBILE_TOOLING_IDLE_SEC)
+  window=$(mc_enf_num "${MOBILE_TOOLING_IDLE_SEC:-300}" 300 MOBILE_TOOLING_IDLE_SEC)
   active_cpu_sec=$(mc_enf_num "${SIM_ACTIVE_CPU_SEC:-2}" 2 SIM_ACTIVE_CPU_SEC)
   for pid in $pids; do
     stamp="$(mc_mobile_tooling_idle_stamp "$pid")"
@@ -1284,7 +1295,7 @@ mc_watch_liveness() {
   if [ "$mark" = "0" ]; then
     printf '%s\n' "$now" > "$dir/liveness-mark" 2>/dev/null || :
     printf '0\n' > "$dir/pass-count" 2>/dev/null || :
-    mc_log "watch: alive (liveness clock started)"
+    mc_log "watch: alive (memcap ${MEMCAP_VERSION:-unknown}, liveness clock started)"
     return 0
   fi
   [ $((now - mark)) -lt "$every" ] && return 0
@@ -1300,7 +1311,7 @@ mc_watch_liveness() {
   # that was working perfectly. A real stall shows up in the interval, which is
   # now stated rather than left to be inferred from a number nobody has a
   # baseline for.
-  mc_log "watch: alive ($count passes in ${elapsed}s -- one every $((elapsed / (count > 0 ? count : 1)))s)"
+  mc_log "watch: alive (memcap ${MEMCAP_VERSION:-unknown}, $count passes in ${elapsed}s -- one every $((elapsed / (count > 0 ? count : 1)))s)"
   return 0
 }
 
