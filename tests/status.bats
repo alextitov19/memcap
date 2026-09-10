@@ -154,10 +154,10 @@ fresh_pass_with_outcome() {
   assert_contains "$output" "DRY-RUN MODE"
 }
 
-@test "a degraded-measurement outcome explains why nothing was killed" {
+@test "a degraded-measurement outcome explains which checks were withheld" {
   fresh_pass_with_outcome degraded-measurement
   run "$MEMCAP_ROOT/bin/memcap" status
-  assert_contains "$output" "THE LAST PASS DID NOT ENFORCE"
+  assert_contains "$output" "THE LAST PASS HAD UNRELIABLE MEASUREMENTS"
   assert_contains "$output" "ps RSS"
 }
 

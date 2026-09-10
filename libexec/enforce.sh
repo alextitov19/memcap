@@ -783,12 +783,12 @@ mc_kill_over_budget() {
   # overwhelmingly likely to be the bundler feeding that simulator, and killing
   # it destroys the session tier 3 just protected.
   if mc_active_mobile_tooling; then
-    mc_log_throttled "tier2-active-tooling" "tier2: declining -- active mobile tooling detected (maestro, xcodebuild, expo, react-native, or detox). The dev server over budget here is most likely the bundler feeding that simulator."
+    mc_log_throttled "tier2-active-tooling" "tier2: declining -- active mobile tooling detected (maestro, xcodebuild, expo, react-native, or detox). The dev server over budget here is most likely the bundler feeding that simulator.$(mc_mobile_blocker_detail "${MC_ACTIVE_MOBILE_PIDS:-}")"
     return 0
   fi
   mc_log_throttle_clear "tier2-active-tooling"
   if mc_hands_on_mobile; then
-    mc_log_throttled "tier2-hands-on-mobile" "tier2: declining -- hands-on mobile work detected (Xcode, Android Studio, or Simulator.app open)"
+    mc_log_throttled "tier2-hands-on-mobile" "tier2: declining -- hands-on mobile work detected (Xcode, Android Studio, or Simulator.app open).$(mc_mobile_blocker_detail "${MC_HANDS_ON_MOBILE_PIDS:-}")"
     return 0
   fi
   mc_log_throttle_clear "tier2-hands-on-mobile"
@@ -876,18 +876,17 @@ mc_mobile_tooling_idle_dir() { printf '%s/tooling-idle\n' "$(mc_state_dir)"; }
 mc_mobile_tooling_idle_stamp() { printf '%s/%s\n' "$(mc_mobile_tooling_idle_dir)" "$1"; }
 
 mc_mobile_tooling_pids() {
-  # `tr '\n' ' '` on each pgrep call, not just a final cleanup: pgrep prints one
-  # pid per LINE, and multiple matches from a single call are newline-separated.
-  # Downstream code pattern-matches against literal single spaces, so a pid next
-  # to a newline would silently never be found "present", making the prune step
-  # wrongly delete a still-valid stamp on every pass. Confirmed with two real
-  # processes matching the same maestro pattern at once.
-  local name pids=""
-  for name in $MC_MOBILE_TOOLING_EXACT; do
-    pids="$pids $(pgrep -x "$name" 2>/dev/null | tr '\n' ' ')"
-  done
-  pids="$pids $(pgrep -f "$MC_MOBILE_TOOLING_ARGV_PATTERN" 2>/dev/null | tr '\n' ' ')"
-  printf '%s' "$pids"
+  # Match executable identity for native tools; argv for interpreter-hosted
+  # tools, excluding programs that merely inspect or print those arguments.
+  # comm retains the whole executable path, including spaces in Xcode Beta.app.
+  ps -Ao pid=,comm= 2>/dev/null | awk -v exact="$MC_MOBILE_TOOLING_EXACT" '
+    {pid=$1; exe=$0; sub(/^[[:space:]]*[0-9]+[[:space:]]+/,"",exe); sub(/^.*\//,"",exe)
+     if(index(" " exact " "," " exe " ")) printf "%s ",pid}' || return 1
+  ps -Ao pid=,command= 2>/dev/null | awk -v pat="$MC_MOBILE_TOOLING_ARGV_PATTERN" '
+    {pid=$1; cmd=$0; sub(/^[[:space:]]*[0-9]+[[:space:]]+/,"",cmd)
+     exe=cmd; sub(/[[:space:]].*$/,"",exe); sub(/^.*\//,"",exe)
+     if(exe ~ /^(rg|grep|egrep|awk|sed|ps|top|tail|head|cat|sort|cut|tr|xargs|find|bash|zsh|sh|jq)$/) next
+     if(cmd ~ pat) printf "%s ",pid}'
 }
 
 # Matching a tool's mere EXISTENCE vetoed tier 3 permanently the moment one of
@@ -921,13 +920,17 @@ mc_mobile_tooling_pids() {
 # affect mc_veto_evidence_pids -- forcing the veto's ANSWER for a test must not
 # make a live tooling process killable.
 mc_active_mobile_tooling() {
+  MC_ACTIVE_MOBILE_PIDS=""
   if [ -n "${MC_ACTIVE_MOBILE_TOOLING:-}" ]; then
     [ "$MC_ACTIVE_MOBILE_TOOLING" = "1" ]
     return
   fi
   local pid pids dir now window active_cpu_sec stamp cpu_delta active=0
 
-  pids=$(mc_mobile_tooling_pids)
+  if ! pids=$(mc_mobile_tooling_pids); then
+    MC_ACTIVE_MOBILE_PIDS=unknown
+    return 0
+  fi
   dir="$(mc_mobile_tooling_idle_dir)"
 
   # Prune stamps for pids no longer alive or no longer matching, so a reused pid
@@ -955,20 +958,26 @@ mc_active_mobile_tooling() {
     if ! mc_cputime_secs_var "$(ps -o time= -p "$pid" 2>/dev/null)"; then
       # Could not sample CPU. A measurement gap is not evidence of idleness.
       active=1
+      MC_ACTIVE_MOBILE_PIDS="$MC_ACTIVE_MOBILE_PIDS $pid"
       continue
     fi
     if ! mc_read_idle_stamp "$stamp"; then
       mc_write_idle_stamp "$stamp" "$now" "$MC_CPUTIME_SECS"
       active=1
+      MC_ACTIVE_MOBILE_PIDS="$MC_ACTIVE_MOBILE_PIDS $pid"
       continue
     fi
     cpu_delta=$(( MC_CPUTIME_SECS - MC_STAMP_CPU ))
     if [ "$cpu_delta" -ge "$active_cpu_sec" ]; then
       mc_write_idle_stamp "$stamp" "$now" "$MC_CPUTIME_SECS"
       active=1
+      MC_ACTIVE_MOBILE_PIDS="$MC_ACTIVE_MOBILE_PIDS $pid"
       continue
     fi
-    [ $((now - MC_STAMP_FIRST)) -lt "$window" ] && active=1
+    if [ $((now - MC_STAMP_FIRST)) -lt "$window" ]; then
+      active=1
+      MC_ACTIVE_MOBILE_PIDS="$MC_ACTIVE_MOBILE_PIDS $pid"
+    fi
   done
   [ "$active" = "1" ]
 }
@@ -976,15 +985,65 @@ mc_active_mobile_tooling() {
 MC_HANDS_ON_PATTERN='/Xcode\.app/Contents/MacOS/Xcode|Android Studio\.app/Contents/MacOS|/Simulator\.app/Contents/MacOS/Simulator'
 
 mc_hands_on_mobile_pids() {
-  pgrep -f "$MC_HANDS_ON_PATTERN" 2>/dev/null | tr '\n' ' '
+  ps -Ao pid=,command= 2>/dev/null | awk -v pat="$MC_HANDS_ON_PATTERN" '
+    {pid=$1; cmd=$0; sub(/^[[:space:]]*[0-9]+[[:space:]]+/,"",cmd)
+     if(match(cmd,pat)) {
+       prefix=substr(cmd,1,RSTART-1)
+       # Spaces inside an app path are legitimate; an argument introducing
+       # another absolute path or a command option is not executable identity.
+       if(cmd ~ /^\// && prefix !~ /[[:space:]]\// && prefix !~ /[[:space:]]-/)
+         printf "%s ",pid
+     }}'
 }
 
 mc_hands_on_mobile() {
+  MC_HANDS_ON_MOBILE_PIDS=""
   if [ -n "${MC_HANDS_ON_MOBILE:-}" ]; then
     [ "$MC_HANDS_ON_MOBILE" = "1" ]
     return
   fi
-  [ -n "$(mc_hands_on_mobile_pids)" ]
+  if ! MC_HANDS_ON_MOBILE_PIDS=$(mc_hands_on_mobile_pids); then
+    MC_HANDS_ON_MOBILE_PIDS=unknown
+    return 0
+  fi
+  [ -n "$MC_HANDS_ON_MOBILE_PIDS" ]
+}
+
+# A bounded parent walk returns a known session, never guesses ownership from
+# a shared terminal or a project path. Missing/cyclic ancestry retains the veto.
+mc_agent_owner() {
+  [ -n "${AGENTPIDS+x}" ] || return 1
+  mc_proc_table_warm
+  printf '%s\n' "$MC_PROC_TABLE" | awk -v pid="$1" -v agents=" $AGENTPIDS " '
+    {pp[$1]=$2}
+    END {for(i=0;i<32;i++) {
+      if(!(pid in pp) || seen[pid]++) exit 1
+      if(index(agents," " pid " ")) {print pid; exit 0}
+      pid=pp[pid]; if(pid<=1) exit 1
+    } exit 1}'
+}
+
+mc_mobile_browser_independent() {
+  local pid="$1" cmd="$2" exe owner other blocker
+  exe="${cmd%% *}"
+  case "$exe" in *ms-playwright*|*headless_shell*|*chrome-headless-shell*) ;; *) return 1 ;; esac
+  [ -n "${MC_MOBILE_BLOCKERS// /}" ] || return 1
+  owner=$(mc_agent_owner "$pid") || return 1
+  for blocker in $MC_MOBILE_BLOCKERS; do
+    other=$(mc_agent_owner "$blocker") || return 1
+    [ "$owner" != "$other" ] || return 1
+  done
+  return 0
+}
+
+mc_mobile_blocker_detail() {
+  local pids="$1" pid cmd out="" count=0
+  for pid in $pids; do
+    cmd=$(ps -p "$pid" -o comm= 2>/dev/null) || cmd=unavailable
+    out="$out pid=$pid $(mc_abbrev "$cmd" 160);"
+    count=$((count+1)); [ "$count" -ge 5 ] && break
+  done
+  printf '%s' "${out:- blocker identity unavailable; retaining protection}"
 }
 
 # Restores the pre-v0.3.0 behavior for TIER3_REQUIRE_NO_SESSION=1: tier 3 never
@@ -1145,7 +1204,8 @@ mc_sim_is_target() {
 
 mc_reap_sims() {
   local pid dir stamp now grace tree_grace pid_grace active_cpu_sec cmd
-  local ready="" targets="" held=0 held_pid="" held_age=-1 age
+  local ready="" targets="" held=0 held_pid="" held_age=-1 age mobile_veto=0
+  local MC_MOBILE_BLOCKERS=""
   # Per-device bookkeeping. ios_ready_map is "<pid> <command line>" lines for
   # every ready, non-evidence launchd_sim; shutdowns is "<UDID> <pid> <name>"
   # lines for the devices this pass has actually proven idle.
@@ -1263,18 +1323,26 @@ mc_reap_sims() {
   fi
   mc_log_throttle_clear "tier3-agent-alive"
   if mc_active_mobile_tooling; then
-    mc_log_throttled "tier3-active-tooling" "tier3: declining -- active mobile tooling detected (maestro, xcodebuild, expo, react-native, or detox)"
-    return 0
+    mobile_veto=1
+    MC_MOBILE_BLOCKERS="${MC_ACTIVE_MOBILE_PIDS:-unknown}"
+    mc_log_throttled "tier3-active-tooling" "tier3: declining -- active mobile tooling detected (maestro, xcodebuild, expo, react-native, or detox).$(mc_mobile_blocker_detail "$MC_MOBILE_BLOCKERS")"
+  else
+    mc_log_throttle_clear "tier3-active-tooling"
   fi
-  mc_log_throttle_clear "tier3-active-tooling"
   if mc_hands_on_mobile; then
-    mc_log_throttled "tier3-hands-on-mobile" "tier3: declining -- hands-on mobile work detected (Xcode, Android Studio, or Simulator.app open)"
-    return 0
+    mobile_veto=1
+    # An unknown blocker prevents any exception even if another is known.
+    MC_MOBILE_BLOCKERS="$MC_MOBILE_BLOCKERS ${MC_HANDS_ON_MOBILE_PIDS:-unknown}"
+    mc_log_throttled "tier3-hands-on-mobile" "tier3: declining -- hands-on mobile work detected (Xcode, Android Studio, or Simulator.app open).$(mc_mobile_blocker_detail "${MC_HANDS_ON_MOBILE_PIDS:-}")"
+  else
+    mc_log_throttle_clear "tier3-hands-on-mobile"
   fi
-  mc_log_throttle_clear "tier3-hands-on-mobile"
 
   for pid in $ready; do
     cmd=$(ps -o command= -p "$pid" 2>/dev/null)
+    if [ "$mobile_veto" = 1 ]; then
+      mc_mobile_browser_independent "$pid" "$cmd" || continue
+    fi
     # A booted iOS device is reclaimed by `simctl shutdown <UDID>`, not by
     # signalling launchd_sim -- so "is a device idle" is a separate question from
     # "is any pid a kill target", answered over the ready set rather than the
@@ -1299,7 +1367,7 @@ mc_reap_sims() {
   # to explain, and the query is a subprocess on every 60-second pass. A booted
   # device always has a launchd_sim, so an empty SIMPIDS means either nothing is
   # booted or the ps snapshot predates the boot -- and in both cases fail closed.
-  if [ -n "${SIMPIDS// /}" ]; then
+  if [ "$mobile_veto" = 0 ] && [ -n "${SIMPIDS// /}" ]; then
     devices="$(mc_booted_devices)"
   fi
   while IFS= read -r device; do
@@ -1398,11 +1466,12 @@ EOF
 # The heartbeat answers "is the daemon ticking"; this answers "is it enforcing",
 # and `status` renders anything but `enforced` as a remedy line.
 mc_finish_pass() {
-  local dir
+  local dir outcome="$1"
   dir="$(mc_state_dir)"
   mc_stamp_heartbeat
   mkdir -p "$dir" 2>/dev/null
-  printf '%s\n' "$1" > "$dir/last-outcome" 2>/dev/null || :
+  [ "${MC_STATE_WRITE_FAILED:-0}" = 1 ] && outcome=state-error
+  mc_state_write "$dir/last-outcome" "$outcome" || :
   return 0
 }
 
@@ -1419,12 +1488,12 @@ mc_watch_liveness() {
   local dir count mark now every elapsed
   dir="$(mc_state_dir)"
   mkdir -p "$dir" 2>/dev/null || return 0
-  count=$(cat "$dir/pass-count" 2>/dev/null)
+  count=$(cat "$dir/pass-count" 2>/dev/null) || count=0
   case "$count" in ''|*[!0-9]*) count=0 ;; esac
   [ ${#count} -le 18 ] || count=0
   count=$((count + 1))
-  printf '%s\n' "$count" > "$dir/pass-count" 2>/dev/null || :
-  mark=$(cat "$dir/liveness-mark" 2>/dev/null)
+  mc_state_write "$dir/pass-count" "$count" || :
+  mark=$(cat "$dir/liveness-mark" 2>/dev/null) || mark=0
   case "$mark" in ''|*[!0-9]*) mark=0 ;; esac
   [ ${#mark} -le 18 ] || mark=0
   now=$(date +%s)
@@ -1433,15 +1502,15 @@ mc_watch_liveness() {
   # 0` is the entire epoch, so every elapsed figure derived from it would be
   # nonsense -- start the clock and say so instead.
   if [ "$mark" = "0" ]; then
-    printf '%s\n' "$now" > "$dir/liveness-mark" 2>/dev/null || :
-    printf '0\n' > "$dir/pass-count" 2>/dev/null || :
+    mc_state_write "$dir/liveness-mark" "$now" || :
+    mc_state_write "$dir/pass-count" 0 || :
     mc_log "watch: alive (memcap ${MEMCAP_VERSION:-unknown}, liveness clock started)"
     return 0
   fi
   [ $((now - mark)) -lt "$every" ] && return 0
   elapsed=$((now - mark))
-  printf '%s\n' "$now" > "$dir/liveness-mark" 2>/dev/null || :
-  printf '0\n' > "$dir/pass-count" 2>/dev/null || :
+  mc_state_write "$dir/liveness-mark" "$now" || :
+  mc_state_write "$dir/pass-count" 0 || :
   # The interval is spelled out because the raw count is not self-interpreting
   # and the old comment here guessed it wrong: it called 60 passes "a healthy
   # hour", while a healthy hour on the author's Mac is 46-58. StartInterval is
@@ -1465,6 +1534,9 @@ mc_watch() {
   # every function mc_watch calls can see and shadow.
   local overage sim_gb docker_excess docker_covers docker_none
   local docker_against docker_over docker_remedy docker_note
+
+  local sample initial_fault=0 pressure=0
+  MC_STATE_WRITE_FAILED=0
 
   mc_watch_liveness
 
@@ -1490,7 +1562,10 @@ mc_watch() {
   unset MC_VETO_EVIDENCE_CACHE
   unset MC_PROC_TABLE
 
-  eval "$(mc_ps_snapshot | mc_classify)"
+  mc_snapshot_capture
+  sample="$MC_CAPTURE_SNAPSHOT"
+  unset AGENT_KB DOCKER_KB SIM_KB AGENTPIDS PROTECTEDPIDS SIMPIDS ORPHANS DEVPIDS
+  eval "$(printf '%s\n' "$sample" | mc_classify)"
   # Fail closed on a classifier that produced nothing: an `eval` of an empty
   # string leaves every variable below unset, and `set -u` would take the pass
   # down somewhere less obvious than here.
@@ -1561,10 +1636,32 @@ mc_watch() {
   soft=$(mc_enf_frac "${SOFT_TRIGGER:-0.80}" 0.80 SOFT_TRIGGER)
   min_free=$(mc_enf_num "${MIN_FREE_PCT:-15}" 15 MIN_FREE_PCT)
 
+  initial_fault="${MC_MEASURE_FAULT:-0}"
+  if command -v mc_host_pressure >/dev/null 2>&1; then
+    mc_host_pressure
+    mc_host_report
+    pressure=$(awk -v a="$AGENT_KB" -v d="$DOCKER_KB" -v c="$cap" -v f="$free" -v m="$min_free" -v h="$MC_HOST_PRESSURE" \
+      'BEGIN {print (a+d>c*1048576 || f<m || h==1) ? 1 : 0}')
+    if [ "$pressure" = 1 ]; then
+      mc_pressure_capture "$sample" "combined $(mc_gb "$((AGENT_KB+DOCKER_KB))") GB / $cap GB; agent net $agent_net_gb GB / $agents_budget GB; free-ish RAM $free%"
+    else
+      mc_pressure_recovered
+    fi
+  fi
+
   over=$(awk -v a="$agent_net_gb" -v b="$agents_budget" -v t="$soft" 'BEGIN{print (a > b*t) ? 1 : 0}')
   if [ "$over" = "1" ] || [ "$free" -lt "$min_free" ]; then
     mc_reap_orphans
-    eval "$(mc_ps_snapshot | mc_classify)"
+    mc_snapshot_capture
+    sample="$MC_CAPTURE_SNAPSHOT"
+    unset AGENT_KB DOCKER_KB SIM_KB AGENTPIDS PROTECTEDPIDS SIMPIDS ORPHANS DEVPIDS
+    eval "$(printf '%s\n' "$sample" | mc_classify)"
+    if [ -z "${AGENT_KB+x}" ] || [ -z "${DOCKER_KB+x}" ] || [ -z "${SIMPIDS+x}" ]; then
+      mc_log "watch: refusing further cleanup -- reclassification produced no assignments"
+      mc_finish_pass degraded-measurement
+      return 1
+    fi
+    [ "${MC_MEASURE_FAULT:-0}" = 1 ] && initial_fault=1
     agent_net_gb=$(mc_gb "$(mc_agent_net_kb "$AGENT_KB" "$SIM_KB")")
   fi
 
@@ -1572,8 +1669,15 @@ mc_watch() {
 
   over=$(awk -v a="$agent_net_gb" -v b="$agents_budget" 'BEGIN{print (a > b) ? 1 : 0}')
   if [ "$over" = "1" ]; then
-    mc_kill_over_budget
-  else
+    if [ "$initial_fault" = 1 ]; then
+      mc_log_throttled tier2-measurement "tier2: declining -- footprint measurement unreliable; safe orphan cleanup remains available"
+    else
+      mc_log_throttle_clear tier2-measurement
+      mc_kill_over_budget
+    fi
+  fi
+  # Combined diagnostics must run even when tier 2 was selected and vetoed.
+  {
     # Net is fine, so tier 2 correctly declines -- but the machine can still sit
     # over its COMBINED cap when the excess is simulator/browser memory, which
     # only tier 3 (not tier 2) can reclaim. Pre-C1 this state was loud and wrong
@@ -1630,7 +1734,10 @@ mc_watch() {
       # test sourcing the modules by hand may not.
       docker_note=""
       [ -n "${drift:-}" ] && docker_note=" -- ${drift}"
-      if [ "$docker_covers" = "1" ]; then
+      if [ "$over" = "1" ]; then
+        mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the ${cap} GB cap -- agents net ${agent_net_gb} GB / ${agents_budget} GB, Docker ${docker_gb} GB / ${docker_budget} GB, simulators/browser ${sim_gb} GB; protected or active work may prevent reclaim${docker_note}"
+        [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over your ${cap} GB budget: combined ${combined_gb} GB. Protected or active work may prevent cleanup; inspect memcap status and pressure snapshots."
+      elif [ "$docker_covers" = "1" ]; then
         mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the ${cap} GB cap -- the excess is Docker's: ${docker_gb} GB ${docker_against}. No tier reclaims Docker memory; enforce the ceiling with: ${docker_remedy}${docker_note}"
         [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over your ${cap} GB combined budget: Docker is holding ${docker_gb} GB ${docker_against}. No tier can reclaim Docker memory -- ${docker_remedy}"
       # Docker being within its budget is decisive on its own, whether or not
@@ -1652,20 +1759,16 @@ mc_watch() {
     else
       mc_log_throttle_clear "combined-over-cap"
     fi
-  fi
+  }
 
-  # Contract C4's consumer side: the degraded flag is set inside mc_ps_snapshot,
-  # which runs in a command-substitution subshell, so it is read back from the
-  # status file rather than from a variable that cannot survive the pipeline.
-  if command -v mc_measure_status_load >/dev/null 2>&1; then
-    mc_measure_status_load
-  fi
+  # Preserve any fault from either sample; later healthy data cannot retroactively
+  # make a decision based on an earlier unreliable sample trustworthy.
   if [ "$MC_DRY_RUN" = "1" ]; then
     # Reported ahead of a degraded measurement deliberately: "nothing was
     # enforced at all" is the more complete description of the pass, and a real
     # service pass never sets MC_DRY_RUN.
     outcome=dry-run
-  elif [ "${MC_MEASURE_FAULT:-0}" = "1" ]; then
+  elif [ "$initial_fault" = "1" ] || [ "${MC_MEASURE_FAULT:-0}" = "1" ]; then
     # FAULT, not DEGRADED (C4 as amended). DEGRADED is also set by a deliberate
     # MC_NO_TOP=1, which is a documented escape hatch -- keying the outcome on it
     # would turn the user's own choice into a refusal to enforce and make
@@ -1675,12 +1778,15 @@ mc_watch() {
     # The wording comes from mc_measure_summary rather than being composed here,
     # so a fault's description stays with the code that can produce it.
     if command -v mc_measure_summary >/dev/null 2>&1; then
-      mc_log_throttled "measure-fault" "watch: $(mc_measure_summary)"
+      mc_log_throttled "measure-fault" "watch: one or more footprint snapshots were unreliable; tier 2 withheld (latest: $(mc_measure_summary))"
     fi
     outcome=degraded-measurement
   else
     mc_log_throttle_clear "measure-fault"
-    outcome=enforced
+    if [ "$MC_STATE_WRITE_FAILED" = 1 ]; then outcome=state-error
+    elif [ "${gross_over:-0}" = 1 ]; then outcome="over-budget"
+    elif [ "${MC_HOST_PRESSURE:-0}" = 1 ]; then outcome=host-pressure
+    else outcome=enforced; fi
   fi
   mc_finish_pass "$outcome"
   return 0

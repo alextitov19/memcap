@@ -1478,7 +1478,7 @@ SCRIPT
   # This test exists specifically to exercise the real pgrep pattern, so it
   # unsets the override for its own safe, synthetic fixture.
   unset MC_HANDS_ON_MOBILE
-  perl -e 'sleep 600' "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator" &
+  perl -e '$0=shift; sleep 600' "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator sleep 600" &
   victim=$!
   wait_spawned "$victim"
   run mc_hands_on_mobile
@@ -1616,7 +1616,7 @@ SCRIPT
   # See I6's mc_hands_on_mobile test above for why this override exists and
   # is unset here.
   unset MC_HANDS_ON_MOBILE
-  perl -e 'sleep 600' "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator" &
+  perl -e '$0=shift; sleep 600' "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator sleep 600" &
   sim=$!
   wait_spawned "$sim"
   # shellcheck disable=SC2034  # consumed by mc_no_live_session, sourced from enforce.sh
@@ -1913,7 +1913,7 @@ SCRIPT
 @test "hands-on mobile work blocks the reap and preserves its stamp" {
   unset MC_HANDS_ON_MOBILE
   perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!
-  perl -e 'sleep 600' "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator" & hands_on=$!
+  perl -e '$0=shift; sleep 600' "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator sleep 600" & hands_on=$!
   wait_spawned "$sim" "$hands_on"
   AGENTPIDS=""
   SIMPIDS="$sim"
@@ -3283,6 +3283,8 @@ SCRIPT
     source '$MEMCAP_ROOT/libexec/roots.sh'
     source '$MEMCAP_ROOT/libexec/status.sh'
     source '$MEMCAP_ROOT/libexec/enforce.sh'
+    ps() { printf '9001 1 2000000 /usr/local/bin/claude\\n'; }
+    mc_free_pct() { echo 50; }
     mc_kill_over_budget() { :; }
     mc_record_roots() { :; }
     mc_watch
@@ -3315,6 +3317,8 @@ SCRIPT
     source '$MEMCAP_ROOT/libexec/roots.sh'
     source '$MEMCAP_ROOT/libexec/status.sh'
     source '$MEMCAP_ROOT/libexec/enforce.sh'
+    ps() { printf '9001 1 2000000 /usr/local/bin/claude\\n'; }
+    mc_free_pct() { echo 50; }
     mc_kill_over_budget() { :; }
     mc_record_roots() { :; }
     mc_watch

@@ -133,6 +133,25 @@ mc_measure_reset() {
   MC_MEASURE_ROWS=0
 }
 
+# The enforcing caller needs this sample's health even when the state volume
+# is full. Carry metadata through the same pipe as the sample, not a disk file
+# which can silently retain yesterday's healthy result. Never eval metadata.
+mc_snapshot_capture() {
+  local bundle meta marker
+  bundle=$(
+    mc_measure_reset
+    mc_ps_snapshot || mc_measure_mark top-failed 1
+    printf '\nMEMCAP_HEALTH %s %s %s %s %s' "$MC_MEASURE_DEGRADED" "$MC_MEASURE_FAULT" \
+      "$MC_MEASURE_REASON" "$MC_MEASURE_MISSING" "$MC_MEASURE_ROWS"
+  )
+  meta="${bundle##*$'\n'}"
+  MC_CAPTURE_SNAPSHOT="${bundle%$'\n'*}"
+  read -r marker MC_MEASURE_DEGRADED MC_MEASURE_FAULT MC_MEASURE_REASON MC_MEASURE_MISSING MC_MEASURE_ROWS <<< "$meta"
+  if [ "$marker" != MEMCAP_HEALTH ] || [ -z "$MC_CAPTURE_SNAPSHOT" ]; then
+    mc_measure_mark top-failed 1
+  fi
+}
+
 # Written whole, every pass, including the healthy one -- a stale fault record
 # left lying around would be read as a current fault long after top recovered.
 mc_measure_persist() {

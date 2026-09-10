@@ -536,6 +536,56 @@ computed default if it is absent or commented out.
 | `NOTIFY_ICON`                | `🧠`              | The emoji memcap renders into the icon its notifications carry (see Notifications above). Must be at most 32 bytes and contain no control characters — it is passed to `sips` and written into `actions.log`, and a multi-codepoint emoji like 👨‍👩‍👧‍👦 is a legitimate choice, so the limit is measured in bytes rather than in whatever the current locale calls a character. `none` disables the bundle and returns to plain Script Editor notifications. Changing this rebuilds on the next pass.                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `STALE_PASS_SEC`             | `300`             | How long since the last completed `watch` pass before `status` reports the service as probably not running, rather than just "quiet." Four to five real ticks: the LaunchAgent asks for 60 seconds, but launchd's timer coalescing makes the measured interval 60–75 seconds, so 300 seconds is long enough to absorb a missed tick without a false alarm.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
+## Pressure diagnostics
+
+`memcap status` reports host disk availability and used swap as well as the
+classified memory pools. By default, the watcher warns below 10 GB available disk
+or at 8 GB used swap. Swap grows dynamically on macOS: zero free space inside the
+currently allocated swapfiles does not by itself mean exhaustion. Failed probes
+are reported as unknown, never as a healthy zero.
+
+During combined-budget, low-free-memory, or host disk/swap pressure, memcap retains
+twelve snapshots under `~/.local/state/memcap/pressure/`, one every five minutes
+while pressure persists. Each has at most twenty processes and bounded command
+and ancestry fields, including processes outside memcap's reclaim scope. The
+records use the same footprint snapshot as enforcement (and label any RSS fallback),
+with PID, parent chain, separately sampled start identity and protection reason.
+Read the latest saved record with:
+
+```sh
+memcap diagnostics
+```
+
+The directory is private (0700), records are 0600, and common credential arguments
+are redacted. Command arguments can still contain sensitive data; inspect a record
+before sharing it. PID identity is sampled after the memory table, so a process
+that exits or a reused PID may have an unavailable or different start identity.
+Snapshots provide evidence, not retrospective proof of ownership.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `HOST_MIN_DISK_GB` | `10` | Warn below this available disk space on the home volume; `0` disables this threshold. |
+| `HOST_MAX_SWAP_GB` | `8` | Warn at or above this used host swap; `0` disables this threshold. |
+| `PRESSURE_SNAPSHOT_SEC` | `300` | Minimum interval during sustained pressure; `0` captures each pass. Retention is always twelve records. |
+
+These settings take effect through defaults on upgrade; existing config is not
+rewritten. Disk/swap thresholds are diagnostics, not permission to kill protected
+processes or delete files. Generic Python workers attached to live agents remain
+protected; detached workers are visible in snapshots but are not automatically
+made orphan candidates. Memcap's budget is a cleanup policy, not a hard OS memory
+limit covering every process.
+
+Combined over-cap warnings are emitted even when tier 2 is selected but cannot
+reclaim anything. The `over-budget` outcome refers to the sampled usage before
+that cleanup, not a claim about memory actually freed. If Docker's configured and
+observed ceilings differ, status shows the resulting allowances and current
+headroom; it never silently reduces the agent budget or restarts Docker.
+
+Mobile vetoes name their blockers. A proven idle browser owned by a different
+known agent from every mobile blocker may be reclaimed under the existing idle
+and held-resource rules. Same-session and unknown ownership retain the veto, as
+do mobile simulators and devices. Tier 2 continues to protect mobile bundlers.
+
 ## Files on disk
 
 Config, at `~/.config/memcap/memcap.conf` (override with `MEMCAP_CONFIG_HOME`):

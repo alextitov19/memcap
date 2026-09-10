@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.7.0 — 2026-09-09
+
+Pressure diagnostics and safer cleanup after the September watchdog-panic audit.
+
+- Watch host disk availability and used swap independently of the agent budget.
+  Defaults warn below 10 GB disk or at 8 GB used swap; an unavailable reading is
+  reported as unknown, and full *allocated* swap alone is not treated as exhaustion.
+- Keep twelve private, bounded pressure snapshots, at most once every five minutes
+  during sustained pressure. Each records the largest twenty processes across the
+  whole machine, including unclassified Python workers, parent ancestry, start
+  identity, memory metric, command and protection reason. Common credential
+  arguments are redacted. `memcap diagnostics` reads the latest saved snapshot.
+- Always report combined over-cap usage, including when agents exceed their own
+  allocation and tier 2 declines. Status distinguishes an over-budget sample, host
+  pressure, and failed state writes from a healthy completed pass.
+- Preserve counters and heartbeats through atomic writes; failed state writes
+  include timestamps and paths on stderr. Failed audit writes also send the
+  original event to stderr instead of losing the explanation.
+- Withhold tier 2 on unexpected footprint-measurement faults. Carry health beside
+  the sample so an unwritable state directory cannot substitute stale health.
+  Deliberate `MC_NO_TOP=1` remains supported; orphan and idle-resource checks retain
+  their independent safety gates. Correct status text that claimed no tier ran.
+- Mobile veto diagnostics identify the blocking processes. Search commands that
+  merely mention Maestro, Expo or a simulator app no longer count as mobile work.
+  An idle browser may bypass a mobile veto only when it belongs to a different
+  known agent from **every** blocker. Unknown ownership, same-session work,
+  mobile simulators, held MCP resources and all existing kill safeguards remain
+  protected. Tier 2 retains its mobile veto.
+- When Docker's ceiling differs from configuration, status shows the resulting
+  agent-plus-Docker allowances and headroom at current Docker usage. No Docker
+  settings or agent budgets are automatically changed.
+- New settings: `HOST_MIN_DISK_GB`, `HOST_MAX_SWAP_GB`, `PRESSURE_SNAPSHOT_SEC`.
+  Existing configuration is preserved. Generic Python workers are diagnosed, not
+  made automatic kill targets.
+
 ## v0.6.0 — 2026-09-04
 
 Found by auditing nine days of `actions.log` (1,463 lines) on the author's machine
