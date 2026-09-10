@@ -96,7 +96,7 @@ setup() {
   for _ in $(seq 1 15); do mc_pressure_capture "$sample" 'fixture'; done
   [ "$(find "$MEMCAP_STATE_HOME/memcap/pressure" -name '*.log' | wc -l | tr -d ' ')" -le 12 ]
   file=$(find "$MEMCAP_STATE_HOME/memcap/pressure" -name '*.log' | head -1)
-  [ "$(rg -c '^pid=' "$file")" = 20 ]
+  [ "$(awk '/^pid=/ { count++ } END { print count+0 }' "$file")" = 20 ]
 }
 
 @test "SNAPSHOT: repeated pressure is throttled and recovery permits immediate recapture" {
