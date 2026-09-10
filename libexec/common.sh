@@ -13,16 +13,44 @@ set -uo pipefail
 # log analysis had no way to tell which build wrote which line. A test ties this
 # string to CHANGELOG.md's top heading so a release cannot bump one alone.
 # shellcheck disable=SC2034  # read by bin/memcap, status.sh and enforce.sh
-MEMCAP_VERSION="0.6.0"
+MEMCAP_VERSION="0.7.0"
 
 mc_config_dir() { printf '%s/memcap\n' "${MEMCAP_CONFIG_HOME:-$HOME/.config}"; }
 mc_config_file() { printf '%s/memcap.conf\n' "$(mc_config_dir)"; }
 mc_state_dir() { printf '%s/memcap\n' "${MEMCAP_STATE_HOME:-$HOME/.local/state}"; }
 
+# Never recurse into the failing audit log. stderr is also captured by launchd.
+mc_state_error() {
+  MC_STATE_WRITE_FAILED=1
+  printf '[%s] memcap: state write failed: %s (check free disk space and permissions)\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >&2
+}
+
+# Atomic replacement preserves the previous record when storage is exhausted.
+mc_state_write() {
+  local file="$1" value="$2" tmp=""
+  if [ ! -d "$file" ] && mkdir -p "${file%/*}" 2>/dev/null; then
+    tmp=$(mktemp "$file.XXXXXX" 2>/dev/null) || tmp=""
+    if [ -n "$tmp" ]; then
+      if chmod 600 "$tmp" 2>/dev/null &&
+          { printf '%s\n' "$value" > "$tmp"; } 2>/dev/null &&
+          mv -f "$tmp" "$file" 2>/dev/null; then return 0; fi
+      rm -f "$tmp" 2>/dev/null || :
+    fi
+  fi
+  mc_state_error "$file"
+  return 1
+}
+
 mc_log() {
-  local dir; dir="$(mc_state_dir)"
-  mkdir -p "$dir"
-  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$dir/actions.log"
+  local dir line; dir="$(mc_state_dir)"
+  line="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+  if ! { mkdir -p "$dir" && printf '%s\n' "$line" >> "$dir/actions.log"; } 2>/dev/null; then
+    # shellcheck disable=SC2034  # consumed by the watch outcome in enforce.sh
+    MC_STATE_WRITE_FAILED=1
+    printf '%s [audit log unavailable: %s/actions.log]\n' "$line" "$dir" >&2
+  fi
+  return 0
 }
 
 mc_is_paused() { [ -f "$(mc_state_dir)/paused" ]; }
@@ -156,10 +184,9 @@ mc_resume() {
 mc_stamp_heartbeat() {
   local dir awake
   dir="$(mc_state_dir)"
-  mkdir -p "$dir"
-  date +%s > "$dir/last-pass"
+  mc_state_write "$dir/last-pass" "$(date +%s)" || :
   if awake=$(mc_awake_secs); then
-    printf '%s\n' "$awake" > "$dir/last-pass-awake"
+    mc_state_write "$dir/last-pass-awake" "$awake" || :
   else
     rm -f "$dir/last-pass-awake"
   fi
@@ -183,7 +210,7 @@ mc_log_throttled() {
   last=$(cat "$stamp" 2>/dev/null || echo 0)
   [ $((now - last)) -lt "${LOG_THROTTLE_SEC:-1800}" ] && return 0
   mkdir -p "$dir"
-  echo "$now" > "$stamp"
+  mc_state_write "$stamp" "$now" || :
   mc_log "$msg"
 }
 

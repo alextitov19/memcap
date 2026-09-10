@@ -142,6 +142,9 @@ TIER3_AGENT_TREE_GRACE_SEC=1800
 ROOT_TTL_DAYS=14
 ROOT_MAX=64
 MEASURE_MISSING_PCT_MAX=10
+HOST_MIN_DISK_GB=10
+HOST_MAX_SWAP_GB=8
+PRESSURE_SNAPSHOT_SEC=300
 EXTRA_AGENTS=""
 # The emoji on memcap's notifications. Change it, then run: memcap notify
 # NOTIFY_ICON=none goes back to plain Script Editor notifications.

@@ -111,8 +111,20 @@ mc_render_outcome() {
         mc_status_warn "THE LAST PASS DID NOT ENFORCE -- $conf did not parse. Check it with: bash -n $conf"
       ;;
     degraded-measurement)
-      outcome_label="REFUSED -- measurement was unreliable"
-      mc_status_warn "THE LAST PASS DID NOT ENFORCE -- the memory measurement fell back to ps RSS, which understates the real totals by ~42%. memcap will not kill anything on numbers it does not trust."
+      outcome_label="DEGRADED -- tier 2 withheld; measurement unreliable"
+      mc_status_warn "THE LAST PASS HAD UNRELIABLE MEASUREMENTS -- tier 2 was withheld. Safe orphan and idle-simulator checks may still have run; ps RSS fallback can over-count or under-count memory."
+      ;;
+    over-budget)
+      outcome_label="OVER BUDGET -- sampled usage exceeds cap"
+      mc_status_warn "THE LAST PASS WAS OVER BUDGET -- protected work, idle grace or Docker may prevent cleanup. See actions.log and pressure snapshots; this is the sample before cleanup, not a promise of memory reclaimed."
+      ;;
+    host-pressure)
+      outcome_label="HOST PRESSURE -- disk or swap warning"
+      mc_status_warn "HOST MEMORY/STORAGE PRESSURE -- reduce workload or free disk space. memcap cannot reclaim every process."
+      ;;
+    state-error)
+      outcome_label="STATE ERROR -- audit/heartbeat writes failed"
+      mc_status_warn "MEMCAP COULD NOT WRITE STATE -- check disk space, permissions and the service stderr log. Reclaim checks may still have run."
       ;;
     '')
       # Deliberately not read as `enforced`: an absent record looks exactly like
@@ -369,6 +381,19 @@ mc_render_status() {
   mc_status_row "combined" "${combined} GB / ${cap} GB budget"
   mc_status_row "system memory available" "$free_label"
   mc_status_row "memory measured by" "$measure_label"
+  if command -v mc_host_pressure >/dev/null 2>&1; then
+    mc_host_pressure
+    mc_status_row "host disk available" "$(mc_diag_gb "$MC_HOST_DISK_KB")"
+    mc_status_row "host swap used" "$(mc_diag_gb "$MC_HOST_SWAP_KB")"
+    mc_status_row "pressure snapshots (private)" "$(mc_state_dir)/pressure/ (latest 12)"
+    if [ "$MC_HOST_PRESSURE" = 1 ] || [ "$MC_HOST_FAULT" = 1 ]; then
+      mc_status_warn "$MC_HOST_SUMMARY"
+    fi
+  fi
+  if [ -n "$docker_drift" ]; then
+    mc_status_row "agent + Docker allowances" "$((agents_budget + MC_DOCKER_CEILING_GB)) GB / ${cap} GB target (${MC_DOCKER_CEILING_SOURCE})"
+    mc_status_row "headroom at current Docker use" "$(awk -v cap="$cap" -v d="$docker_gb" 'BEGIN {printf "%.2f GB for agents + sims",cap-d}')"
+  fi
   mc_render_heartbeat
   mc_render_outcome
   mc_render_launchagent

@@ -4,7 +4,7 @@ MEMCAP_ROOT="${MEMCAP_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 LIB="$MEMCAP_ROOT/libexec"
 # shellcheck source=/dev/null
 . "$LIB/common.sh"
-for m in config budget detect measure classify roots status; do
+for m in config budget detect measure classify roots status diagnostics; do
   # shellcheck source=/dev/null
   . "$LIB/$m.sh"
 done
@@ -41,6 +41,10 @@ case "${1:-help}" in
     # shellcheck source=/dev/null
     . "$LIB/docker.sh"
     mc_render_status
+    ;;
+  diagnostics)
+    if [ $# -ne 1 ]; then echo "usage: memcap diagnostics" >&2; exit 2; fi
+    mc_render_diagnostics
     ;;
   watch)
     # shellcheck source=/dev/null
@@ -134,6 +138,6 @@ case "${1:-help}" in
   # carried no version at all. Both matter when the evidence for a bug is nine
   # days of one machine's actions.log.
   version|--version|-v) echo "memcap $MEMCAP_VERSION" ;;
-  help|--help|-h) echo "memcap $MEMCAP_VERSION — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|watch|clean|profile|docker [apply [--force]]|notify|off|on|service [install|uninstall|status]|uninstall|version}" ;;
+  help|--help|-h) echo "memcap $MEMCAP_VERSION — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|diagnostics|watch|clean|profile|docker [apply [--force]]|notify|off|on|service [install|uninstall|status]|uninstall|version}" ;;
   *) echo "unknown command: $1" >&2; exit 1 ;;
 esac
