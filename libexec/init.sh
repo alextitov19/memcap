@@ -145,6 +145,7 @@ MEASURE_MISSING_PCT_MAX=10
 HOST_MIN_DISK_GB=10
 HOST_MAX_SWAP_GB=8
 PRESSURE_SNAPSHOT_SEC=300
+AGENT_JOB_MAX_GB=4
 EXTRA_AGENTS=""
 # The emoji on memcap's notifications. Change it, then run: memcap notify
 # NOTIFY_ICON=none goes back to plain Script Editor notifications.

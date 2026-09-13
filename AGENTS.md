@@ -123,12 +123,19 @@ wrong reason.** Concretely —
 | `libexec/classify.sh` | Splits a process table into agent/docker/orphan/sim buckets.       |
 | `libexec/roots.sh`    | Learned sweep roots: canonicalize, safety-check, persist.          |
 | `libexec/enforce.sh`  | The three tiers, and `mc_kill_pids` — the single kill choke point. |
+| `libexec/jobs.sh`     | Confirmed oversized Claude/Codex child jobs; narrow protection exception. |
+| `libexec/feedback.sh` | Private job notices and agent lifecycle hook context.             |
 | `libexec/docker.sh`   | Runtime detection and the VM ceiling.                              |
 | `libexec/notify.sh`   | Building the notification bundle that carries memcap's icon.       |
 | `tests/`              | bats suite. `helper.bash` holds the assertion helpers.             |
 
 Every kill routes through `mc_kill_pids`. If you are adding a code path that
 terminates a process and it does not go through that function, that is the bug.
+
+The oversized-job policy intentionally permits killing an active Claude/Codex child
+above `AGENT_JOB_MAX_GB` after fresh footprint and ownership checks. It must never
+become a general protection bypass. It still spares the agent CLI and memcap's
+ancestry. Orphan, age and mobile gates remain unchanged for the cleanup tiers.
 
 ## Assertions
 

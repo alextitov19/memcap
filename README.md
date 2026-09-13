@@ -111,7 +111,44 @@ re-initialize.
 
 memcap runs unattended with permission to send `SIGTERM`/`SIGKILL` to processes on
 your machine. That is worth being specific about before anything else. It only ever
-acts through three tiers, and each one is deliberately narrow.
+acts through an oversized-job check and three cleanup tiers.
+
+**Oversized live jobs — Claude and Codex children.** A subprocess exceeding
+`AGENT_JOB_MAX_GB` (default **4 GB per process**, `0` disables) can be terminated
+even while its agent session is alive, mobile tooling is active, or it is younger
+than the cleanup age gates. This includes Python tests and build workers. The
+watcher confirms the candidate with two fresh `top` footprint readings; it never
+uses RSS fallback to authorize this kill. A missing row elsewhere in the process
+table does not veto a candidate whose own footprint can be confirmed.
+
+The nearest live ancestor must be a Claude or Codex executable, not an argument
+mentioning one. Before TERM and KILL, memcap rechecks the process and agent start
+identities and ownership. Agent CLIs, memcap's ancestry, Docker, and classified
+simulator/browser resources stay excluded. Only the oversized process is selected;
+this is not an aggregate limit on a job's whole worker pool. It is sampled on the
+watcher's roughly 60-second cycle, so fast allocations can overshoot between checks.
+This policy deliberately allows interrupting an active job to protect the host.
+
+**Feedback to the agents.** `memcap agent-hooks codex` or `memcap agent-hooks claude`
+prints hook entries for `memcap feedback`. Merge their `hooks` arrays into
+`~/.codex/hooks.json` or `~/.claude/settings.json`, preserving existing hooks.
+The generated command uses the memcap installation it was generated from; generate
+it again if that installation moves. Feedback requires `jq`; enforcement does not.
+Codex requires reviewing and trusting a new hook in `/hooks` before it runs.
+
+Hooks deliver a notice on the next tool/prompt lifecycle event: PID, measured
+footprint, configured limit, and instructions to split batches/tests, reduce
+workers, and investigate unbounded allocation. They explicitly discourage retrying
+the same job or bypassing the cap. Notices say **termination requested**, not that
+the process certainly exited. No terminal keystrokes or transcript edits are used.
+Delivery is scoped to the hook's canonical project directory and deduplicated per
+session; another agent in that project can see the notice too. Unknown process cwd
+cannot be routed. The latest 32 job records are private, expire from hook delivery
+after 24 hours, and include redacted command identities. The audit log remains the
+fallback when hooks are absent or cannot run.
+
+Hook formats: [Codex hooks](https://learn.chatgpt.com/docs/hooks) and
+[Claude Code hooks](https://code.claude.com/docs/en/hooks).
 
 **Tier 1 — orphans.** A process is only touched here if its parent is already dead
 (`ppid == 1`), its command line matches a known dev-server pattern (`vite`, `next`,
@@ -273,7 +310,7 @@ booted simulator or headless browser is using): sims still count toward
 `status`'s combined figure and are reclaimed by tier 3 once genuinely idle, they
 just cannot be the reason a dev server gets killed.
 
-Five guarantees hold across all three tiers, enforced at a single choke point
+Five guarantees hold across the three cleanup tiers, enforced at a single choke point
 (`mc_kill_pids`) that every kill routes through:
 
 - It never kills an agent CLI itself, or anything in memcap's own process
@@ -299,6 +336,11 @@ Five guarantees hold across all three tiers, enforced at a single choke point
   `SIGKILL`, a survivor's identity is re-confirmed by start time and argv and re-run
   through the protection filter, so a pid recycled inside that two-second window
   cannot be killed in the original's place.
+
+The oversized-job check uses that same choke point, pause, dry-run, identity and
+agent-CLI protections. It explicitly overrides live-child and mobile-tooling
+protection for a confirmed oversized Claude/Codex child; cleanup rules above retain
+their existing age, orphan and idle gates.
 
 **Sweep roots are learned, not configured.** memcap never asks you which
 directories are safe to clean. Instead, while an agent session is alive, it

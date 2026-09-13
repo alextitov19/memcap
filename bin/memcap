@@ -46,9 +46,23 @@ case "${1:-help}" in
     if [ $# -ne 1 ]; then echo "usage: memcap diagnostics" >&2; exit 2; fi
     mc_render_diagnostics
     ;;
+  feedback)
+    # shellcheck source=/dev/null
+    . "$LIB/feedback.sh"
+    mc_feedback_hook
+    ;;
+  agent-hooks)
+    # shellcheck source=/dev/null
+    . "$LIB/feedback.sh"
+    mc_agent_hooks "${2:-}"
+    ;;
   watch)
     # shellcheck source=/dev/null
     . "$LIB/enforce.sh"
+    # shellcheck source=/dev/null
+    . "$LIB/jobs.sh"
+    # shellcheck source=/dev/null
+    . "$LIB/feedback.sh"
     # shellcheck source=/dev/null
     . "$LIB/notify.sh"
     # shellcheck source=/dev/null
@@ -138,6 +152,6 @@ case "${1:-help}" in
   # carried no version at all. Both matter when the evidence for a bug is nine
   # days of one machine's actions.log.
   version|--version|-v) echo "memcap $MEMCAP_VERSION" ;;
-  help|--help|-h) echo "memcap $MEMCAP_VERSION — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|diagnostics|watch|clean|profile|docker [apply [--force]]|notify|off|on|service [install|uninstall|status]|uninstall|version}" ;;
+  help|--help|-h) echo "memcap $MEMCAP_VERSION — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|diagnostics|feedback|agent-hooks codex|claude|watch|clean|profile|docker [apply [--force]]|notify|off|on|service [install|uninstall|status]|uninstall|version}" ;;
   *) echo "unknown command: $1" >&2; exit 1 ;;
 esac
