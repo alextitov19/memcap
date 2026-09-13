@@ -376,6 +376,11 @@ mc_render_status() {
   mc_status_row "  of which leaked/orphaned" "$(mc_gb "$ORPHAN_KB") GB"
   mc_status_row "  of which sims/playwright" "$(mc_gb "$SIM_KB") GB"
   mc_status_row "  net of sims (drives tier 2)" "${agent_net_gb} GB"
+  if [ "$(mc_job_limit_gb)" = 0 ]; then
+    mc_status_row "oversized agent job limit" 'DISABLED'
+  else
+    mc_status_row "oversized agent job limit" "$(mc_job_limit_gb) GB per process (Claude/Codex children)"
+  fi
   mc_status_row "docker VM + helpers" "${docker_gb} GB / ${docker_ceiling_label}"
   echo "  ---------------------------------------------------------"
   mc_status_row "combined" "${combined} GB / ${cap} GB budget"

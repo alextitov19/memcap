@@ -16,7 +16,7 @@ MOBILE_TOOLING_IDLE_SEC TIER3_REQUIRE_NO_SESSION STALE_PASS_SEC \
 LOG_THROTTLE_SEC EXTRA_AGENTS \
 TIER1_MIN_AGE_SEC TIER1_MAX_CWD_LOOKUPS TIER2_ENABLED LIVENESS_SEC \
 TIER3_AGENT_TREE_GRACE_SEC ROOT_TTL_DAYS ROOT_MAX MEASURE_MISSING_PCT_MAX \
-NOTIFY_ICON HOST_MIN_DISK_GB HOST_MAX_SWAP_GB PRESSURE_SNAPSHOT_SEC"
+NOTIFY_ICON HOST_MIN_DISK_GB HOST_MAX_SWAP_GB PRESSURE_SNAPSHOT_SEC AGENT_JOB_MAX_GB"
 
 # 1 once a config file has been found unusable. Defaulted here so that every
 # consumer can read it under `set -u` even on a code path where mc_load_config
@@ -95,6 +95,17 @@ mc_frac() {
     "config: $name is not a number ('${1-}') -- using $default"
   printf '%s\n' "$default"
   return 0
+}
+
+# Shared by status and the oversized-job tier. Zero is an explicit opt-out.
+mc_job_limit_gb() {
+  local value
+  value=$(mc_num "${AGENT_JOB_MAX_GB:-4}" 4 AGENT_JOB_MAX_GB)
+  if [ "$value" -gt 1048576 ]; then
+    mc_log_throttled config-job-limit 'config: AGENT_JOB_MAX_GB is too large -- using 4'
+    value=4
+  fi
+  printf '%s' "$value"
 }
 
 # Source a file only if it PARSES, and report which way it failed.

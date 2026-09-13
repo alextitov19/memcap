@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.8.0 — 2026-09-13
+
+- Stop confirmed oversized Claude/Codex child processes, including live Python
+  test jobs previously protected by the entire agent tree. Default per-process
+  threshold is 4 GB (`AGENT_JOB_MAX_GB`); fresh footprint and ownership checks are
+  required, and agent CLIs, memcap ancestry, Docker and sims remain protected.
+- Add project-scoped agent feedback hooks with batching and worker-limit guidance.
+  `memcap agent-hooks codex|claude` prints mergeable configuration; `memcap feedback`
+  consumes supported lifecycle input. Hook installation/trust is separate.
+
 ## v0.7.0 — 2026-09-09
 
 Pressure diagnostics and safer cleanup after the September watchdog-panic audit.

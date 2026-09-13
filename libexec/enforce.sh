@@ -308,6 +308,13 @@ mc_filter_protected() {
   self=$(mc_self_ancestry) || return 1
   mc_veto_evidence_warm
   for pid in $1; do
+    if [ "$scope" = oversized ]; then
+      command -v mc_oversized_allowed >/dev/null 2>&1 || continue
+      mc_oversized_allowed "$pid" || continue
+      case " ${AGENTPIDS} $self " in *" $pid "*) continue ;; esac
+      out="$out $pid"
+      continue
+    fi
     if [ "$scope" != "sims" ]; then
       case " ${PROTECTEDPIDS} " in *" $pid "*) continue ;; esac
     fi
@@ -374,13 +381,26 @@ mc_kill_pids() {
   if [ "$MC_DRY_RUN" = "1" ]; then
     echo "would kill ($reason): $pids"; return 1
   fi
+  if [ "$scope" = oversized ]; then
+    # Publish before TERM so a tool-failure hook can already read the reason.
+    command -v mc_job_feedback >/dev/null 2>&1 && mc_job_feedback || :
+  fi
   for p in $pids; do
     mc_log "$reason: $(mc_abbrev "$(ps -o pid=,rss=,command= -p "$p" 2>/dev/null)")"
     idents="$idents$p|$(mc_pid_identity "$p")
 "
   done
+  if [ "$scope" = oversized ]; then
+    # Logging and feedback can take time under pressure. Revalidate the original
+    # identity after those subprocesses, as close to TERM as shell permits.
+    pids=$(mc_filter_protected "$pids" "$scope") || return 1
+    [ -n "${pids// /}" ] || return 1
+  fi
   # shellcheck disable=SC2086
-  kill -TERM $pids 2>/dev/null
+  if ! kill -TERM $pids 2>/dev/null; then
+    mc_log "$reason: SIGTERM failed for:$pids"
+    return 1
+  fi
   sleep 2
   for p in $pids; do
     mc_pid_alive "$p" || continue
@@ -1637,6 +1657,22 @@ mc_watch() {
   min_free=$(mc_enf_num "${MIN_FREE_PCT:-15}" 15 MIN_FREE_PCT)
 
   initial_fault="${MC_MEASURE_FAULT:-0}"
+  if command -v mc_reap_oversized >/dev/null 2>&1; then
+    mc_reap_oversized "$sample"
+    if [ "${MC_JOBS_RECLAIMED:-0}" = 1 ]; then
+      # Never select a second, unrelated victim using the memory just reclaimed.
+      mc_snapshot_capture
+      sample="$MC_CAPTURE_SNAPSHOT"
+      unset AGENT_KB DOCKER_KB SIM_KB AGENTPIDS PROTECTEDPIDS SIMPIDS ORPHANS DEVPIDS
+      eval "$(printf '%s\n' "$sample" | mc_classify)"
+      if [ -z "${AGENT_KB+x}" ] || [ -z "${DOCKER_KB+x}" ] || [ -z "${SIMPIDS+x}" ]; then
+        mc_finish_pass degraded-measurement
+        return 1
+      fi
+      [ "${MC_MEASURE_FAULT:-0}" = 1 ] && initial_fault=1
+      agent_net_gb=$(mc_gb "$(mc_agent_net_kb "$AGENT_KB" "$SIM_KB")")
+    fi
+  fi
   if command -v mc_host_pressure >/dev/null 2>&1; then
     mc_host_pressure
     mc_host_report

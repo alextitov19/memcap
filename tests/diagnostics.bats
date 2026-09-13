@@ -151,6 +151,23 @@ watch_fixture() {
   [ ! -f "$BATS_TEST_TMPDIR/tier2" ]
 }
 
+@test "WATCH: oversized job reclaim refreshes usage before selecting any other victim" {
+  watch_fixture
+  mc_reap_oversized() { MC_JOBS_RECLAIMED=1; touch "$BATS_TEST_TMPDIR/reclaimed"; }
+  mc_ps_snapshot() {
+    if [ -f "$BATS_TEST_TMPDIR/reclaimed" ]; then
+      printf '9001 1 100000 /bin/codex\n'
+    else
+      printf '9001 1 100000 /bin/codex\n9002 9001 75497472 /bin/python\n'
+    fi
+  }
+  mc_kill_over_budget() { echo unsafe-tier2 > "$BATS_TEST_TMPDIR/tier2"; }
+  run mc_watch
+  [ "$status" = 0 ]
+  [ -f "$BATS_TEST_TMPDIR/reclaimed" ]
+  [ ! -f "$BATS_TEST_TMPDIR/tier2" ]
+}
+
 @test "STATUS: over-budget outcome describes protected work without claiming a kill" {
   mkdir -p "$MEMCAP_STATE_HOME/memcap"
   printf 'over-budget\n' > "$MEMCAP_STATE_HOME/memcap/last-outcome"
