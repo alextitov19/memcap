@@ -122,6 +122,39 @@ class SchedulerTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 75, err)
             self.assertFalse(marker.exists())
 
+    def test_yellow_policy_allows_warning_but_never_red_or_unknown(self):
+        q = self.queue(max_pressure="yellow")
+        for pressure in (1, 2):
+            self.assertTrue(
+                q.admissible([], 2 * 1048576, "", {**healthy(), "pressure": pressure})[
+                    0
+                ]
+            )
+        for pressure in (0, 3, 4, 5, -1):
+            self.assertFalse(
+                q.admissible([], 2 * 1048576, "", {**healthy(), "pressure": pressure})[
+                    0
+                ]
+            )
+
+    def test_yellow_policy_keeps_budget_headroom_and_measurement_guards(self):
+        q = self.queue(max_pressure="yellow")
+        for change in (
+            {"tracked_kb": 15 * 1048576},
+            {"available_kb": 4 * 1048576},
+            {"fault": True},
+        ):
+            self.assertFalse(
+                q.admissible(
+                    [], 2 * 1048576, "", {**healthy(), "pressure": 2, **change}
+                )[0]
+            )
+
+    def test_pressure_policy_rejects_red_and_misspellings(self):
+        for value in ("red", "Yellow", "", None, 2):
+            with self.assertRaises(self.mod.QueueError):
+                self.queue(max_pressure=value)
+
     def test_output_stderr_and_exit_status_survive(self):
         proc = self.fixture(
             "import sys;print('out');print('err',file=sys.stderr);sys.exit(7)"

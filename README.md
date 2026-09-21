@@ -76,8 +76,11 @@ using only the standard library.
 The cleanup budget cannot force protected active work back under the cap. The
 optional queue admits at most **two finite jobs** across participating sessions,
 reserving **2 GB per job** by default. Other commands wait without starting.
-Admission also requires normal macOS pressure and **3 GB of host headroom**
-after reservations. Docker, simulators and agent workloads count against the
+Admission defaults to normal (green) macOS pressure and **3 GB of host headroom**
+after reservations. Set `QUEUE_MAX_PRESSURE=yellow` to also admit work at warning
+pressure; critical (red) and unknown pressure always block admission. The combined
+budget and headroom gates still apply, so a green graph alone does not guarantee
+that another job fits. Docker, simulators and agent workloads count against the
 combined budget; ordinary applications affect the host-headroom gate.
 
 ```bash
@@ -158,7 +161,12 @@ QUEUE_JOB_GB=2
 QUEUE_HEADROOM_GB=3
 QUEUE_POLL_SEC=2
 QUEUE_WAIT_SEC=1800
+QUEUE_MAX_PRESSURE=green
 ```
+
+New runners load queue settings when they start. Already-waiting runners retain
+their pressure policy; cancel and resubmit those commands to load a changed
+policy. The combined budget is resampled from configuration while they wait.
 
 Private reservations live in the state directory's `queue/`. Do not delete it
 while managed work runs; that discards reservations. `memcap status` displays a
