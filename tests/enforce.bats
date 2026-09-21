@@ -1334,7 +1334,9 @@ SCRIPT
   run mc_kill_over_budget
 
   kill "$agent_child" 2>/dev/null
-  kill "$server" 2>/dev/null
+  # Its only child has exited, so the shell's `wait` finishes on its own.
+  # Reap it instead of racing a second kill against that normal exit.
+  wait "$server" 2>/dev/null || true
 
   assert_contains "$output" "would kill"
   assert_contains "$output" "$server"
