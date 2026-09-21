@@ -122,6 +122,39 @@ class SchedulerTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 75, err)
             self.assertFalse(marker.exists())
 
+    def test_yellow_policy_allows_warning_but_never_red_or_unknown(self):
+        q = self.queue(max_pressure="yellow")
+        for pressure in (1, 2):
+            self.assertTrue(
+                q.admissible([], 2 * 1048576, "", {**healthy(), "pressure": pressure})[
+                    0
+                ]
+            )
+        for pressure in (0, 3, 4, 5, -1):
+            self.assertFalse(
+                q.admissible([], 2 * 1048576, "", {**healthy(), "pressure": pressure})[
+                    0
+                ]
+            )
+
+    def test_yellow_policy_keeps_budget_headroom_and_measurement_guards(self):
+        q = self.queue(max_pressure="yellow")
+        for change in (
+            {"tracked_kb": 15 * 1048576},
+            {"available_kb": 4 * 1048576},
+            {"fault": True},
+        ):
+            self.assertFalse(
+                q.admissible(
+                    [], 2 * 1048576, "", {**healthy(), "pressure": 2, **change}
+                )[0]
+            )
+
+    def test_pressure_policy_rejects_red_and_misspellings(self):
+        for value in ("red", "Yellow", "", None, 2):
+            with self.assertRaises(self.mod.QueueError):
+                self.queue(max_pressure=value)
+
     def test_output_stderr_and_exit_status_survive(self):
         proc = self.fixture(
             "import sys;print('out');print('err',file=sys.stderr);sys.exit(7)"
@@ -419,6 +452,37 @@ class SchedulerTests(unittest.TestCase):
             "npm test",
         ):
             self.assertEqual(self.policy.classify_shell(command)[0], "job")
+
+    def test_lightweight_inspection_and_ci_watch_do_not_reserve_build_slots(self):
+        for command in (
+            'rg -n "zip-counties|case" backend/cmd/ingest/main.go | head -30',
+            'rg -n "zip-counties" backend/cmd/ingest/*.go',
+            "memcap status 2>&1 | head -30",
+            "memcap queue --json",
+            "cd /tmp/project && cat Makefile",
+            "sed -n '1,120p' fastlane/Fastfile",
+            'gh run watch 123 -R owner/repo --exit-status > /tmp/watch.log 2>&1; echo "EXIT=$?" >> /tmp/watch.log; tail -6 /tmp/watch.log',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.policy.classify_shell(command)[0], "light")
+
+    def test_lightweight_shell_parsing_keeps_execution_and_heavy_stages_queued(self):
+        for command in (
+            "rg x file | python worker.py",
+            "cat Makefile && make archive",
+            'echo "$(npm test)"',
+            "echo `npm test`",
+            "cat <(npm test)",
+            "rg --pre ./expensive x file | head",
+            "rg x *",
+            'sed -n "1e npm test" file',
+            "gh run view 123 --web",
+            "memcap off",
+            "cat file & npm test",
+            "cat file\nnpm test",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.policy.classify_shell(command)[0], "job")
 
     def test_hook_rewrites_exact_command_without_running_it(self):
         command = "printf '%s' 'a; $(touch /tmp/never)' && npm test"

@@ -105,6 +105,7 @@ class Scheduler:
         memory_gb=2,
         headroom_gb=3,
         poll=2,
+        max_pressure="green",
     ):
         self.directory = Path(directory)
         self.sampler = sampler
@@ -114,6 +115,9 @@ class Scheduler:
         self.headroom_kb = int(headroom_gb * GIB)
         self.poll = poll
         self.cancelled = 0
+        if max_pressure not in ("green", "yellow"):
+            raise QueueError("QUEUE_MAX_PRESSURE must be green or yellow")
+        self.allowed_pressure = (1, 2) if max_pressure == "yellow" else (1,)
         for value in (max_jobs, workers, memory_gb, headroom_gb, poll):
             if (
                 not isinstance(value, (int, float))
@@ -221,7 +225,7 @@ class Scheduler:
 
     def admissible(self, jobs, memory, resource, sample):
         try:
-            if sample["fault"] or sample["pressure"] != 1:
+            if sample["fault"] or sample["pressure"] not in self.allowed_pressure:
                 return False, "host pressure or unreliable memory measurement"
             if any(sample[k] < 0 for k in ("cap_kb", "tracked_kb", "available_kb")):
                 return False, "invalid memory measurement"
@@ -561,6 +565,7 @@ def main():
         memory_gb=env_number("QUEUE_JOB_GB", 2),
         headroom_gb=env_number("QUEUE_HEADROOM_GB", 3),
         poll=env_number("QUEUE_POLL_SEC", 2),
+        max_pressure=os.environ.get("QUEUE_MAX_PRESSURE", "green"),
     )
     action = sys.argv[1]
     if action == "hook":

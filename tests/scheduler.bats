@@ -31,6 +31,18 @@ setup() {
   assert_contains "$output" 'queue-hook'
 }
 
+@test "QUEUE: configured pressure policy reaches the runner and rejects red" {
+  mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
+  printf 'QUEUE_MAX_PRESSURE=yellow\n' > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  run "$MEMCAP_ROOT/bin/memcap" queue --json
+  [ "$status" = 0 ]
+  assert_contains "$output" '[]'
+  printf 'QUEUE_MAX_PRESSURE=red\n' > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  run "$MEMCAP_ROOT/bin/memcap" queue --json
+  [ "$status" = 75 ]
+  assert_contains "$output" 'QUEUE_MAX_PRESSURE must be green or yellow'
+}
+
 sample_fixture() {
   for module in common config budget detect measure classify status scheduler; do
     # shellcheck source=/dev/null

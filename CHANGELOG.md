@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.9.1 — 2026-09-21
+
+- Keep lightweight search pipelines, bounded sed reads, memcap diagnostics and
+  GitHub run watchers out of the expensive-job queue. A remote CI watcher no
+  longer occupies a build slot or reserves 2 GB. Every stage of a recognized
+  lightweight shell chain must qualify; builds and unknown stages remain queued.
+- Add `QUEUE_MAX_PRESSURE=yellow` for users who want to admit work at warning
+  memory pressure. Green-only admission remains the default; critical/red,
+  unknown pressure and faulty measurements always block new jobs.
+- Keep job slots, combined-budget reservations and host headroom enforced under
+  both policies. Document why a green pressure graph can still leave jobs queued
+  and when waiting runners pick up configuration changes.
+
 ## v0.9.0 — 2026-09-21
 
 - Queue expensive agent work before it starts with `memcap run`. Participating

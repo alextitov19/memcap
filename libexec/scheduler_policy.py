@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 
@@ -18,10 +19,16 @@ def simple_words(command: str) -> list[str] | None:
         return None
 
 
-def classify_shell(command: str) -> tuple[str, str]:
-    words = simple_words(command)
+def light_words(words: list[str]) -> bool:
     if not words:
-        return "job", ""
+        return False
+    # A bare glob can expand to execution options such as rg's --pre. Require
+    # a literal directory prefix for pathname globs; uncertain patterns queue.
+    for word in words:
+        expanded_status = word.replace("$?", "0")
+        wildcard = re.search(r"[\*?\[]", expanded_status)
+        if wildcard and "/" not in expanded_status[: wildcard.start()]:
+            return False
     name = Path(words[0]).name
     if name in {
         "cat",
@@ -40,12 +47,12 @@ def classify_shell(command: str) -> tuple[str, str]:
             a in {"-f", "-F", "--follow"} or a.startswith("--follow=")
             for a in words[1:]
         ):
-            return "job", ""
-        return "light", ""
+            return False
+        return True
     if name == "rg" and not any(
         a.startswith(("--pre", "--hostname-bin")) for a in words[1:]
     ):
-        return "light", ""
+        return True
     if (
         name == "git"
         and len(words) > 1
@@ -55,7 +62,79 @@ def classify_shell(command: str) -> tuple[str, str]:
             a.startswith(("--ext-diff", "--textconv", "--output", "--exec"))
             for a in words[2:]
         ):
-            return "light", ""
+            return True
+    if name == "cd" and len(words) == 2:
+        return True
+    if name == "sed" and len(words) >= 4 and words[1] == "-n":
+        return bool(re.fullmatch(r"[0-9]+(?:,[0-9]+)?p", words[2])) and all(
+            not word.startswith("-") for word in words[3:]
+        )
+    if name == "memcap" and len(words) >= 2:
+        return words[1] in {
+            "status",
+            "queue",
+            "diagnostics",
+            "help",
+            "version",
+        } and all(word in {"--json", "--summary"} for word in words[2:])
+    if name == "gh" and len(words) >= 3 and words[1] == "run":
+        return words[2] in {"watch", "view", "list"} and not any(
+            word == "-w" or word.startswith("--web") for word in words[3:]
+        )
+    return False
+
+
+def light_shell(command: str) -> bool:
+    # Recognize a narrow shell grammar solely for lightweight commands. Every
+    # stage must qualify. Never evaluate substitutions or reconstruct the input.
+    if any(char in command.replace("$?", "") for char in "$`\n\r"):
+        return False
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;<>()")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    separators = {"|", "&&", "||", ";"}
+    redirects = {">", ">>", "<", ">&", "<&"}
+    words: list[str] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token in separators:
+            if not light_words(words):
+                return False
+            words = []
+        else:
+            if token.isdigit() and i + 1 < len(tokens) and tokens[i + 1] in redirects:
+                i += 1
+                token = tokens[i]
+            if token in redirects:
+                i += 1
+                if i >= len(tokens):
+                    return False
+                target = tokens[i]
+                if token in {">&", "<&"}:
+                    if not (target.isdigit() or target == "-"):
+                        return False
+                elif not target or any(char in target for char in "|&;<>()*?[]"):
+                    return False
+            elif token and all(char in "|&;<>()" for char in token):
+                return False
+            else:
+                words.append(token)
+        i += 1
+    return light_words(words)
+
+
+def classify_shell(command: str) -> tuple[str, str]:
+    if light_shell(command):
+        return "light", ""
+    words = simple_words(command)
+    if not words:
+        return "job", ""
+    name = Path(words[0]).name
     if name in {"npm", "pnpm", "yarn"}:
         tail = words[1:]
         if tail and tail[0] in {"run", "run-script"}:
