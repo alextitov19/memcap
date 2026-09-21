@@ -308,6 +308,13 @@ mc_filter_protected() {
   self=$(mc_self_ancestry) || return 1
   mc_veto_evidence_warm
   for pid in $1; do
+    if [ "$scope" = scheduled ]; then
+      command -v mc_scheduled_allowed >/dev/null 2>&1 || continue
+      mc_scheduled_allowed "$pid" || continue
+      case " ${AGENTPIDS} $self " in *" $pid "*) continue ;; esac
+      out="$out $pid"
+      continue
+    fi
     if [ "$scope" = oversized ]; then
       command -v mc_oversized_allowed >/dev/null 2>&1 || continue
       mc_oversized_allowed "$pid" || continue
@@ -390,7 +397,7 @@ mc_kill_pids() {
     idents="$idents$p|$(mc_pid_identity "$p")
 "
   done
-  if [ "$scope" = oversized ]; then
+  if [ "$scope" = oversized ] || [ "$scope" = scheduled ]; then
     # Logging and feedback can take time under pressure. Revalidate the original
     # identity after those subprocesses, as close to TERM as shell permits.
     pids=$(mc_filter_protected "$pids" "$scope") || return 1

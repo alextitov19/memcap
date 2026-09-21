@@ -78,7 +78,8 @@ mc_feedback_hook() {
 }
 
 mc_agent_hooks() {
-  local agent="$1" jqbin command_text events
+  local agent="$1" queue="${2:-}" jqbin command_text events queue_command
+  case "$queue" in ''|--queue) ;; *) echo 'usage: memcap agent-hooks codex|claude [--queue]' >&2; return 2 ;; esac
   jqbin=$(mc_feedback_jq) || return 1
   printf -v command_text '%q feedback' "$MEMCAP_ROOT/bin/memcap"
   case "$agent" in
@@ -86,6 +87,11 @@ mc_agent_hooks() {
     claude) events='["PreToolUse","PostToolUse","PostToolUseFailure","SessionStart","UserPromptSubmit"]' ;;
     *) echo 'usage: memcap agent-hooks codex|claude' >&2; return 2 ;;
   esac
+  printf -v queue_command '%q queue-hook %q' "$MEMCAP_ROOT/bin/memcap" "$agent"
   "$jqbin" -n --arg command "$command_text" --argjson events "$events" \
-    '{hooks:($events | map({key:.,value:[{hooks:[{type:"command",command:$command,timeout:5}]}]}) | from_entries)}'
+    --arg queue "$queue" --arg queue_command "$queue_command" \
+    '{hooks:($events | map({key:.,value:[{hooks:[{type:"command",command:$command,timeout:5}]}]}) | from_entries)} |
+     if $queue == "--queue" then .hooks.PreToolUse +=
+       [{matcher:"Bash",hooks:[{type:"command",command:$queue_command,timeout:5}]}]
+     else . end'
 }

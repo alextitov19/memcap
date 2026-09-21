@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.9.0 — 2026-09-21
+
+- Queue expensive agent work before it starts with `memcap run`. Participating
+  Claude/Codex sessions share two finite-job slots, 2 GB reservations per job,
+  and a 3 GB host-headroom gate by default. Admission also requires normal
+  macOS memory pressure and healthy footprint measurements.
+- Account for outstanding reservations and observed workload memory atomically
+  across sessions. Waiting requests expire after 30 minutes by default; ordinary
+  background children retain their reservation after the launch shell exits.
+- Reuse registered persistent resources by project and name, and bound workers
+  for supported build/test tools. Add `memcap queue` and queue status summaries.
+- Generate opt-in queue hooks with `memcap agent-hooks codex|claude --queue`.
+  Hooks preserve existing permission handling; commands outside supported hooks
+  and arbitrary internal workers are not universally contained. Python 3.9+ is
+  required for the queue; the watchdog remains independent of Python.
+- Route explicit managed-job cancellation through the existing kill choke point
+  with fresh ownership, process-start and group checks. Agent CLIs, memcap's
+  ancestry and `memcap off` remain protected; cleanup-tier gates are unchanged.
+
 ## v0.8.0 — 2026-09-13
 
 - Stop confirmed oversized Claude/Codex child processes, including live Python

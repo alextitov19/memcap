@@ -18,6 +18,30 @@ done
 mc_load_config || :
 
 case "${1:-help}" in
+  run|queue)
+    action="$1"; shift
+    # shellcheck source=/dev/null
+    . "$LIB/scheduler.sh"
+    mc_scheduler_run "$action" "$@"
+    ;;
+  queue-hook)
+    # shellcheck source=/dev/null
+    . "$LIB/scheduler.sh"
+    mc_scheduler_hook "${2:-codex}"
+    ;;
+  _queue-sample)
+    # shellcheck source=/dev/null
+    . "$LIB/scheduler.sh"
+    mc_queue_sample
+    ;;
+  _queue-cancel)
+    [ $# -eq 2 ] || exit 2
+    # shellcheck source=/dev/null
+    . "$LIB/scheduler.sh"
+    # shellcheck source=/dev/null
+    . "$LIB/enforce.sh"
+    mc_queue_cancel "$2"
+    ;;
   init)
     shift
     # shellcheck source=/dev/null
@@ -54,7 +78,7 @@ case "${1:-help}" in
   agent-hooks)
     # shellcheck source=/dev/null
     . "$LIB/feedback.sh"
-    mc_agent_hooks "${2:-}"
+    mc_agent_hooks "${2:-}" "${3:-}"
     ;;
   watch)
     # shellcheck source=/dev/null
@@ -152,6 +176,6 @@ case "${1:-help}" in
   # carried no version at all. Both matter when the evidence for a bug is nine
   # days of one machine's actions.log.
   version|--version|-v) echo "memcap $MEMCAP_VERSION" ;;
-  help|--help|-h) echo "memcap $MEMCAP_VERSION — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|diagnostics|feedback|agent-hooks codex|claude|watch|clean|profile|docker [apply [--force]]|notify|off|on|service [install|uninstall|status]|uninstall|version}" ;;
+  help|--help|-h) echo "memcap $MEMCAP_VERSION — keep AI agents inside a RAM budget"; echo "usage: memcap {init|status|diagnostics|run [options] -- command|queue [--json]|feedback|agent-hooks codex|claude [--queue]|watch|clean|profile|docker [apply [--force]]|notify|off|on|service [install|uninstall|status]|uninstall|version}" ;;
   *) echo "unknown command: $1" >&2; exit 1 ;;
 esac

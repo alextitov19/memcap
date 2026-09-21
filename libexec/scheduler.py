@@ -1,0 +1,655 @@
+"""Per-user workload admission. No sockets, service, third-party packages or kills.
+
+The lock covers both reservation and a gated child launch. Signals are requested
+through the existing shell choke point, never sent by this module.
+"""
+
+from __future__ import annotations
+
+import argparse
+from contextlib import contextmanager
+import fcntl
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+
+from scheduler_policy import (
+    hook_response,
+    simple_words,
+    worker_argv,
+    worker_environment,
+)
+
+GIB = 1048576
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class QueueError(Exception):
+    pass
+
+
+def processes() -> dict:
+    result = subprocess.run(
+        ["ps", "-axo", "pid=,ppid=,pgid=,uid=,lstart=,stat="],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    if result.returncode or not result.stdout.strip():
+        raise QueueError("process identities unavailable; no work admitted")
+    rows = {}
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 10:
+            raise QueueError("incomplete process identity sample")
+        pid, ppid, group, uid = map(int, parts[:4])
+        if "Z" not in parts[9]:
+            rows[str(pid)] = {
+                "ppid": ppid,
+                "group": group,
+                "uid": uid,
+                "start": " ".join(parts[4:9]),
+            }
+    return rows
+
+
+def sample_host() -> dict:
+    result = subprocess.run(
+        [str(ROOT / "bin/memcap"), "_queue-sample"],
+        capture_output=True,
+        text=True,
+        timeout=25,
+    )
+    if result.returncode:
+        raise QueueError("memory measurement unavailable; no work admitted")
+    lines = result.stdout.splitlines()
+    try:
+        cap, tracked, available, pressure, fault = map(int, lines[0].split())
+        sample = {
+            "cap_kb": cap,
+            "tracked_kb": tracked,
+            "available_kb": available,
+            "pressure": pressure,
+            "fault": bool(fault),
+            "footprints": {},
+            "tracked_pids": [],
+        }
+        for line in lines[1:]:
+            pid, kb, counted = map(int, line.split())
+            if kb < 0:
+                raise ValueError("negative footprint")
+            sample["footprints"][str(pid)] = kb
+            if counted:
+                sample["tracked_pids"].append(pid)
+        return sample
+    except (IndexError, ValueError) as exc:
+        raise QueueError("invalid memory sample; no work admitted") from exc
+
+
+class Scheduler:
+    def __init__(
+        self,
+        directory,
+        sampler=sample_host,
+        max_jobs=2,
+        workers=2,
+        memory_gb=2,
+        headroom_gb=3,
+        poll=2,
+    ):
+        self.directory = Path(directory)
+        self.sampler = sampler
+        self.max_jobs = max_jobs
+        self.workers = workers
+        self.memory_kb = int(memory_gb * GIB)
+        self.headroom_kb = int(headroom_gb * GIB)
+        self.poll = poll
+        self.cancelled = 0
+        for value in (max_jobs, workers, memory_gb, headroom_gb, poll):
+            if (
+                not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                raise QueueError("queue settings must be positive finite numbers")
+        if max_jobs > 64 or workers > 64:
+            raise QueueError("queue concurrency/worker settings must be at most 64")
+
+    @contextmanager
+    def locked(self):
+        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if self.directory.is_symlink() or self.directory.stat().st_uid != os.getuid():
+            raise QueueError(
+                "queue directory must be owned by this user and not a symlink"
+            )
+        os.chmod(self.directory, 0o700)
+        fd = os.open(
+            self.directory / "lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
+        )
+        try:
+            deadline = time.monotonic() + 35
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() > deadline:
+                        raise QueueError(
+                            "queue lock unavailable; command was not admitted"
+                        )
+                    time.sleep(0.05)
+            path = self.directory / "jobs.json"
+            try:
+                data = json.loads(path.read_text())
+                if not isinstance(data, dict) or not isinstance(data["jobs"], list):
+                    raise ValueError("invalid registry")
+                for job in data["jobs"]:
+                    if (
+                        not isinstance(job, dict)
+                        or job.get("status") not in {"waiting", "running"}
+                        or not isinstance(job.get("members"), dict)
+                        or not isinstance(job.get("owner"), int)
+                        or not isinstance(job.get("group"), int)
+                        or not isinstance(job.get("memory_kb"), int)
+                        or job["memory_kb"] <= 0
+                        or not all(
+                            isinstance(job.get(k), str)
+                            for k in ("id", "owner_start", "resource", "cwd", "label")
+                        )
+                    ):
+                        raise ValueError("invalid job record")
+            except FileNotFoundError:
+                data = {"jobs": []}
+            except (ValueError, KeyError) as exc:
+                raise QueueError(
+                    "queue registry is damaged; refusing to discard reservations"
+                ) from exc
+            yield data
+        finally:
+            os.close(fd)
+
+    def save(self, data):
+        fd, filename = tempfile.mkstemp(prefix=".jobs-", dir=self.directory)
+        try:
+            with os.fdopen(fd, "w") as file:
+                json.dump(data, file)
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(filename, self.directory / "jobs.json")
+        finally:
+            if os.path.exists(filename):
+                os.unlink(filename)
+
+    def refresh(self, data, table):
+        live = []
+        for job in data["jobs"]:
+            try:
+                owner = table.get(str(job["owner"]))
+                owner_alive = owner is not None and owner["start"] == job["owner_start"]
+                members = {
+                    pid: row["start"]
+                    for pid, row in table.items()
+                    if job["group"]
+                    and row["group"] == job["group"]
+                    and row["uid"] == os.getuid()
+                }
+                if job["status"] == "waiting":
+                    if owner_alive:
+                        live.append(job)
+                    continue
+                if owner_alive or members:
+                    # With a dead supervisor retain uncertain groups rather than
+                    # reuse capacity or authorize signalling a recycled PID.
+                    if owner_alive:
+                        job["members"] = members
+                    job["orphaned"] = not owner_alive
+                    live.append(job)
+            except (KeyError, TypeError) as exc:
+                raise QueueError(
+                    "invalid job record; refusing to discard reservations"
+                ) from exc
+        data["jobs"] = live
+
+    def admissible(self, jobs, memory, resource, sample):
+        try:
+            if sample["fault"] or sample["pressure"] != 1:
+                return False, "host pressure or unreliable memory measurement"
+            if any(sample[k] < 0 for k in ("cap_kb", "tracked_kb", "available_kb")):
+                return False, "invalid memory measurement"
+            active = [j for j in jobs if j["status"] == "running"]
+            if not resource and sum(not j["resource"] for j in active) >= self.max_jobs:
+                return False, "all finite-job slots occupied"
+            accounted = sample["tracked_kb"]
+            # Unallocated portions of reservations also consume host headroom.
+            outstanding = 0
+            counted = set(map(str, sample["tracked_pids"]))
+            for job in active:
+                measured = sum(sample["footprints"].get(p, 0) for p in job["members"])
+                already = sum(
+                    sample["footprints"].get(p, 0)
+                    for p in job["members"]
+                    if p in counted
+                )
+                accounted += max(job["memory_kb"], measured) - already
+                outstanding += max(0, job["memory_kb"] - measured)
+            if accounted + memory > sample["cap_kb"]:
+                return False, "combined budget reserved or in use"
+            if sample["available_kb"] - outstanding - memory < self.headroom_kb:
+                return False, "preserving host memory headroom"
+            return True, "capacity available"
+        except (KeyError, TypeError, ValueError):
+            return False, "invalid memory measurement"
+
+    def nested(self, data, table):
+        token = os.environ.get("MEMCAP_QUEUE_LEASE")
+        if not token:
+            return False
+        job = next(
+            (j for j in data["jobs"] if j["id"] == token and j["status"] == "running"),
+            None,
+        )
+        if not job:
+            return False
+        pid = str(os.getpid())
+        for _ in range(128):
+            row = table.get(pid)
+            if not row:
+                return False
+            if pid in job["members"] and row["start"] == job["members"][pid]:
+                return True
+            pid = str(row["ppid"])
+        return False
+
+    def run(self, argv, cwd=None, resource="", memory_gb=None, wait=1800):
+        cwd = Path(cwd or os.getcwd()).resolve(strict=True)
+        memory = self.memory_kb if memory_gb is None else int(memory_gb * GIB)
+        if not argv or memory <= 0 or not math.isfinite(wait) or wait < 0:
+            raise QueueError(
+                "command, positive reservation and nonnegative wait are required"
+            )
+        resource = (
+            hashlib.sha256((str(cwd) + "\0" + resource).encode()).hexdigest()
+            if resource
+            else ""
+        )
+        ident = uuid.uuid4().hex
+        began = time.monotonic()
+        old_handlers = {}
+        child = None
+        registered = False
+        try:
+            for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                old_handlers[sig] = signal.signal(sig, self.handle_signal)
+            with self.locked() as data:
+                table = processes()
+                self.refresh(data, table)
+                if (
+                    self.nested(data, table)
+                    or (self.directory.parent / "paused").exists()
+                ):
+                    # No second reservation; preserve nested command semantics.
+                    # exec also preserves native signal and exit status behavior.
+                    for sig, handler in old_handlers.items():
+                        signal.signal(sig, handler)
+                    os.chdir(cwd)
+                    argv = worker_argv(argv, cwd, self.workers)
+                    os.execvpe(
+                        argv[0],
+                        argv,
+                        worker_environment(dict(os.environ), self.workers),
+                    )
+                owner = table.get(str(os.getpid()))
+                if not owner:
+                    raise QueueError("cannot identify queue supervisor")
+                if sum(j["status"] == "waiting" for j in data["jobs"]) >= 64:
+                    raise QueueError(
+                        "64 jobs already waiting; batch submissions instead of adding more runners"
+                    )
+                data["jobs"].append(
+                    {
+                        "id": ident,
+                        "owner": os.getpid(),
+                        "owner_start": owner["start"],
+                        "group": 0,
+                        "members": {},
+                        "status": "waiting",
+                        "resource": resource,
+                        "cwd": str(cwd),
+                        "memory_kb": memory,
+                        "enqueued": time.time(),
+                        "label": Path(argv[0]).name,
+                        "cancel": False,
+                    }
+                )
+                self.save(data)
+                registered = True
+            last_notice = 0.0
+            waited = False
+            while child is None:
+                if self.cancelled:
+                    return 128 + self.cancelled
+                if waited and time.monotonic() - began >= wait:
+                    print(
+                        "memcap: queue wait expired; command not started",
+                        file=sys.stderr,
+                    )
+                    return 75
+                with self.locked() as data:
+                    self.refresh(data, processes())
+                    job = next(j for j in data["jobs"] if j["id"] == ident)
+                    active_resource = next(
+                        (
+                            j
+                            for j in data["jobs"]
+                            if resource
+                            and j["resource"] == resource
+                            and j["status"] == "running"
+                        ),
+                        None,
+                    )
+                    if active_resource:
+                        print(
+                            f"memcap: resource already running as job {active_resource['id'][:8]} (pid {active_resource['group']}); reuse it",
+                            file=sys.stderr,
+                        )
+                        return 0
+                    waiting = [j for j in data["jobs"] if j["status"] == "waiting"]
+                    allowed, reason = False, "waiting for earlier queued work"
+                    # Persistent launches can pass a slot-blocked finite job;
+                    # finite jobs preserve FIFO, preventing session starvation.
+                    eligible = next(
+                        (j for j in waiting if bool(j["resource"]) == bool(resource)),
+                        job,
+                    )
+                    if (self.directory.parent / "paused").exists():
+                        allowed, reason = True, "memcap is paused"
+                    elif eligible["id"] == ident:
+                        try:
+                            sample = self.sampler()
+                            if memory > sample["cap_kb"]:
+                                raise QueueError(
+                                    "job reservation exceeds the entire budget; split the job"
+                                )
+                            allowed, reason = self.admissible(
+                                data["jobs"], memory, resource, sample
+                            )
+                        except (
+                            OSError,
+                            KeyError,
+                            ValueError,
+                            TypeError,
+                            subprocess.SubprocessError,
+                        ) as exc:
+                            raise QueueError(
+                                "memory sampling failed; command was not admitted"
+                            ) from exc
+                    if self.cancelled:
+                        return 128 + self.cancelled
+                    if waited and time.monotonic() - began >= wait:
+                        print(
+                            "memcap: queue wait expired; command not started",
+                            file=sys.stderr,
+                        )
+                        return 75
+                    if allowed:
+                        child = self.launch(argv, cwd, job, data)
+                    else:
+                        waited = True
+                        self.save(data)
+                        if time.monotonic() - began >= wait:
+                            print(
+                                f"memcap: queue wait expired: {reason}; command not started",
+                                file=sys.stderr,
+                            )
+                            return 75
+                        if time.monotonic() - last_notice > 10:
+                            print(
+                                f"memcap: queued {ident[:8]}: {reason}", file=sys.stderr
+                            )
+                            last_notice = time.monotonic()
+                if child is None:
+                    time.sleep(self.poll)
+            while True:
+                result = child.poll()
+                with self.locked() as data:
+                    self.refresh(data, processes())
+                    job = next(j for j in data["jobs"] if j["id"] == ident)
+                    job["cancel"] = bool(self.cancelled)
+                    members = dict(job["members"])
+                    self.save(data)
+                if self.cancelled:
+                    subprocess.run(
+                        [str(ROOT / "bin/memcap"), "_queue-cancel", ident],
+                        check=False,
+                        timeout=30,
+                    )
+                    return 128 + self.cancelled
+                if result is not None and not members:
+                    return result if result >= 0 else 128 - result
+                time.sleep(self.poll)
+        finally:
+            if registered:
+                # Keep running groups when interrupted or the supervisor fails;
+                # another admission must not mistake lost supervision for free RAM.
+                with self.locked() as data:
+                    table = processes()
+                    self.refresh(data, table)
+                    data["jobs"] = [
+                        j
+                        for j in data["jobs"]
+                        if j["id"] != ident
+                        or (j["status"] == "running" and j["members"])
+                    ]
+                    self.save(data)
+            for sig, handler in old_handlers.items():
+                signal.signal(sig, handler)
+
+    def launch(self, argv, cwd, job, data):
+        argv = worker_argv(argv, cwd, self.workers)
+        env = worker_environment(dict(os.environ), self.workers)
+        env["MEMCAP_QUEUE_LEASE"] = job["id"]
+        read_fd, write_fd = os.pipe()
+        try:
+            child = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "_exec",
+                    str(read_fd),
+                    json.dumps(argv),
+                ],
+                cwd=cwd,
+                env=env,
+                start_new_session=True,
+                pass_fds=(read_fd,),
+            )
+            os.close(read_fd)
+            read_fd = -1
+            table = processes()
+            leader = table.get(str(child.pid))
+            if not leader or leader["group"] != child.pid:
+                raise QueueError(
+                    "cannot establish child process identity; launch withheld"
+                )
+            job.update(
+                status="running",
+                group=child.pid,
+                members={str(child.pid): leader["start"]},
+            )
+            self.save(data)
+            os.write(write_fd, b"1")
+            return child
+        finally:
+            if read_fd >= 0:
+                os.close(read_fd)
+            os.close(write_fd)
+
+    def handle_signal(self, sig, _frame):
+        self.cancelled = sig
+
+    def status(self):
+        if not self.directory.exists():
+            return []
+        with self.locked() as data:
+            self.refresh(data, processes())
+            self.save(data)
+            return data["jobs"]
+
+    def authorize_cancel(self, ident, caller, pid=None):
+        with self.locked() as data:
+            table = processes()
+            job = next((j for j in data["jobs"] if j["id"] == ident), None)
+            owner = table.get(str(caller))
+            if (
+                not job
+                or not job["cancel"]
+                or job["owner"] != caller
+                or not owner
+                or owner["start"] != job["owner_start"]
+            ):
+                return []
+            if (self.directory.parent / "paused").exists():
+                return []
+            return [
+                p
+                for p, start in job["members"].items()
+                if (pid is None or p == str(pid))
+                and p in table
+                and table[p]["start"] == start
+                and table[p]["group"] == job["group"]
+                and table[p]["uid"] == os.getuid()
+            ]
+
+
+def env_number(name, default, integer=False):
+    raw = os.environ.get(name, str(default))
+    try:
+        value = int(raw) if integer else float(raw)
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("nonpositive")
+        return value
+    except ValueError as exc:
+        raise QueueError(f"invalid {name}; refusing to run on another policy") from exc
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "_exec":
+        fd = int(sys.argv[2])
+        permission = os.read(fd, 1)
+        os.close(fd)
+        if permission != b"1":
+            return 75
+        argv = json.loads(sys.argv[3])
+        os.execvpe(argv[0], argv, os.environ)
+    directory = (
+        Path(os.environ.get("MEMCAP_STATE_HOME", str(Path.home() / ".local/state")))
+        / "memcap/queue"
+    )
+    scheduler = Scheduler(
+        directory,
+        max_jobs=env_number("QUEUE_MAX_JOBS", 2, True),
+        workers=env_number("QUEUE_WORKERS", 2, True),
+        memory_gb=env_number("QUEUE_JOB_GB", 2),
+        headroom_gb=env_number("QUEUE_HEADROOM_GB", 3),
+        poll=env_number("QUEUE_POLL_SEC", 2),
+    )
+    action = sys.argv[1]
+    if action == "hook":
+        try:
+            agent = sys.argv[2] if len(sys.argv) > 2 else "codex"
+            if agent not in {"codex", "claude"}:
+                raise ValueError("unsupported agent")
+            result = hook_response(
+                json.load(sys.stdin), str(ROOT / "bin/memcap"), agent
+            )
+        except (ValueError, TypeError, AttributeError):
+            result = {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "memcap could not parse the launch request",
+                }
+            }
+        if result:
+            print(json.dumps(result))
+        return 0
+    if action == "authorize":
+        ids = scheduler.authorize_cancel(
+            sys.argv[2], int(sys.argv[3]), sys.argv[4] if len(sys.argv) > 4 else None
+        )
+        print(" ".join(ids))
+        return 0 if ids else 1
+    if action == "queue":
+        jobs = scheduler.status()
+        if sys.argv[2:] == ["--summary"]:
+            running = sum(j["status"] == "running" and not j["resource"] for j in jobs)
+            resources = sum(
+                j["status"] == "running" and bool(j["resource"]) for j in jobs
+            )
+            waiting = sum(j["status"] == "waiting" for j in jobs)
+            print(
+                f"{running} running / {scheduler.max_jobs} slots, {waiting} queued, {resources} resources"
+            )
+        elif sys.argv[2:] == ["--json"]:
+            print(json.dumps(jobs))
+        elif sys.argv[2:]:
+            raise QueueError("usage: memcap queue [--json]")
+        elif not jobs:
+            print("No queued or running jobs.")
+        else:
+            for job in jobs:
+                state = "orphaned" if job.get("orphaned") else job["status"]
+                kind = "resource" if job["resource"] else "job"
+                print(
+                    f"{job['id'][:8]}  {state:9s} {kind:8s} {job['memory_kb'] / GIB:g} GB  pid={job['group']}  {job['cwd']}"
+                )
+        return 0
+    parser = argparse.ArgumentParser(prog="memcap run")
+    parser.add_argument("--resource", default="")
+    parser.add_argument("--memory", type=float)
+    parser.add_argument(
+        "--wait", type=float, default=env_number("QUEUE_WAIT_SEC", 1800)
+    )
+    parser.add_argument("--cwd")
+    parser.add_argument("--shell", default="/bin/bash")
+    parser.add_argument("--login", action="store_true")
+    parser.add_argument("--shell-command")
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args(sys.argv[2:])
+    argv = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if args.shell_command is not None:
+        if argv:
+            raise QueueError("choose a command or --shell-command, not both")
+        words = simple_words(args.shell_command)
+        command = args.shell_command
+        if words:
+            import shlex
+
+            limited = worker_argv(
+                words, Path(args.cwd or os.getcwd()), scheduler.workers
+            )
+            if limited != words:
+                command = shlex.join(limited)
+        argv = [args.shell, "-lc" if args.login else "-c", command]
+    if not argv:
+        parser.error("a command is required after --")
+    if args.memory is not None and (not math.isfinite(args.memory) or args.memory <= 0):
+        parser.error("--memory must be positive and finite (GB)")
+    return scheduler.run(argv, args.cwd, args.resource, args.memory, args.wait)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (QueueError, OSError, subprocess.SubprocessError) as error:
+        print(f"memcap queue: {error}", file=sys.stderr)
+        sys.exit(75)

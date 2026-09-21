@@ -67,7 +67,104 @@ is not a `top` that failed.
   budgets agents only. OrbStack, Colima, and Podman are measured but cannot be
   capped — no VM ceiling exists to set.
 
-Only the system `bash` (3.2) is required at runtime; no newer shell is needed.
+The watchdog uses system `bash` (3.2); no newer shell is needed. The optional
+workload queue additionally requires **Python 3.9+** (`brew install python`),
+using only the standard library.
+
+## Queue expensive agent work before it starts
+
+The cleanup budget cannot force protected active work back under the cap. The
+optional queue admits at most **two finite jobs** across participating sessions,
+reserving **2 GB per job** by default. Other commands wait without starting.
+Admission also requires normal macOS pressure and **3 GB of host headroom**
+after reservations. Docker, simulators and agent workloads count against the
+combined budget; ordinary applications affect the host-headroom gate.
+
+```bash
+memcap run -- npm test
+memcap run --memory 3 --wait 600 -- go test ./...
+memcap run --resource dev -- npm run dev
+memcap queue
+memcap queue --json
+```
+
+`--memory` reserves GB, not a hard memory limit. Each workload is charged the
+greater of its reservation and observed footprint, without double-counting
+memory already in the combined budget. Unknown measurements admit nothing.
+Reservations larger than the entire budget fail immediately. Waiting defaults
+to 1,800 seconds, then exits **75** without launching. Notices go to stderr;
+the command retains stdin, stdout, stderr and exit status. Requests are FIFO
+within the finite-job and resource queues; at most 64 requests may wait.
+
+**Persistent resources:** `--resource NAME` reserves memory without occupying
+a finite-job slot. A second request for the same name in the same canonical
+directory reports the existing job/PID and exits successfully without executing
+another command. It does not attach to its output. Use distinct names for
+different services. This only deduplicates registered resources; check and reuse
+unmanaged servers already running before enabling the queue. Ordinary background
+children keep their reservation after the launch shell exits. A dead supervisor
+with surviving children retains capacity and appears as `orphaned`.
+
+**Automatic hooks:** generate and merge these entries into the agent's existing
+hook configuration (these commands print JSON; they do not change settings):
+
+```bash
+memcap agent-hooks claude --queue
+memcap agent-hooks codex --queue
+```
+
+Existing feedback hooks are included. The added synchronous `PreToolUse` hook
+matches `Bash`, including Codex unified exec, and immediately rewrites launches
+through the runner. Waiting happens in the runner, not the hook. Enable Codex's
+hooks feature as required by your installed version and restart/resume sessions
+to load changes. Preserve other hooks and permissions. Verify the rewritten
+tool call in a sandboxed session before rollout.
+
+Claude rewrites leave the normal permission decision in place. Codex requires
+an `allow` decision with rewritten input: in `bypassPermissions` sessions the
+hook rewrites automatically; in other modes it denies the original call and
+instructs the agent to submit the queued command through normal approvals.
+Hook timeouts can fail open in the host agent, so hooks are a guardrail rather
+than a complete enforcement boundary.
+
+Simple reads/searches and basic Git inspection bypass the queue; unknown and
+compound commands queue conservatively. Simple npm/pnpm/yarn dev/start and Vite
+launches get resource keys. Shell text, cwd and tool options are preserved.
+An explicit tool timeout may end a wait sooner than the queue default. Nested
+managed commands share a verified ancestor reservation to avoid slot deadlock.
+
+**Worker controls:** default two. Recognized Jest/Vitest/Playwright test commands,
+simple package scripts calling them, Go builds/tests and Cargo jobs receive
+bounded worker arguments. Lower explicit limits are preserved. Go, Cargo,
+CMake, BLAS/OpenMP and Vitest environment limits reach subprocesses. Arbitrary
+scripts, explicit overrides inside scripts, MCP servers, double-fork/`setsid`
+children, and externally owned simulators/VMs are not universally intercepted
+or contained. This is admission control, not an OS memory limit. Existing
+oversized-job enforcement remains the fallback for individual runaway jobs.
+
+Cancellation removes a waiting request without launching. A running supervisor
+requests cancellation only for recorded group members through `mc_kill_pids`,
+with fresh ownership/start checks and agent-CLI/ancestry exclusions. Dry run
+suppresses signals too, but **`memcap run` still runs the requested command**.
+`memcap off` bypasses admission and suppresses cancellation enforcement until
+resumed: it is an explicit opt-out from queue protection.
+
+Optional `memcap.conf` settings (defaults):
+
+```bash
+QUEUE_MAX_JOBS=2
+QUEUE_WORKERS=2
+QUEUE_JOB_GB=2
+QUEUE_HEADROOM_GB=3
+QUEUE_POLL_SEC=2
+QUEUE_WAIT_SEC=1800
+```
+
+Private reservations live in the state directory's `queue/`. Do not delete it
+while managed work runs; that discards reservations. `memcap status` displays a
+queue summary once used. The 60-second cleanup watchdog remains independent;
+queued runners check admission every two seconds. No jobs are suspended or
+retried automatically, and normal cleanup protections are unchanged.
 
 ## Install
 
