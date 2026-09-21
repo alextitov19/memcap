@@ -453,6 +453,37 @@ class SchedulerTests(unittest.TestCase):
         ):
             self.assertEqual(self.policy.classify_shell(command)[0], "job")
 
+    def test_lightweight_inspection_and_ci_watch_do_not_reserve_build_slots(self):
+        for command in (
+            'rg -n "zip-counties|case" backend/cmd/ingest/main.go | head -30',
+            'rg -n "zip-counties" backend/cmd/ingest/*.go',
+            "memcap status 2>&1 | head -30",
+            "memcap queue --json",
+            "cd /tmp/project && cat Makefile",
+            "sed -n '1,120p' fastlane/Fastfile",
+            'gh run watch 123 -R owner/repo --exit-status > /tmp/watch.log 2>&1; echo "EXIT=$?" >> /tmp/watch.log; tail -6 /tmp/watch.log',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.policy.classify_shell(command)[0], "light")
+
+    def test_lightweight_shell_parsing_keeps_execution_and_heavy_stages_queued(self):
+        for command in (
+            "rg x file | python worker.py",
+            "cat Makefile && make archive",
+            'echo "$(npm test)"',
+            "echo `npm test`",
+            "cat <(npm test)",
+            "rg --pre ./expensive x file | head",
+            "rg x *",
+            'sed -n "1e npm test" file',
+            "gh run view 123 --web",
+            "memcap off",
+            "cat file & npm test",
+            "cat file\nnpm test",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.policy.classify_shell(command)[0], "job")
+
     def test_hook_rewrites_exact_command_without_running_it(self):
         command = "printf '%s' 'a; $(touch /tmp/never)' && npm test"
         payload = {
