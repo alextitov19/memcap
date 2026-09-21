@@ -385,6 +385,17 @@ mc_render_status() {
   echo "  ---------------------------------------------------------"
   mc_status_row "combined" "${combined} GB / ${cap} GB budget"
   mc_status_row "system memory available" "$free_label"
+  if [ -d "$(mc_state_dir)/queue" ]; then
+    if command -v python3 >/dev/null 2>&1; then
+      # A separate process cannot shadow this renderer's dynamically scoped
+      # variables. Queue failures must be visible rather than look like zero.
+      local queue_summary
+      queue_summary=$("$MEMCAP_ROOT/bin/memcap" queue --summary 2>/dev/null) || queue_summary='unavailable -- inspect memcap queue'
+      mc_status_row "workload queue" "$queue_summary"
+    else
+      mc_status_row "workload queue" 'unavailable -- Python 3.9+ required'
+    fi
+  fi
   mc_status_row "memory measured by" "$measure_label"
   if command -v mc_host_pressure >/dev/null 2>&1; then
     mc_host_pressure

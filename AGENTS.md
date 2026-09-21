@@ -125,6 +125,9 @@ wrong reason.** Concretely —
 | `libexec/enforce.sh`  | The three tiers, and `mc_kill_pids` — the single kill choke point. |
 | `libexec/jobs.sh`     | Confirmed oversized Claude/Codex child jobs; narrow protection exception. |
 | `libexec/feedback.sh` | Private job notices and agent lifecycle hook context.             |
+| `libexec/scheduler.sh` | Queue config/sampling bridge and authorized cancellation.        |
+| `libexec/scheduler.py` | Atomic admission, reservations and process-group supervision.     |
+| `libexec/scheduler_policy.py` | Conservative hook classification and worker limits.         |
 | `libexec/docker.sh`   | Runtime detection and the VM ceiling.                              |
 | `libexec/notify.sh`   | Building the notification bundle that carries memcap's icon.       |
 | `tests/`              | bats suite. `helper.bash` holds the assertion helpers.             |
@@ -136,6 +139,12 @@ The oversized-job policy intentionally permits killing an active Claude/Codex ch
 above `AGENT_JOB_MAX_GB` after fresh footprint and ownership checks. It must never
 become a general protection bypass. It still spares the agent CLI and memcap's
 ancestry. Orphan, age and mobile gates remain unchanged for the cleanup tiers.
+
+The queue's `scheduled` scope is only for cancellation by a live, registered
+supervisor. It requires fresh PID start identity, ownership and group membership,
+and still excludes agent CLIs and memcap ancestry. Never use it for pressure
+cleanup. Keep test cancellation dry-run gated. The queue behavioral suite
+(`python3 tests/test_scheduler.py`) also runs through Bats.
 
 ## Assertions
 
