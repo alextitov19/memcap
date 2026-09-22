@@ -29,7 +29,7 @@ case "${1:-help}" in
     . "$LIB/idle_gc.sh"
     mc_gc_status
     ;;
-  run|queue)
+  run|queue|wait)
     action="$1"; shift
     # shellcheck source=/dev/null
     . "$LIB/scheduler.sh"
@@ -101,6 +101,8 @@ case "${1:-help}" in
     mc_agent_hooks "${2:-}" "${3:-}"
     ;;
   watch)
+    # shellcheck source=/dev/null
+    . "$LIB/poll_cleanup.sh"
     # shellcheck source=/dev/null
     . "$LIB/boot_timeout.sh"
     # shellcheck source=/dev/null
@@ -200,6 +202,6 @@ case "${1:-help}" in
   # carried no version at all. Both matter when the evidence for a bug is nine
   # days of one machine's actions.log.
   version|--version|-v) echo "memcap $MEMCAP_VERSION" ;;
-  help|--help|-h) echo "memcap $MEMCAP_VERSION — keep AI agents inside a RAM budget"; echo "usage: memcap {init|integrate|doctor|status|diagnostics|gc|run [options] -- command|queue [--json]|feedback|agent-hooks codex|claude [--queue]|watch|clean|profile|docker [apply [--force]]|notify|off|on|service [install|uninstall|status]|uninstall|version}" ;;
+  help|--help|-h) echo "memcap $MEMCAP_VERSION — keep AI agents inside a RAM budget"; echo "usage: memcap {init|integrate|doctor|status|diagnostics|gc|run [options] -- command|queue [--json]|wait JOB_ID [--timeout 60]|feedback|agent-hooks codex|claude [--queue]|watch|clean|profile|docker [apply [--force]]|notify|off|on|service [install|uninstall|status]|uninstall|version}" ;;
   *) echo "unknown command: $1" >&2; exit 1 ;;
 esac

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.12.1 — 2026-09-22
+
+- Add read-only `memcap wait JOB_ID --timeout 60` for agent builds without TaskOutput; hooks and managed guidance explain the fallback.
+- Refuse recognized synthetic polling loops and retire verified legacy queued/orphaned wait-only jobs through the watchdog, with fresh identity checks and notices.
+- Share host samples for at most two seconds across waiters, retain atomic reservation accounting, and recheck current pressure before admission.
+- Distinguish lock failures and integration health from memory admission reasons.
+
 ## v0.12.0 — 2026-09-21
 
 - Add `memcap integrate` to discover Claude/Codex profiles, merge memcap hooks,

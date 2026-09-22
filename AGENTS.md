@@ -217,3 +217,15 @@ State what you verified and how. If you ran the suite locally but not in the
 no-Docker configuration, say that. If CI status is unknown to you, say it is
 unknown rather than inferring it from a local pass — this project shipped five
 consecutive red CI runs while local commands were green.
+
+## Queue storm recovery
+
+`memcap wait` is read-only and never acquires the registry lock or reserves RAM.
+Do not interpret its successful observation as workload success. Host sample reuse
+is limited to two seconds and a matching configuration; every launch still needs
+a current pressure check and atomic reservation accounting.
+
+`poll_cleanup.py` only plans known waiting-only scripts in the queue registry.
+Queued supervisors need live agent ancestry; orphan shell groups need an unchanged
+registered root, age gate and exclusively owned sleep children. Revalidate before
+TERM and KILL through `mc_kill_pids`; never delete reservations to create capacity.

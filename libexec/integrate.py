@@ -33,7 +33,9 @@ operating guidance and diagnostics; use `memcap status`, `memcap queue` and
 `memcap doctor` to inspect capacity, queued work and integration health.
 
 Keep polling an existing queued task with TaskOutput block=true timeout=60000 or a
-blocking tool-session poll, once per minute. Continue independent work. Read final
+blocking tool-session poll, once per minute. If unavailable, run
+`memcap wait JOB_ID --timeout 60` using the existing ID from `memcap queue`.
+This creates no job or reservation. Never invent drain ticks or Bash sleep loops. Continue independent work. Read final
 output and exit status before dependent work; waiting is not a failed command.
 Do not submit duplicates, repeatedly read unchanged output, or disable/raise/bypass
 memcap protection to escape the queue, even in maximum/skip-permissions modes.

@@ -10,6 +10,36 @@ from pathlib import Path
 import shlex
 
 
+POLL_GUIDANCE = (
+    "memcap refused a synthetic waiting loop; no workload was submitted. "
+    "Do not retry this Bash command or create another drain tick/sleep loop. "
+    "Use TaskOutput block=true timeout=60000 on the ORIGINAL workload's existing task "
+    "ID (not this refused wait), or its blocking tool-session poll. "
+    "If TaskOutput is unavailable, run memcap wait JOB_ID --timeout 60 using the existing memcap job ID from memcap queue. "
+    "If that task exited, read its final result; only then submit the actual work once."
+)
+
+
+def polling_loop(command):
+    """Only known waiting-only scripts; never infer from a command description."""
+    tick = re.fullmatch(
+        r"end=\$\(\(SECONDS\+([1-9][0-9]?)\)\)\s*"
+        r"while \[ \$SECONDS -lt \$end \]; do sleep ([1-9][0-9]?); done\s*"
+        r'echo (?:tick|"drain tick done")',
+        command.strip(),
+    )
+    if tick:
+        return int(tick[1]) <= 60 and int(tick[2]) <= 60
+    return bool(
+        re.fullmatch(
+            r"F=/(?:private/)?tmp/claude-[0-9]+/[A-Za-z0-9_./-]+/tasks/[A-Za-z0-9_-]+\.output; "
+            r'until \[ -s "\$F" \] && ! (?:grep|rg) -q "memcap: queued" "\$F" 2>/dev/null; '
+            r'do sleep [1-9][0-9]?; done; echo "[A-Za-z0-9 =_-]+"; cat "\$F"',
+            command.strip(),
+        )
+    )
+
+
 def simple_words(command: str) -> list[str] | None:
     # Never infer safety or reconstruct shell expressions/substitutions.
     if any(char in command for char in "$`\n\r;&|<>(){}*?~"):
@@ -92,6 +122,19 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             not word.startswith("-") for word in words[3:]
         )
     if name == "memcap" and len(words) >= 2:
+        if words[1] == "wait":
+            return (
+                len(words) in (3, 5)
+                and bool(re.fullmatch(r"[a-f0-9]{8,32}", words[2]))
+                and (
+                    len(words) == 3
+                    or (
+                        words[3] == "--timeout"
+                        and bool(re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", words[4]))
+                        and float(words[4]) <= 60
+                    )
+                )
+            )
         if words[1] in {"doctor", "integrate"}:
             # Repair/diagnostic commands must not wait behind the queue they inspect.
             i = 2
@@ -369,6 +412,14 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
     command = original.get("command", original.get("cmd"))
     if not isinstance(command, str):
         return {}
+    if polling_loop(command):
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": POLL_GUIDANCE,
+            }
+        }
     kind, resource = classify_shell(command)
     try:
         wrapped = shlex.split(command)
@@ -419,8 +470,8 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
     if agent == "claude":
         result["additionalContext"] = (
             "memcap keeps this task queued until memory is available, then starts it automatically. "
-            "Use TaskOutput with block=true and timeout=60000 for one blocking wait of up to 60 seconds. Repeat once per minute while pending; do not repeatedly read output files or emit holding messages. "
-            "Do not submit duplicates, stop because it is queued, or bypass memcap. "
+            "Use TaskOutput with block=true and timeout=60000 for one blocking wait of up to 60 seconds. If TaskOutput is unavailable, use memcap wait JOB_ID --timeout 60 with the existing ID from memcap queue; it creates no job or reservation. Repeat once per minute while pending; do not repeatedly read output files or emit holding messages. "
+            "Do not create Bash sleep loops or drain ticks to wait. Do not submit duplicates, stop because it is queued, or bypass memcap. "
             "Read the final output and exit status before continuing dependent work."
         )
     if agent == "codex":
