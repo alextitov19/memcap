@@ -35,6 +35,20 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         ):
             return False
     name = Path(words[0]).name
+    # The diagnostic next steps must remain usable while build capacity is full.
+    # Exact read-only forms only: no streaming stats, bootstrap or device changes.
+    if name == "xcrun" and words[1:] == ["simctl", "list", "devices", "--json"]:
+        return True
+    if name == "docker" and words[1:] in (
+        ["stats", "--no-stream"],
+        ["ps"],
+        ["ps", "-a"],
+        ["ps", "--all"],
+        ["buildx", "ls"],
+    ):
+        return True
+    if name == "ps" and words[1:] == ["-Ao", "pid,ppid,command"]:
+        return True
     if name in {
         "cat",
         "head",

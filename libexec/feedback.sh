@@ -41,10 +41,10 @@ mc_job_feedback() {
 }
 
 mc_feedback_hook() {
-  local jqbin payload event cwd session key dir file message messages="" at now receipt token canonical
+  local jqbin payload event cwd session key dir file message messages="" at now receipt token canonical python
   jqbin=$(mc_feedback_jq) || { echo 'memcap feedback requires jq' >&2; return 1; }
-  # Only fields required for routing are read, not transcript contents or tool
-  # arguments. Invalid JSON or an unsupported event yields no injected context.
+  # Routing and selected tool result fields only; never read a transcript or
+  # persist tool output. Invalid JSON or unsupported events inject no context.
   payload=$(cat)
   if command -v mc_gc_event >/dev/null 2>&1; then mc_gc_event "$payload" || :; fi
   event=$(printf '%s' "$payload" | "$jqbin" -er '.hook_event_name | strings') || return 1
@@ -54,8 +54,12 @@ mc_feedback_hook() {
   canonical=$(cd "$cwd" && pwd -P) 2>/dev/null || return 1
   [ "$canonical" != / ] || return 0
   key=$(printf '%s' "$session" | shasum -a 256 | awk '{print $1}') || return 1
+  if python=$(command -v python3); then
+    messages=$(printf '%s' "$payload" | "$python" "$LIB/agent_diagnostics.py") || messages=""
+    [ -z "$messages" ] || messages="${messages}
+"
+  fi
   dir="$(mc_state_dir)/job-feedback"
-  [ -d "$dir" ] || return 0
   now=$(date +%s)
   for file in "$dir"/*.json; do
     [ -f "$file" ] || continue

@@ -1,6 +1,8 @@
 """Behavioral fixtures own all processes and state; never invoke enforcement."""
 
 import json
+import io
+from contextlib import redirect_stderr
 import os
 from pathlib import Path
 import subprocess
@@ -480,9 +482,32 @@ class SchedulerTests(unittest.TestCase):
         self.assertTrue(q.admissible(active, 2 * 1048576, "", sample)[0])
         sample["pressure"] = 4
         self.assertFalse(q.admissible(active, 2 * 1048576, "", sample)[0])
+
         sample["pressure"] = 2
         sample["available_kb"] = 9 * 1048576
         self.assertFalse(q.admissible(active, 2 * 1048576, "", sample)[0])
+
+    def test_diagnostic_reads_do_not_wait_for_build_capacity(self):
+        for command in (
+            "xcrun simctl list devices --json",
+            "docker stats --no-stream",
+            "docker ps",
+            "docker ps -a",
+            "docker buildx ls",
+            "ps -Ao pid,ppid,command",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.policy.classify_shell(command)[0], "light")
+        for command in (
+            "docker stats",
+            "docker buildx inspect --bootstrap",
+            "docker buildx stop",
+            "xcrun simctl shutdown all",
+            "xcrun simctl boot DEVICE",
+            "docker ps && npm test",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.policy.classify_shell(command)[0], "job")
 
     def test_claude_queued_jobs_wait_in_background_until_admitted(self):
         payload = dict(
@@ -511,13 +536,17 @@ class SchedulerTests(unittest.TestCase):
         q = self.queue()
         q.sampler = sample
         marker = self.root / "ran"
-        self.assertEqual(
-            q.run(
-                [sys.executable, "-c", f"open({str(marker)!r},'a').write('once')"],
-                wait=None,
-            ),
-            0,
-        )
+        output = io.StringIO()
+        with redirect_stderr(output):
+            self.assertEqual(
+                q.run(
+                    [sys.executable, "-c", f"open({str(marker)!r},'a').write('once')"],
+                    wait=None,
+                ),
+                0,
+            )
+        self.assertIn("keep polling", output.getvalue())
+        self.assertIn("admitted", output.getvalue())
         self.assertEqual(marker.read_text(), "once")
         self.assertGreaterEqual(len(calls), 4)
 
