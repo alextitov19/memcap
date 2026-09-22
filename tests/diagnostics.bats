@@ -212,10 +212,17 @@ watch_fixture() {
   assert_contains "$output" 'stored forensic fixture'
 }
 
-@test "STATUS: drift exposes effective allowances without changing agent policy" {
+@test "STATUS: drift describes shared usage and explicit legacy allowances" {
   watch_fixture
   MC_DOCKER_RUNTIME=desktop
   MC_DOCKER_CEILING_MIB=10240
+  unset BUDGET_MODE
+  run mc_render_status
+  [ "$status" = 0 ]
+  assert_contains "$output" 'shares 16 GB total (6.00 GB pool after measured Docker use)'
+  assert_not_contains "$output" '22 GB / 16 GB target'
+  assert_contains "$output" 'shared admission uses measured usage, not the ceiling'
+  BUDGET_MODE="split"
   run mc_render_status
   [ "$status" = 0 ]
   assert_contains "$output" '22 GB / 16 GB target'
