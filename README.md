@@ -104,7 +104,10 @@ The same profile selectors work for `doctor`. Explicit directory flags select
 those profiles; `--claude` includes discovered Claude profiles and `--codex`
 selects the configured Codex home. Missing explicit profiles can be created.
 
-The installer preserves unrelated hooks, permissions and user-written Markdown.
+The installer preserves unrelated hooks, their group/handler positions (used by
+Codex trust keys), permissions and user-written Markdown. Ambiguous mixed groups
+that would shift unrelated hook positions are refused before writing; separate
+the stale memcap entries and review trust before retrying.
 It replaces recognized memcap hook entries rather than accumulating duplicates,
 keeps symlinks intact, and validates all selected files before writing any config.
 Changed files get private sibling backups named `.FILENAME.memcap-backup-ID`;

@@ -159,6 +159,69 @@ class IntegrateTests(unittest.TestCase):
         self.assertEqual(sum(c.endswith(" queue-hook claude") for c in commands), 1)
         self.assertIn("echo 'memcap queue-hook claude'", commands)
 
+    def test_unrelated_hook_positions_are_preserved_for_existing_trust_keys(self):
+        custom = {
+            "matcher": "custom",
+            "hooks": [{"type": "command", "command": "user-hook"}],
+        }
+        mixed = {
+            "hooks": [
+                {"type": "command", "command": "/old/memcap feedback"},
+                {"type": "command", "command": "another-user-hook"},
+            ]
+        }
+        self.config.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "Stop": [
+                            {
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "/old/memcap feedback",
+                                    }
+                                ]
+                            },
+                            custom,
+                        ],
+                        "SessionStart": [mixed],
+                    }
+                }
+            )
+        )
+        self.install()
+        hooks = json.loads(self.config.read_text())["hooks"]
+        self.assertEqual(hooks["Stop"][1], custom)
+        self.assertEqual(hooks["SessionStart"][0]["hooks"][1], mixed["hooks"][1])
+
+    def test_ambiguous_duplicate_before_unrelated_handler_refuses_without_shifting_trust(
+        self,
+    ):
+        original = json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {"type": "command", "command": "/old/memcap feedback"},
+                                {
+                                    "type": "command",
+                                    "command": "/older/memcap feedback",
+                                },
+                                {"type": "command", "command": "user-hook"},
+                            ]
+                        }
+                    ]
+                }
+            }
+        )
+        self.config.write_text(original)
+        result = self.cli("integrate", "--claude-dir", str(self.profile))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.config.read_text(), original)
+        self.assertFalse((self.profile / "CLAUDE.md").exists())
+
     def test_bad_second_profile_prevents_all_config_and_markdown_writes(self):
         self.config.write_text('{"model":"keep"}')
         other = self.home / ".claude-work"

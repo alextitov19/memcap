@@ -98,7 +98,9 @@ def merge_hooks(data, generated):
     if not isinstance(hooks, dict):
         raise IntegrationError("hooks must be an object; refusing to replace it")
     merged = {}
-    for event, groups in hooks.items():
+    for event in dict.fromkeys([*hooks, *generated["hooks"]]):
+        groups = hooks.get(event, [])
+        pending = list(generated["hooks"].get(event, []))
         if not isinstance(groups, list):
             raise IntegrationError(f"{event} matcher groups must be a list")
         retained = []
@@ -107,13 +109,45 @@ def merge_hooks(data, generated):
                 raise IntegrationError(f"invalid hook group for {event}")
             if not all(isinstance(h, dict) for h in group["hooks"]):
                 raise IntegrationError(f"invalid handler for {event}")
-            remaining = [h for h in group["hooks"] if not ours(h)]
-            if remaining or not group["hooks"]:
-                retained.append({**group, "hooks": remaining})
-        if retained or not groups:
-            merged[event] = retained
-    for event, groups in generated["hooks"].items():
-        merged.setdefault(event, []).extend(groups)
+            mixed = any(not ours(h) for h in group["hooks"])
+            remaining = []
+            replacement_group = group
+            for index, handler in enumerate(group["hooks"]):
+                if not ours(handler):
+                    remaining.append(handler)
+                    continue
+                role = shlex.split(handler["command"])[1]
+                match = next(
+                    (
+                        g
+                        for g in pending
+                        if shlex.split(g["hooks"][0]["command"])[1] == role
+                        and (mixed or not remaining)
+                        and (
+                            not mixed
+                            or (
+                                (g.get("matcher") or None)
+                                == (group.get("matcher") or None)
+                                and not (set(group) - {"hooks", "matcher"})
+                            )
+                        )
+                    ),
+                    None,
+                )
+                if match is not None:
+                    remaining.extend(match["hooks"])
+                    pending.remove(match)
+                    if not mixed:
+                        replacement_group = match
+                elif any(not ours(h) for h in group["hooks"][index + 1 :]):
+                    raise IntegrationError(
+                        f"ambiguous mixed {event} group: removing a memcap handler "
+                        "would shift unrelated hook trust keys; separate or remove "
+                        "the stale memcap handler manually and review hook trust"
+                    )
+            # Empty group slots preserve the indexes of later unrelated hooks.
+            retained.append({**replacement_group, "hooks": remaining})
+        merged[event] = retained + pending
     return {**data, "hooks": merged}
 
 
@@ -396,7 +430,7 @@ class Installer:
                             event.lower(),
                             h["command"],
                             h["timeout"],
-                            g.get("matcher"),
+                            g.get("matcher") or None,
                         )
                         for event, groups in self.hooks(agent)["hooks"].items()
                         for g in groups
@@ -414,7 +448,7 @@ class Installer:
                             str(h.get("eventName", "")).replace("_", "").lower(),
                             h.get("command"),
                             h.get("timeoutSec"),
-                            h.get("matcher"),
+                            h.get("matcher") or None,
                         )
                         for h in own
                     ]
