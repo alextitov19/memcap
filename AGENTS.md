@@ -229,3 +229,11 @@ a current pressure check and atomic reservation accounting.
 Queued supervisors need live agent ancestry; orphan shell groups need an unchanged
 registered root, age gate and exclusively owned sleep children. Revalidate before
 TERM and KILL through `mc_kill_pids`; never delete reservations to create capacity.
+
+## Shared total policy
+
+Default `BUDGET_MODE=shared` measures Docker plus agents/sims under TOTAL_BUDGET_GB.
+The Docker VM ceiling is not a reservation. Legacy split-policy tests select
+`BUDGET_MODE=split` explicitly; shared-budget tests exercise the default. Do not
+trigger dev-server cleanup for simulator-only excess or Docker alone over the cap.
+The aggregate budget is not a kernel hard cap; never claim it is one.

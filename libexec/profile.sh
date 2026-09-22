@@ -2,8 +2,13 @@
 set -uo pipefail
 
 mc_profile_list() {
-  local cap="${TOTAL_BUDGET_GB:-$(mc_cap_gb "$(mc_total_ram_gb)")}" p split desc
-  echo "  profile    docker  agents  for"
+  local cap="${TOTAL_BUDGET_GB:-$(mc_cap_gb "$(mc_total_ram_gb)")}" p split desc budget_mode remainder
+  budget_mode=$(mc_budget_mode) || return 1
+  if [ "$budget_mode" = shared ]; then
+    echo "  profile    docker ceiling  shared total  for"
+  else
+    echo "  profile    docker  agents  for"
+  fi
   for p in balanced stacks mobile; do
     split=$(mc_profile_split "$cap" "$p")
     case "$p" in
@@ -11,7 +16,9 @@ mc_profile_list() {
       stacks)   desc="several container stacks at once" ;;
       mobile)   desc="simulators, emulators, Playwright" ;;
     esac
-    printf "  %-10s %-7s %-7s %s\n" "$p" "$(echo "$split" | cut -d' ' -f1) GB" "$(echo "$split" | cut -d' ' -f2) GB" "$desc"
+    remainder=$(echo "$split" | cut -d' ' -f2)
+    [ "$budget_mode" != shared ] || remainder="$cap"
+    printf "  %-10s %-7s %-7s %s\n" "$p" "$(echo "$split" | cut -d' ' -f1) GB" "${remainder} GB" "$desc"
   done
 }
 
@@ -23,8 +30,9 @@ mc_profile_list() {
 mc_stat_mode() { /usr/bin/stat -f '%Lp' "$1" 2>/dev/null; }
 
 mc_profile_set() {
-  local name="$1" cap split docker conf tmp mode
+  local name="$1" cap split docker conf tmp mode budget_mode
   case "$name" in balanced|stacks|mobile) ;; *) echo "unknown profile: $name" >&2; return 1 ;; esac
+  budget_mode=$(mc_budget_mode) || return 1
   conf="$(mc_config_file)"
   [ -f "$conf" ] || { echo "no config — run 'memcap init' first" >&2; return 1; }
   cap="${TOTAL_BUDGET_GB:-$(mc_cap_gb "$(mc_total_ram_gb)")}"
@@ -68,7 +76,11 @@ mc_profile_set() {
     # whole task has been chasing.
     printf 'DOCKER_BUDGET_GB=%s\n' "$docker" >> "$conf" || return 1
   fi
-  echo "profile '$name' → docker ${docker} GB, agents $((cap - docker)) GB"
+  if [ "$budget_mode" = shared ]; then
+    echo "profile '$name' → Docker VM ceiling target ${docker} GB; shared total ${cap} GB (no reserved slices)"
+  else
+    echo "profile '$name' → docker ${docker} GB, agents $((cap - docker)) GB"
+  fi
   echo "Run 'memcap docker apply' to move the VM ceiling (needs a Docker restart)."
   return 0
 }

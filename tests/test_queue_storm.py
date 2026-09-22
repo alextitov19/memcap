@@ -40,6 +40,28 @@ class StormTests(unittest.TestCase):
                     "TaskOutput", decision.get("permissionDecisionReason", "")
                 )
 
+    def test_later_tick_and_output_file_poll_variants_are_also_rejected(self):
+        commands = [
+            'end=$((SECONDS+58)); while [ $SECONDS -lt $end ]; do sleep 10; done; echo "poll tick"',
+            'f=/private/tmp/claude-501/project/session/tasks/task.output\nend=$((SECONDS+58))\nwhile [ $SECONDS -lt $end ]; do\n  grep -q "RENDER_COMPLETE\\|exited with code" "$f" 2>/dev/null && break\n  sleep 6\ndone\ntail -n 60 "$f"',
+        ]
+        for command in commands:
+            response = hook_response(
+                dict(
+                    hook_event_name="PreToolUse",
+                    tool_name="Bash",
+                    tool_input={"command": command},
+                ),
+                "memcap",
+                "claude",
+            )["hookSpecificOutput"]
+            self.assertEqual(response.get("permissionDecision"), "deny")
+            self.assertNotIn("updatedInput", response)
+        from scheduler_policy import polling_loop
+
+        for command in commands:
+            self.assertFalse(polling_loop(command + "; make build"))
+
     def test_sampling_waiters_reuse_one_sample_without_releasing_reservations(self):
         sample = dict(
             cap_kb=20 * 1048576,

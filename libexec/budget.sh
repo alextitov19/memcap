@@ -55,3 +55,15 @@ mc_profile_split() {
   esac
   awk -v c="$cap" -v p="$pct" 'BEGIN{ d=int(c*p/100+0.5); printf "%d %d", d, c-d }'
 }
+
+# Shared is the default: a Docker VM ceiling is a maximum, never a reservation.
+mc_budget_mode() {
+  case "${BUDGET_MODE:-shared}" in
+    shared|split) printf '%s\n' "${BUDGET_MODE:-shared}" ;;
+    *) echo 'memcap: invalid BUDGET_MODE; use shared or split' >&2; return 1 ;;
+  esac
+}
+
+mc_pool_agent_gb() {
+  awk -v cap="$1" -v docker_kb="$2" 'BEGIN { r=cap-docker_kb/1048576; if(r<0)r=0; printf "%.2f",r }'
+}

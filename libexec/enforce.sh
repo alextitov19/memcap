@@ -1601,7 +1601,7 @@ mc_watch_liveness() {
 }
 
 mc_watch() {
-  local total cap cap_default docker_budget docker_default agents_budget
+  local total cap cap_default docker_budget docker_default agents_budget budget_mode
   local agent_net_gb over free soft min_free outcome drift
   local agent_gb docker_gb combined_gb gross_over
   # The combined-over-cap attribution (below): which of Docker and the simulators
@@ -1629,6 +1629,11 @@ mc_watch() {
     mc_log "watch: refusing to enforce -- $(mc_config_file) is broken, and enforcing on defaults would mean acting on a policy the user never chose"
     echo "memcap: not enforcing -- $(mc_config_file) is broken. Check it with: bash -n $(mc_config_file)" >&2
     mc_finish_pass refused-badconfig
+    return 1
+  fi
+
+  if ! budget_mode=$(mc_budget_mode); then
+    mc_finish_pass refused-misconfig
     return 1
   fi
 
@@ -1662,7 +1667,7 @@ mc_watch() {
   # agents_budget zero or negative, which would make every pass below believe
   # agents are permanently over budget and fire tier 2 forever. Refuse to act at
   # all rather than enforce against a budget that cannot be satisfied.
-  if [ "$agents_budget" -lt 1 ]; then
+  if [ "$budget_mode" = split ] && [ "$agents_budget" -lt 1 ]; then
     mc_log "watch: refusing to act -- DOCKER_BUDGET_GB ($docker_budget) leaves no room in TOTAL_BUDGET_GB ($cap)"
     echo "memcap.conf is misconfigured: DOCKER_BUDGET_GB ($docker_budget) >= TOTAL_BUDGET_GB ($cap). Fix memcap.conf; not enforcing."
     mc_finish_pass refused-misconfig
@@ -1683,6 +1688,9 @@ mc_watch() {
     # while `memcap status`, run from a terminal, printed the drift every time.
     mc_docker_ceiling_drift "$docker_budget" >/dev/null || :
     drift="${MC_DOCKER_CEILING_DRIFT:-}"
+    if [ "$budget_mode" = shared ] && [ -n "$drift" ]; then
+      drift="Docker VM ceiling differs from its configured target; shared ${cap} GB admission uses measured Docker memory, not either ceiling"
+    fi
     if [ -n "$drift" ]; then
       mc_log_throttled "docker-ceiling-drift" "watch: $drift"
     else
@@ -1729,6 +1737,7 @@ mc_watch() {
       agent_net_gb=$(mc_gb "$(mc_agent_net_kb "$AGENT_KB" "$SIM_KB")")
     fi
   fi
+  if [ "$budget_mode" = shared ]; then agents_budget=$(mc_pool_agent_gb "$cap" "$DOCKER_KB"); fi
   if command -v mc_host_pressure >/dev/null 2>&1; then
     mc_host_pressure
     mc_host_report
@@ -1784,6 +1793,14 @@ mc_watch() {
   fi
 
   over=$(awk -v a="$agent_net_gb" -v b="$agents_budget" 'BEGIN{print (a > b) ? 1 : 0}')
+  if [ "$budget_mode" = shared ]; then
+    agents_budget=$(mc_pool_agent_gb "$cap" "$DOCKER_KB")
+    # Keep simulator-only excess out of tier 2. Docker alone over the total
+    # cannot be fixed by terminating an unrelated agent child either.
+    over=0
+    if [ "$DOCKER_KB" -lt "$((cap * 1048576))" ] &&
+       [ "$(( $(mc_agent_net_kb "$AGENT_KB" "$SIM_KB") + DOCKER_KB ))" -gt "$((cap * 1048576))" ]; then over=1; fi
+  fi
   if [ "$over" = "1" ]; then
     if [ "$initial_fault" = 1 ]; then
       mc_log_throttled tier2-measurement "tier2: declining -- footprint measurement unreliable; safe orphan cleanup remains available"
@@ -1850,7 +1867,10 @@ mc_watch() {
       # test sourcing the modules by hand may not.
       docker_note=""
       [ -n "${drift:-}" ] && docker_note=" -- ${drift}"
-      if [ "$over" = "1" ]; then
+      if [ "$budget_mode" = shared ]; then
+        mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the shared ${cap} GB cap -- measured Docker ${docker_gb} GB, agents net ${agent_net_gb} GB, sims/browser ${sim_gb} GB. New admissions remain constrained; protected or active work may prevent cleanup. Docker's VM ceiling is not a reservation."
+        [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over shared ${cap} GB budget: combined ${combined_gb} GB. Inspect measured usage and the runner's admission reason; active work may prevent cleanup."
+      elif [ "$over" = "1" ]; then
         mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the ${cap} GB cap -- agents net ${agent_net_gb} GB / ${agents_budget} GB, Docker ${docker_gb} GB / ${docker_budget} GB, simulators/browser ${sim_gb} GB; protected or active work may prevent reclaim${docker_note}"
         [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over your ${cap} GB budget: combined ${combined_gb} GB. Protected or active work may prevent cleanup; inspect memcap status and pressure snapshots."
       elif [ "$docker_covers" = "1" ]; then

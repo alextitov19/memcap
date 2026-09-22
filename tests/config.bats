@@ -342,10 +342,9 @@ log_lines() { grep -c "$1" "$(mc_state_dir)/actions.log" 2>/dev/null || echo 0; 
   printf 'TOTAL_BUDGET_GB=20\nDOCKER_BUDGET_GB=6\n' > "$(mc_config_file)"
   run "$MEMCAP_ROOT/bin/memcap" profile
   [ "$status" -eq 0 ]
-  # The balanced 8/12 split is reachable only from a cap of 20, so seeing it
-  # proves the file's value -- not this machine's computed default -- was used.
+  # The profile must use the configured shared total, not the machine default.
   assert_contains "$output" "8 GB"
-  assert_contains "$output" "12 GB"
+  assert_contains "$output" "20 GB"
 }
 
 @test "bin/memcap refuses to sweep on a broken config" {

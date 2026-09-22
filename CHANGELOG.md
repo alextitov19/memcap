@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.13.0 — 2026-09-22
+
+- Cover the later semicolon and bounded output-file polling variants observed in the affected Claude session.
+- Default to one shared measured-use budget across Docker, agents and simulators. A configured Docker VM maximum no longer reserves an agent-budget slice.
+- Keep admission reservations, live pressure checks, headroom and guarded cleanup. Report shared usage without attributing queue delays to Docker's separate ceiling.
+- Preserve the legacy watchdog split via explicit `BUDGET_MODE=split`; no Docker restart or VM setting change during upgrade.
+
 ## v0.12.1 — 2026-09-22
 
 - Add read-only `memcap wait JOB_ID --timeout 60` for agent builds without TaskOutput; hooks and managed guidance explain the fallback.

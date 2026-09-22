@@ -2,6 +2,7 @@ load helper
 bats_require_minimum_version 1.5.0
 setup() {
   setup_common
+  export BUDGET_MODE="split" # Explicit legacy-policy regression coverage.
   # shellcheck source=/dev/null
   source "$MEMCAP_ROOT/libexec/common.sh"
   # Sourced in the same order bin/memcap uses, and specifically so mc_num/mc_frac

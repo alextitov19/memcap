@@ -24,20 +24,20 @@ memcap was written after a 24 GB Mac hard-shut-down mid-workday with **388 orpha
 machine — and 20.3 GB of 21.5 GB swap in use. Nothing had crashed. Two coding
 sessions had simply been left to accumulate.
 
-The point is not to make your machine slower or your agents weaker. It is to
-guarantee that when you join a video call, there is RAM left to join it with.
+The aim is to leave room for the rest of your work while keeping agents moving.
+The shared budget is a soft policy, not a hard guarantee against memory exhaustion.
 
 ```
 $ memcap status
-memcap 0.6.0 — /Users/you/.config/memcap/memcap.conf
+memcap 0.13.0 — /Users/you/.config/memcap/memcap.conf
 
-  agents + everything they spawn   6.93 GB / 10 GB budget
+  agents + everything they spawn   6.93 GB / shares 20 GB total (13.53 GB pool after measured Docker use)
     of which leaked/orphaned       0.00 GB
     of which sims/playwright       0.93 GB
     net of sims (drives tier 2)    6.00 GB
   docker VM + helpers              6.47 GB / 6 GB ceiling
   ---------------------------------------------------------
-  combined                        13.40 GB / 16 GB budget
+  combined                        13.40 GB / 20 GB budget (shared)
   system memory available          25%
   memory measured by               top footprint (569 processes)
   last enforcement pass            3s ago
@@ -70,6 +70,31 @@ is not a `top` that failed.
 The watchdog uses system `bash` (3.2); no newer shell is needed. The optional
 workload queue additionally requires **Python 3.9+** (`brew install python`),
 using only the standard library.
+
+## One shared budget (v0.13.0)
+
+`TOTAL_BUDGET_GB` is shared by **measured Docker memory + agents and their children
++ simulators/browsers**. With a 20 GB total, Docker using 4 GB and agents using
+8 GB consumes 12 GB, regardless of Docker's configured VM ceiling. Unused Docker
+capacity is not reserved or subtracted from an agent allowance.
+
+The queue already uses the combined total, current pressure, headroom and running
+job reservations. The watchdog now follows measured use too: agent cleanup is not
+triggered merely because agents exceeded `total minus Docker ceiling`. Simulator-only
+excess stays with simulator cleanup; Docker alone over the total does not justify
+killing unrelated agent work. Status and notifications describe the shared pool.
+
+`BUDGET_MODE=shared` is the default, including existing installs whose config omits
+it. Set `BUDGET_MODE=split` only to retain the legacy watchdog's fixed agent slice.
+`DOCKER_BUDGET_GB` still requests a separate Docker VM maximum; changing/applying
+that maximum may require a Docker restart. Profiles choose that VM maximum, not a
+reservation in the shared pool. No Docker setting is changed by this upgrade.
+
+The total is an admission/cleanup budget, **not an OS-level guarantee** that all
+running work stays below it at every instant. Existing jobs and unmanaged Docker
+activity can grow between samples; protected active work cannot always be safely
+reclaimed. Red-pressure admission checks, host headroom and per-job protections
+continue to apply. A hard aggregate limit would require stronger OS/VM isolation.
 
 ## Queue recovery and portable waiting (v0.12.1)
 
@@ -413,7 +438,7 @@ memcap init
 ```
 
 `memcap init` detects your total RAM, core count, and which coding agents are
-installed, proposes a budget split, and writes `~/.config/memcap/memcap.conf`. It
+installed, proposes a shared total and Docker VM ceiling, and writes `~/.config/memcap/memcap.conf`. It
 will offer to install and start the background service (`memcap service
 install`), which writes and loads memcap's own LaunchAgent — the thing that
 calls `memcap watch` on a recurring cycle — at
@@ -738,13 +763,14 @@ right after a restart, `docker images` and
 reloads. That is not data loss, and restarting Docker again to "fix" it only
 makes the wait longer.
 
-**`DOCKER_BUDGET_GB` is a request until `memcap docker apply` writes it into Docker's
-own settings**, and until then the agent budget above it — `TOTAL_BUDGET_GB` minus the
-Docker ceiling — is computed by subtracting a number nothing is enforcing. memcap wrote
-that setting from the beginning and never read it back, so the divergence was invisible:
-on the author's own machine the config asked for 4 GB while Docker held 6 GB, for
-memcap's entire life there. `status` now reads Docker's own value and says which one is
-real:
+**`DOCKER_BUDGET_GB` is a request until applied to Docker's own settings.**
+In shared mode, neither the requested nor actual VM ceiling is reserved against
+agents: measured Docker footprint counts toward `TOTAL_BUDGET_GB`. Status reports
+the actual ceiling separately when it can read it. A mismatch is configuration
+information, not an admission reason.
+
+The following historical diagnostic applies to explicit `BUDGET_MODE=split`,
+where the fixed agent slice is calculated from the configured Docker ceiling:
 
 ```
   docker VM + helpers              7.28 GB / 6 GB ceiling ENFORCED (config asks for 4 GB)
@@ -930,6 +956,7 @@ computed default if it is absent or commented out.
 
 | Key                          | Default           | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ---------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BUDGET_MODE` | `shared` | Share measured Docker and agent usage under the total; `split` retains the legacy fixed watchdog slice. |
 | `TOTAL_BUDGET_GB`            | computed at init  | Combined ceiling for agents + Docker + sims. Computed as `total RAM − reserve`, where `reserve` is 35% of total RAM clamped to 6–16 GB, and the result is floored at 40% of the machine so small laptops still get a usable budget.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `DOCKER_BUDGET_GB`           | computed at init  | Docker's VM memory ceiling in GB — the one hard limit in the system, applied by `memcap docker apply`. Computed as 40% of `TOTAL_BUDGET_GB` clamped to 2–12 GB, then capped further so agents always keep at least 2 GB.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `DOCKER_CPUS`                | 55% of core count | Docker's VM CPU ceiling, set alongside the memory ceiling.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
