@@ -37,4 +37,4 @@ jobs:
             /bin/bash -n "$f" || exit 1
           done
       - name: Tests
-        run: bats tests/
+        run: bats --print-output-on-failure tests/
