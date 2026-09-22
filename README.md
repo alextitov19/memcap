@@ -71,6 +71,33 @@ The watchdog uses system `bash` (3.2); no newer shell is needed. The optional
 workload queue additionally requires **Python 3.9+** (`brew install python`),
 using only the standard library.
 
+## Queue recovery and portable waiting (v0.12.1)
+
+Some Claude builds do not expose `TaskOutput`. Use the existing memcap job ID
+shown in queue output with `memcap wait JOB_ID --timeout 60` instead. This is a
+bounded, read-only local wait: it creates no workload or reservation and takes
+no queue lock. Repeat while it reports pending; once it leaves the queue, read
+the original task's final output and exit status. Leaving the queue does not prove
+success. Exit 0 from `wait` means the observation succeeded, not that the task did.
+
+Do not launch “drain tick” loops or poll for the absence of an old “queued” line
+in an append-only output file. Known waiting-only scripts are rejected before
+submission, with the supported wait command in the explanation. The watchdog
+retires verified queued drain ticks older than a minute and orphaned waiting-only
+shell groups older than five minutes, including jobs from older sessions. Cleanup
+requires registered identities, current ownership and exact script/child checks;
+unknown work is retained. All signals use the normal kill choke point, spare agent
+CLIs and memcap's ancestry, and leave reservations until processes actually exit.
+Up to eight pollers are considered per watchdog pass; notices explain the cleanup.
+
+Waiters share a memory sample for at most two seconds rather than each repeating
+expensive measurement under the queue lock. Reservations are reconciled under the
+lock on every admission, config changes invalidate the sample, and current host
+pressure is checked again before launch. A queue-lock timeout is a coordination
+failure, not proof of insufficient RAM. `doctor` checks integration health, not
+admission capacity; use the runner's reason. Docker's separate ceiling does not
+by itself explain workload admission.
+
 ## Agent setup and upgrades (v0.12.0)
 
 `memcap init` detects Claude and Codex profiles and offers to install their

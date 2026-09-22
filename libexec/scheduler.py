@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -23,6 +24,8 @@ import uuid
 
 from scheduler_policy import (
     hook_response,
+    polling_loop,
+    POLL_GUIDANCE,
     simple_words,
     worker_argv,
     worker_environment,
@@ -98,6 +101,23 @@ def sample_host() -> dict:
         return sample
     except (IndexError, ValueError) as exc:
         raise QueueError("invalid memory sample; no work admitted") from exc
+
+
+def current_pressure():
+    result = subprocess.run(
+        ["sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
+        capture_output=True,
+        text=True,
+        timeout=3,
+    )
+    return int(result.stdout.strip()) if result.returncode == 0 else 0
+
+
+def pressure_allows(allowed, reader=None):
+    try:
+        return (reader or current_pressure)() in allowed
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
 
 
 class Scheduler:
@@ -203,6 +223,41 @@ class Scheduler:
         finally:
             if os.path.exists(filename):
                 os.unlink(filename)
+
+    def measure(self, data):
+        # Called under the registry lock: one full host sample per two seconds,
+        # regardless of waiter count. Reservations are reconciled on every attempt.
+        # Injected measurement providers retain their own freshness semantics.
+        if self.sampler is not sample_host:
+            return self.sampler()
+        config = (
+            Path(os.environ.get("MEMCAP_CONFIG_HOME", str(Path.home() / ".config")))
+            / "memcap/memcap.conf"
+        )
+        signature = hashlib.sha256(
+            str(config).encode()
+            + (config.read_bytes() if config.exists() else b"")
+            + json.dumps(
+                sorted(
+                    (k, v)
+                    for k, v in os.environ.items()
+                    if k.startswith(("MC_", "MEMCAP_"))
+                )
+            ).encode()
+        ).hexdigest()
+        cached = data.get("measurement", {})
+        now = time.monotonic()
+        if (
+            isinstance(cached, dict)
+            and cached.get("key") == signature
+            and isinstance(cached.get("at"), (int, float))
+            and 0 <= now - cached["at"] < 2
+            and isinstance(cached.get("sample"), dict)
+        ):
+            return cached["sample"]
+        sample = self.sampler()
+        data["measurement"] = dict(key=signature, at=time.monotonic(), sample=sample)
+        return sample
 
     def refresh(self, data, table):
         live = []
@@ -443,7 +498,7 @@ class Scheduler:
                         allowed, reason = True, "memcap is paused"
                     else:
                         try:
-                            sample = self.sampler()
+                            sample = self.measure(data)
                             if memory > sample["cap_kb"]:
                                 raise QueueError(
                                     "job reservation exceeds the entire budget; split the job"
@@ -484,6 +539,16 @@ class Scheduler:
                             file=sys.stderr,
                         )
                         return 75
+                    if (
+                        allowed
+                        and self.sampler is sample_host
+                        and not (self.directory.parent / "paused").exists()
+                        and not pressure_allows(self.allowed_pressure)
+                    ):
+                        allowed, reason = (
+                            False,
+                            "host pressure or unreliable pressure measurement",
+                        )
                     if allowed:
                         child = self.launch(argv, cwd, job, data)
                         if waited:
@@ -506,7 +571,7 @@ class Scheduler:
                         if time.monotonic() - last_notice > 60:
                             print(
                                 f"memcap: queued {ident[:8]}: {reason}. Command has not started; "
-                                "keep polling this existing task once per minute (TaskOutput block=true timeout=60000 or a 60000ms blocking tool-session poll). "
+                                f"keep polling this existing task once per minute (TaskOutput block=true timeout=60000 if available; otherwise memcap wait {ident[:8]} --timeout 60). "
                                 "Continue independent work; do not submit duplicates or bypass memcap.",
                                 file=sys.stderr,
                             )
@@ -601,6 +666,42 @@ class Scheduler:
             self.save(data)
             return data["jobs"]
 
+    def wait_for(self, ident, timeout):
+        if (
+            not re.fullmatch(r"[a-f0-9]{8,32}", ident)
+            or not math.isfinite(timeout)
+            or not 0 <= timeout <= 60
+        ):
+            raise QueueError("usage: memcap wait JOB_ID [--timeout SECONDS (0..60)]")
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                data = json.loads((self.directory / "jobs.json").read_text())
+                matches = [j for j in data["jobs"] if j["id"].startswith(ident)]
+            except FileNotFoundError:
+                matches = []
+            except (ValueError, KeyError, TypeError) as exc:
+                raise QueueError(
+                    "queue state unreadable; task completion is unverified"
+                ) from exc
+            if len(matches) > 1:
+                raise QueueError(
+                    "ambiguous job ID; use the full ID from memcap queue --json"
+                )
+            live = {"jobs": matches}
+            self.refresh(live, processes())
+            if not live["jobs"]:
+                print(
+                    f"memcap: {ident} no longer pending. Read the ORIGINAL task's final output and exit status; this does not certify success. Do not resubmit a completed task."
+                )
+                return 0
+            if time.monotonic() >= deadline:
+                print(
+                    f"memcap: {ident} pending ({live['jobs'][0]['status']}). Repeat memcap wait {ident} --timeout 60; no job or reservation was created."
+                )
+                return 0
+            time.sleep(min(2, max(0, deadline - time.monotonic())))
+
     def authorize_cancel(self, ident, caller, pid=None):
         with self.locked() as data:
             table = processes()
@@ -680,6 +781,12 @@ def main():
         if result:
             print(json.dumps(result))
         return 0
+    if action == "wait":
+        parser = argparse.ArgumentParser(prog="memcap wait")
+        parser.add_argument("job_id")
+        parser.add_argument("--timeout", type=float, default=60)
+        args = parser.parse_args(sys.argv[2:])
+        return scheduler.wait_for(args.job_id, args.timeout)
     if action == "authorize":
         ids = scheduler.authorize_cancel(
             sys.argv[2], int(sys.argv[3]), sys.argv[4] if len(sys.argv) > 4 else None
@@ -731,6 +838,8 @@ def main():
     args = parser.parse_args(sys.argv[2:])
     argv = args.command[1:] if args.command[:1] == ["--"] else args.command
     if args.shell_command is not None:
+        if polling_loop(args.shell_command):
+            raise QueueError(POLL_GUIDANCE)
         if argv:
             raise QueueError("choose a command or --shell-command, not both")
         words = simple_words(args.shell_command)
