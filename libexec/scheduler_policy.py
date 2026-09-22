@@ -132,6 +132,14 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             not word.startswith("-") for word in words[3:]
         )
     if name == "memcap" and len(words) >= 2:
+        if words[1] == "report":
+            from report import KINDS
+
+            return (
+                len(words) in (3, 4)
+                and words[2] in {"status", "enable", "disable", "--help", "-h", *KINDS}
+                and (len(words) == 3 or words[3] == "--dry-run")
+            )
         if words[1] == "wait":
             return (
                 len(words) in (3, 5)

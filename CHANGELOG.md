@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.14.0 — 2026-09-22
+
+- Add `memcap report CATEGORY` with private local drafts and one-time opt-in to public GitHub reporting using the user's own GitHub CLI login.
+- Publish only fixed error categories and allowlisted numeric diagnostics. Never upload raw logs, commands, project paths, source or tool output.
+- Reuse matching issues across installations, add at most one report per installation/category/version, and bound submissions with a local lock, daily limit, cooldown and uncertain-submission handling.
+- Keep reporting outside the workload queue, update Claude/Codex guidance, and offer opt-in during setup with a default of no. Reporting does not change memory enforcement or its pause state.
+
 ## v0.13.0 — 2026-09-22
 
 - Cover the later semicolon and bounded output-file polling variants observed in the affected Claude session.

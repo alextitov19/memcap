@@ -27,6 +27,11 @@ SESSION_GUIDANCE = (
     "admission reason. Do not use memcap off or killall Docker to unblock work. "
     "Inspect docker stats --no-stream and docker buildx ls, and establish ownership "
     "before cleanup; preserve other sessions' containers and deployments."
+    " For suspected memcap defects, use memcap report CATEGORY once: queue-lock, measurement, "
+    "integration, queue-stall, unexpected-termination, or missing-task-poll. Reporting saves a "
+    "sanitized local draft and publishes only after the user's one-time reporting opt-in. "
+    "Never enable reporting on the user's behalf or upload raw logs. Normal capacity waiting "
+    "alone is not a defect; do not loop on reporting failures."
 )
 BOOT = re.compile(
     r"timed out trying to boot simulator|failed to prepare device.{0,180}impending launch|"
@@ -37,7 +42,8 @@ MEMORY = re.compile(
     r"\bENOMEM\b|out of memory|cannot allocate memory|memory starvation", re.I
 )
 QUEUE = re.compile(
-    r"memcap: (?:queued |queue wait expired|memory .*not admitted)", re.I
+    r"memcap: (?:queued |queue wait expired|queue lock unavailable|memory sampling failed|memory measurement unavailable|memory .*not admitted)",
+    re.I,
 )
 FIELDS = {
     "stdout",
@@ -245,6 +251,20 @@ def guidance(payload, state):
     ]
     lines.extend(measure(state, mobile))
     lines.extend(recent_terminations(state, payload.get("cwd")))
+    category = None
+    if "memcap: queue lock unavailable" in text.lower():
+        category = "queue-lock"
+    elif re.search(
+        r"memcap: memory (?:sampling failed|measurement unavailable)", text, re.I
+    ):
+        category = "measurement"
+    if category:
+        lines.append(
+            f"For this suspected memcap defect, run memcap report {category} once. "
+            "It uses sanitized diagnostics and the user's existing reporting consent; "
+            "otherwise it keeps a local draft. Do not enable reporting yourself, upload raw "
+            "logs, or keep retrying a deferred report. Reporting does not fix or restart the task."
+        )
     if mobile:
         lines.append(
             "A reported simulator boot timeout is not proof of memory starvation or a failed assertion. "

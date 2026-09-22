@@ -221,5 +221,16 @@ EOF
       return 1
     fi
   fi
+  if [ ! -f "$(mc_config_dir)/reporting.json" ] && command -v python3 >/dev/null 2>&1; then
+    # Separate one-time consent. EOF and unattended upgrades never opt in.
+    # No GitHub request is made here; reporting uses the user's own gh login.
+    echo '  Optional: agents can file public issues at github.com/alextitov19/memcap.'
+    echo '  Reports contain fixed error categories and numeric memory/queue facts, never raw logs or project paths.'
+    answer=$(mc_ask "Allow automatic sanitized GitHub reports? (yes/no)" "no")
+    # shellcheck source=/dev/null
+    . "$LIB/report.sh"
+    if mc_is_yes "$answer"; then mc_report enable || return 1
+    else mc_report disable || return 1; fi
+  fi
   return 0
 }

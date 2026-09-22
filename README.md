@@ -71,6 +71,55 @@ The watchdog uses system `bash` (3.2); no newer shell is needed. The optional
 workload queue additionally requires **Python 3.9+** (`brew install python`),
 using only the standard library.
 
+## Agent reports to GitHub (v0.14.0)
+
+Agents can report suspected memcap defects with `memcap report CATEGORY`. Setup
+offers a **one-time opt-in**, defaulting to no. Existing installations remain
+opted out until the user enables reporting:
+
+```sh
+gh auth login                  # authenticate as yourself, if needed
+memcap report enable           # consent to public reports in alextitov19/memcap
+memcap report status
+memcap report queue-lock       # create a report, or contribute to a matching issue
+memcap report disable          # return to local drafts only
+```
+
+Categories: `queue-lock`, `measurement`, `integration`, `queue-stall`,
+`unexpected-termination`, and `missing-task-poll`. Agents should report observed
+memcap problems once, keep the returned issue URL, and continue their work. Normal
+capacity waiting or a simulator boot timeout alone does not establish a memcap
+defect. The installed Claude/Codex guidance explains this workflow; refresh it
+with `memcap integrate` and restart sessions to reload Markdown.
+
+Without consent—or with `--dry-run`—the command saves a private Markdown draft
+under `~/.local/state/memcap/reports/` and makes no GitHub requests. After opt-in,
+it uses your own `gh` login to publish to this repository. `gh` is optional; a
+missing login, unavailable network or API error leaves the draft locally.
+Consent is stored separately in `~/.config/memcap/reporting.json`; upgrades and
+repeated setup preserve it. Agents must not opt in on a user's behalf.
+
+Public reports contain the memcap version, a fixed error category, UTC report
+time and allowlisted numeric pressure/memory/queue facts. No project paths,
+commands, process identities, source, raw logs or tool output are uploaded.
+Snapshots describe report time, not necessarily failure time; registry counts
+are not proof that jobs are still alive. Reports are observations for triage,
+not automatic root-cause findings. Do not append unreviewed raw diagnostics.
+
+Matching category/version reports share an issue; a different installation can
+add one sanitized comment. Local locking prevents competing sessions from posting
+duplicates. Limit: five publication attempts per rolling day per installation,
+with a one-hour cooldown after a failed attempt. An uncertain POST is recorded
+before submission and is never blindly repeated. GitHub search indexing and
+simultaneous first reports from different Macs can still produce duplicates;
+cross-machine deduplication is best-effort. The reporter never edits or closes
+existing issues, resets devices, changes budgets, or resumes enforcement.
+
+Reporting runs outside the workload queue. Snapshot collection has a two-second
+timeout; GitHub requests share an eight-second deadline. A deferred report must
+not turn into another agent retry loop. Maintainers and other contributors can
+triage issues and propose fixes through the normal pull-request workflow.
+
 ## One shared budget (v0.13.0)
 
 `TOTAL_BUDGET_GB` is shared by **measured Docker memory + agents and their children

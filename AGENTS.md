@@ -237,3 +237,14 @@ The Docker VM ceiling is not a reservation. Legacy split-policy tests select
 `BUDGET_MODE=split` explicitly; shared-budget tests exercise the default. Do not
 trigger dev-server cleanup for simulator-only excess or Docker alone over the cap.
 The aggregate budget is not a kernel hard cap; never claim it is one.
+
+## Public agent reports
+
+`report.py` publishes only after explicit reporting consent; memory pause state
+is unrelated and must remain unchanged. Default/EOF setup consent is no. Keep
+numeric allowlisting, fixed categories, private drafts, same-host GitHub URLs,
+nonblocking local locking and uncertain-POST persistence. Never pass raw logs,
+commands, paths or tool output to GitHub. All tests use temporary config/state
+and a fake transport; do not create public test issues. Reporting must not acquire
+the scheduler registry lock or consume a workload slot. Agents may report once
+but must not enable reporting on a user's behalf or retry reports in a loop.
