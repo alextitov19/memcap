@@ -87,20 +87,40 @@ mc_feedback_hook() {
     '{hookSpecificOutput:{hookEventName:$event,additionalContext:$message}}'
 }
 
+# Homebrew's opt symlink survives keg upgrades. Source checkouts use their own bin.
+mc_feedback_executable() {
+  local candidate="$MEMCAP_ROOT/bin/memcap"
+  case "$MEMCAP_ROOT" in
+    */Cellar/memcap/*)
+      candidate="${MEMCAP_ROOT%/Cellar/memcap/*}/opt/memcap/bin/memcap"
+      [ -x "$candidate" ] || { echo 'memcap: stable Homebrew opt executable unavailable' >&2; return 1; }
+      ;;
+  esac
+  printf '%s\n' "$candidate"
+}
+
+mc_integrate() {
+  local executable python
+  executable=$(mc_feedback_executable) || return 1
+  python=$(command -v python3) || { echo 'memcap integration requires Python 3.9+' >&2; return 1; }
+  "$python" "$LIB/integrate.py" "$@" --executable "$executable" --version "$MEMCAP_VERSION"
+}
+
 mc_agent_hooks() {
-  local agent="$1" queue="${2:-}" jqbin command_text events queue_command
+  local agent="$1" queue="${2:-}" jqbin command_text events queue_command executable
   case "$queue" in ''|--queue) ;; *) echo 'usage: memcap agent-hooks codex|claude [--queue]' >&2; return 2 ;; esac
   jqbin=$(mc_feedback_jq) || return 1
-  printf -v command_text '%q feedback' "$MEMCAP_ROOT/bin/memcap"
+  executable=$(mc_feedback_executable) || return 1
+  printf -v command_text '%q feedback' "$executable"
   case "$agent" in
     codex) events='["PreToolUse","PostToolUse","SessionStart","UserPromptSubmit","Stop","SessionEnd","SubagentStart","SubagentStop"]' ;;
     claude) events='["PreToolUse","PostToolUse","PostToolUseFailure","SessionStart","UserPromptSubmit","Stop","SessionEnd","SubagentStart","SubagentStop"]' ;;
     *) echo 'usage: memcap agent-hooks codex|claude' >&2; return 2 ;;
   esac
-  printf -v queue_command '%q queue-hook %q' "$MEMCAP_ROOT/bin/memcap" "$agent"
+  printf -v queue_command '%q queue-hook %q' "$executable" "$agent"
   "$jqbin" -n --arg command "$command_text" --argjson events "$events" \
-    --arg queue "$queue" --arg queue_command "$queue_command" \
-    '{hooks:($events | map({key:.,value:[{hooks:[{type:"command",command:($command + (if . == "Stop" then " --wait" else "" end)),timeout:(if . == "Stop" then 75 else 5 end)}]}]}) | from_entries)} |
+    --arg queue "$queue" --arg queue_command "$queue_command" --arg agent "$agent" \
+    '{hooks:($events | map({key:.,value:[{hooks:[{type:"command",command:($command + (if . == "Stop" then " --wait" else "" end)),timeout:(if . == "Stop" then 75 elif $agent == "codex" and . == "SessionEnd" then 3 else 5 end)}]}]}) | from_entries)} |
      if $queue == "--queue" then .hooks.PreToolUse +=
        [{matcher:"Bash",hooks:[{type:"command",command:$queue_command,timeout:5}]}]
      else . end'

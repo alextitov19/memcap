@@ -48,11 +48,13 @@ mc_is_yes() {
 
 mc_run_init() {
   local no_service=0 no_docker=0 total cores cap docker_gb agents enforce start_svc safe_docker
-  local proto state_dir
+  local proto state_dir integrations=ask detected answer
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-service) no_service=1 ;;
       --no-docker)  no_docker=1 ;;
+      --no-integrations) integrations=no ;;
+      --integrate) integrations=yes ;;
     esac
     shift
   done
@@ -198,6 +200,25 @@ EOF
     # what `brew upgrade` was found to silently remove. mc_service_install also
     # migrates away from an existing Homebrew-owned plist if one is found.
     mc_is_yes "$start_svc" && mc_service_install
+  fi
+  if [ "$integrations" != no ]; then
+    # shellcheck source=/dev/null
+    . "$LIB/feedback.sh"
+    if detected=$(mc_integrate discover); then
+      printf '\nDetected agent integration targets:\n%s\n' "$detected"
+      echo '  Installs memcap hooks and managed global guidance; preserves other settings and makes backups.'
+      answer="$integrations"
+      if [ "$integrations" = ask ]; then
+        # EOF/default is no: old unattended init invocations must not start
+        # modifying agent profiles merely because this version adds a prompt.
+        answer=$(mc_ask "Install/update these agent integrations? (yes/no)" "no")
+      fi
+      if mc_is_yes "$answer"; then mc_integrate integrate || return 1
+      else echo '  Agent integrations unchanged. Set them up later with: memcap integrate'; fi
+    elif [ "$integrations" = yes ]; then
+      echo "$detected" >&2
+      return 1
+    fi
   fi
   return 0
 }

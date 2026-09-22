@@ -71,37 +71,89 @@ The watchdog uses system `bash` (3.2); no newer shell is needed. The optional
 workload queue additionally requires **Python 3.9+** (`brew install python`),
 using only the standard library.
 
-## Upgrading to v0.11.0
+## Agent setup and upgrades (v0.12.0)
 
-v0.11.0 reduces unnecessary waiting: automatic reservations adapt to measured
-usage after startup, admissions rotate between sessions, and the watchdog cancels
-confirmed stuck standalone simulator boot attempts. Bounded file-reading pipelines
-stay outside the expensive-work queue. See [CHANGELOG.md](CHANGELOG.md) for details.
+`memcap init` detects Claude and Codex profiles and offers to install their
+integrations. Installation requires an explicit yes; unattended/EOF setup leaves
+agent files unchanged. Use `init --integrate` to opt in explicitly or
+`init --no-integrations` to skip the offer. Existing users can install or refresh
+agent integration without rerunning budget setup:
 
-1. Run `brew upgrade alextitov19/memcap/memcap`. Existing memory settings are preserved;
-   the upgrade does not change your cap, pressure policy, job slots or worker limits.
-2. Run `memcap agent-hooks claude --queue` and/or `memcap agent-hooks codex --queue`.
-   These print JSON. Merge the generated memcap entries into your existing hook
-   configuration, preserving unrelated hooks. **Replace old memcap entries instead
-   of adding duplicates.** Update separate `CLAUDE_CONFIG_DIR` profiles too.
-3. Confirm the generated Stop entry uses `memcap feedback --wait` with `timeout: 75`.
-   Restart/reload agent sessions to load changed hooks, and review/trust the updated
-   Codex hook in `/hooks`. Changing Markdown instructions alone does not install hooks.
-4. Check `memcap version`, `memcap status`, and `memcap queue`. Waiting tasks report
-   their admission reason. Keep polling an existing task with a blocking 60-second
-   poll and read its final output/exit status; do not submit duplicate work.
+```bash
+brew upgrade alextitov19/memcap/memcap
+memcap integrate
+memcap doctor
+```
 
-A Mac reboot is not required. The next normal watchdog pass uses the upgraded
-executable. Existing runners retain their loaded scheduler code until they finish;
-new runners use the new policy. Legacy Stop hooks without `--wait` return immediately
-with polling guidance. The new hook waits locally for up to a minute, waking early
-when pending work ends, so it does not repeatedly wake the model while nothing changes.
+`integrate` installs queue and lifecycle hooks and a small managed guidance block
+in global `CLAUDE.md` / `AGENTS.md`. Hooks supply current operational instructions
+and contextual diagnostics; the Markdown block explains how to use them without
+copying memory limits. The default selection includes detected `~/.claude`,
+`~/.claude-*` directories containing settings or instructions, `CLAUDE_CONFIG_DIR`,
+and `CODEX_HOME` (or `~/.codex`). Choose only the profiles you want when needed:
+
+```bash
+memcap integrate --claude
+memcap integrate --codex
+memcap integrate --claude-dir ~/.claude-personal
+memcap integrate --claude-dir /path/to/work-profile --codex-dir /path/to/codex-home
+memcap doctor --claude
+```
+
+The same profile selectors work for `doctor`. Explicit directory flags select
+those profiles; `--claude` includes discovered Claude profiles and `--codex`
+selects the configured Codex home. Missing explicit profiles can be created.
+
+The installer preserves unrelated hooks, permissions and user-written Markdown.
+It replaces recognized memcap hook entries rather than accumulating duplicates,
+keeps symlinks intact, and validates all selected files before writing any config.
+Changed files get private sibling backups named `.FILENAME.memcap-backup-ID`;
+partial write failures restore unchanged originals when possible and report any
+file needing manual recovery. Repeating the same installation changes nothing.
+Malformed JSON, duplicate JSON keys, ambiguous managed Markdown markers and
+concurrent edits are reported instead of overwritten. Restore a backup only after
+checking for newer edits; it contains the original full file, including settings.
+
+Homebrew hooks use the stable `opt/memcap/bin/memcap` path, so keg upgrades do not
+leave stale paths behind. Each profile's `.memcap-integration.json` records the
+installed integration schema and memcap version. Run `integrate` after upgrading;
+`doctor` reports missing or outdated integration files, hooks and timeouts.
+Upgrades and integration do not alter memory caps, job slots, worker limits or
+agent permissions, and the installer never approves its own Codex hook trust.
+
+**Activation:** reload/restart agent sessions after installing changed hooks or
+guidance. In Codex, review and trust the memcap hooks in `/hooks` when requested.
+A Mac reboot is not needed. Existing runners retain their loaded scheduler code
+until they finish; keep polling those tasks rather than submitting replacements.
+
+**What doctor verifies:** hook definitions, stable paths, Stop timeouts, managed
+guidance, version metadata and globally disabled Claude hooks. If the selected
+Codex home's local app-server daemon is running, a bounded read-only probe checks
+that it reports the exact memcap hooks enabled and trusted. The probe starts no
+agent and changes no trust. An absent/unsupported daemon or `--no-runtime` reports
+trust as **unverified** and directs you to `/hooks`; it never assumes activation
+from files alone. Doctor exits 1 for warnings/unverified checks and 0 when the
+checks it can perform pass. Project/managed overrides and already-open session
+reload state are outside those global-profile checks.
+
+See the upstream [Claude hook settings](https://code.claude.com/docs/en/hooks)
+and [Codex hook trust documentation](https://learn.chatgpt.com/docs/hooks) for
+agent-specific activation and override behavior.
+
+## Faster admission in v0.11.0
+
+Automatic reservations adapt to measured usage after startup, admissions rotate
+between sessions, and the watchdog cancels confirmed stuck standalone simulator
+boot attempts. Bounded file-reading pipelines stay outside the expensive-work
+queue. Stop hooks use `feedback --wait` with `timeout: 75` and wait locally for up
+to a minute instead of repeatedly waking the model. `memcap integrate` installs
+these entries for both new and previously configured profiles.
 
 Green or yellow pressure does not guarantee admission: measured usage, outstanding
 reservations, configured headroom and job slots still matter. The aim is more useful
 concurrency, not a promise of zero waits or zero pressure spikes. The boot deadline
 releases a reservation only after its managed processes exit; it does not reset a
-simulator or prove that app tests ran.
+simulator or prove that app tests ran. See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Queue expensive agent work before it starts
 
@@ -163,8 +215,9 @@ unmanaged servers already running before enabling the queue. Ordinary background
 children keep their reservation after the launch shell exits. A dead supervisor
 with surviving children retains capacity and appears as `orphaned`.
 
-**Automatic hooks:** generate and merge these entries into the agent's existing
-hook configuration (these commands print JSON; they do not change settings):
+**Automatic hooks:** `memcap integrate` installs and updates the entries for you.
+For manual configuration, generate JSON with the following commands and merge it
+into existing settings (the generator prints JSON; it does not change files):
 
 ```bash
 memcap agent-hooks claude --queue
@@ -382,7 +435,9 @@ this is not an aggregate limit on a job's whole worker pool. It is sampled on th
 watcher's roughly 60-second cycle, so fast allocations can overshoot between checks.
 This policy deliberately allows interrupting an active job to protect the host.
 
-**Feedback to the agents.** `memcap agent-hooks codex` or `memcap agent-hooks claude`
+**Feedback to the agents.** `memcap integrate` installs the hooks and global
+bootstrap guidance, and `memcap doctor` checks them. For manual setup,
+`memcap agent-hooks codex` or `memcap agent-hooks claude`
 prints hook entries for `memcap feedback`. Merge their `hooks` arrays into
 `~/.codex/hooks.json` or `~/.claude/settings.json`, preserving existing hooks.
 The generated command uses the memcap installation it was generated from; generate
@@ -832,6 +887,8 @@ touch your config or uninstall anything.
 | `memcap service uninstall`      | Unload and remove memcap's own LaunchAgent (and a lingering Homebrew-owned one, if present). A no-op if nothing is installed.                                                                                                                                     |
 | `memcap service status`         | Report whether memcap's LaunchAgent is installed and loaded.                                                                                                                                                                                                      |
 | `memcap uninstall`              | Remove memcap's own LaunchAgent and state. Keeps your config. See Uninstall below.                                                                                                                                                                                |
+| `memcap integrate [selectors]` | Install/update detected or selected global Claude/Codex hooks and managed instructions, preserving other settings and backing up changed files. |
+| `memcap doctor [selectors]` | Check integration/version/timeout problems and Codex runtime trust when available. `--no-runtime` leaves trust explicitly unverified. |
 | `memcap version`                | Print the installed version (`memcap 0.6.0`). Also `--version`/`-v`. The same string appears in `status`'s header and in `actions.log`'s liveness line, so a log excerpt says which build wrote it.                                                               |
 | `memcap help`                   | Usage summary.                                                                                                                                                                                                                                                    |
 

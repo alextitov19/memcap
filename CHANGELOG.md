@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.12.0 — 2026-09-21
+
+- Add `memcap integrate` to discover Claude/Codex profiles, merge memcap hooks,
+  and maintain a small global instruction block. Back up changed files, preserve
+  user settings and symlinks, refuse malformed profiles, and make reruns idempotent.
+- Offer integration during `memcap init` with explicit opt-in. Use stable Homebrew
+  opt paths so hooks survive upgrades; support custom profile directories.
+- Add `memcap doctor` for missing/stale hooks, timeouts, integration versions,
+  disabled Claude hooks and Codex trust. A running Codex daemon can report trust;
+  unavailable runtime verification is explicitly unverified, never assumed healthy.
+- Do not alter agent permissions or automatically approve hook trust.
+
 ## v0.11.0 — 2026-09-21
 
 - Reduce unused automatic reservations after the 30-second startup window using

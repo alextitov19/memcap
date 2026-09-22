@@ -685,6 +685,22 @@ class SchedulerTests(unittest.TestCase):
         sample["tracked_pids"] = []
         self.assertFalse(q.admissible([job], 2 * 1048576, "", sample)[0])
 
+    def test_integration_diagnostics_and_setup_do_not_wait_for_a_job_slot(self):
+        for command in (
+            "memcap doctor",
+            "memcap doctor --claude --no-runtime",
+            "memcap integrate --codex",
+            "memcap doctor --claude-dir '/tmp/profile space'",
+        ):
+            self.assertTrue(self.policy.light_shell(command), command)
+        for command in (
+            "memcap doctor && npm test",
+            "memcap integrate $(npm test)",
+            "memcap doctor --claude-dir",
+            "memcap off",
+        ):
+            self.assertFalse(self.policy.light_shell(command), command)
+
     def test_aged_large_waiter_drains_new_admissions_without_interrupting_running_jobs(
         self,
     ):

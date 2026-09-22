@@ -124,6 +124,8 @@ wrong reason.** Concretely —
 | `libexec/roots.sh`    | Learned sweep roots: canonicalize, safety-check, persist.          |
 | `libexec/enforce.sh`  | The three tiers, and `mc_kill_pids` — the single kill choke point. |
 | `libexec/jobs.sh`     | Confirmed oversized Claude/Codex child jobs; narrow protection exception. |
+| `libexec/integrate.py` | Transactional profile installation and integration diagnostics. |
+| `libexec/integration_probe.py` | Read-only Codex trust discovery over an existing local Unix WebSocket. |
 | `libexec/feedback.sh` | Private job notices and agent lifecycle hook context.             |
 | `libexec/scheduler.sh` | Queue config/sampling bridge and authorized cancellation.        |
 | `libexec/scheduler.py` | Atomic admission, reservations and process-group supervision.     |
@@ -182,6 +184,22 @@ hooks must remain compatible and must not acquire a hidden minute-long wait.
 Document hook replacement, separate Claude profiles, session reload and Codex
 trust whenever changing this contract. Existing runners retain their loaded code;
 a daemon upgrade is not evidence that every old session has adopted new behavior.
+
+## Agent configuration installation
+
+`integrate` is an explicit user-facing mutation of agent profiles, not an enforcement
+operation. Preserve unrelated hooks, permissions, Markdown and symlinks. Validate
+all selected profiles before writing, keep private original-byte backups, and
+refuse malformed/ambiguous input and concurrent changes. Managed hooks use stable
+Homebrew opt paths. Repeated installation must not change bytes, timestamps or
+create more backups. Never approve Codex hook trust from the installer.
+
+Tests must use temporary HOME/profile/config/state directories; init's optional
+integration prompt defaults to no, including EOF. Do not remove that consent gate:
+older tests and unattended setup must never start editing real agent profiles.
+Doctor reports unavailable trust as unverified. Its Codex probe may only connect
+to an existing user-owned local daemon socket; it must not start/stop agents or
+change trust/config. An API report is not proof that an old session reloaded hooks.
 
 ## Assertions
 
