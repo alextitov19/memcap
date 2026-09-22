@@ -86,7 +86,9 @@ class SchedulerTests(unittest.TestCase):
             f"while not Path({str(gate)!r}).exists() and time.monotonic()<deadline: time.sleep(.02)\n"
             "f.write('end\\n')"
         )
-        procs = [self.fixture(code) for _ in range(5)]
+        # Admission must outlive the test's readiness wait and deliberate hold;
+        # this checks concurrency, not a five-second deadline on CI hardware.
+        procs = [self.fixture(code, wait=30) for _ in range(5)]
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             records = self.queue().status()
@@ -600,7 +602,7 @@ class SchedulerTests(unittest.TestCase):
             f"p=Path({str(gate)!r});deadline=time.monotonic()+8;"
             "exec('while not p.exists() and time.monotonic()<deadline: time.sleep(0.02)')"
         )
-        holders = [self.fixture(holder, session_key="a") for _ in range(2)]
+        holders = [self.fixture(holder, wait=30, session_key="a") for _ in range(2)]
         q = self.queue()
         deadline = time.monotonic() + 4
         while (
@@ -612,7 +614,7 @@ class SchedulerTests(unittest.TestCase):
         work = []
         for label, session in [("a1", "a"), ("a2", "a"), ("b", "b"), ("c", "c")]:
             code = f"import time;open({str(events)!r},'a').write({label!r}+'\\n');time.sleep(0.1)"
-            work.append(self.fixture(code, session_key=session))
+            work.append(self.fixture(code, wait=30, session_key=session))
         deadline = time.monotonic() + 4
         while (
             sum(j["status"] == "waiting" for j in q.status()) < 4
