@@ -127,6 +127,27 @@ class SchedulerTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 75, err)
             self.assertFalse(marker.exists())
 
+    def test_waiting_job_persists_last_admission_reason_for_read_only_reporting(self):
+        proc = self.fixture(
+            "raise RuntimeError('must not run')",
+            wait=2,
+            sample={**healthy(), "available_kb": 1},
+        )
+        deadline = time.monotonic() + 1.5
+        record = {}
+        while time.monotonic() < deadline:
+            path = self.root / "queue/jobs.json"
+            if path.exists():
+                jobs = json.loads(path.read_text())["jobs"]
+                if jobs and jobs[0].get("admission"):
+                    record = jobs[0]["admission"]
+                    break
+            time.sleep(0.02)
+        self.assertEqual(record.get("reason"), "headroom")
+        self.assertGreater(record["at"], time.time() - 5)
+        _, err = proc.communicate(timeout=5)
+        self.assertEqual(proc.returncode, 75, err)
+
     def test_yellow_policy_allows_warning_but_never_red_or_unknown(self):
         q = self.queue(max_pressure="yellow")
         for pressure in (1, 2):

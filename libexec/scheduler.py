@@ -560,6 +560,21 @@ class Scheduler:
                             )
                     else:
                         waited = True
+                        # Record only a fixed diagnostic code and wall-clock time.
+                        # Reporters read this atomically without taking our lock.
+                        job["admission"] = {
+                            "at": time.time(),
+                            "reason": {
+                                "combined budget reserved or in use": "budget",
+                                "preserving host memory headroom": "headroom",
+                                "all finite-job slots occupied": "slots",
+                                "host pressure or unreliable memory measurement": "pressure_or_measurement",
+                                "host pressure or unreliable pressure measurement": "pressure_or_measurement",
+                                "invalid memory measurement": "measurement",
+                                "waiting for earlier queued work": "fairness",
+                                "waiting for another session’s turn or an aged job to fit": "fairness",
+                            }.get(reason, "unknown"),
+                        }
                         self.save(data)
                         if wait is not None and time.monotonic() - began >= wait:
                             print(

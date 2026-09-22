@@ -54,6 +54,18 @@ mc_queue_sample() {
   case "$pressure" in 1|2|4) ;; *) pressure=0; fault=1 ;; esac
   printf '%s %s %s %s %s\n' "$((cap * 1048576))" "$((AGENT_KB + DOCKER_KB))" \
     "$((total * free / 102400))" "$pressure" "$fault"
+  if [ "${1:-}" = report ]; then
+    # Aggregate-only reporting shares the exact footprint measurement. Never
+    # include the per-process rows emitted for the scheduler below.
+    printf '%s %s %s\n' "$AGENT_KB" "$DOCKER_KB" "${SIM_KB:-0}"
+    awk -v jobs="${QUEUE_MAX_JOBS:-2}" -v headroom="${QUEUE_HEADROOM_GB:-3}" \
+      -v pressure="${QUEUE_MAX_PRESSURE-green}" -v workers="${QUEUE_WORKERS:-2}" \
+      'BEGIN {
+        if (jobs !~ /^[0-9]+$/ || headroom !~ /^[0-9]+([.][0-9]+)?$/ || workers !~ /^[0-9]+$/) exit
+        printf "%s %.0f %d %s\n", jobs, headroom*1048576, (pressure=="yellow" ? 2 : pressure=="green" ? 1 : 0), workers
+      }'
+    return 0
+  fi
   tracked=" ${PROTECTEDPIDS} ${SIMPIDS} ${ORPHANS} "
   # Docker rows are already in tracked_kb. Registered jobs cannot own the VM,
   # but Docker helpers inside an agent tree are included by the propagated set.

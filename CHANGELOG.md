@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.14.1 — 2026-09-22
+
+- Include sanitized machine capacity, macOS version, CPU load, swap/disk availability, enforcement pause state and measured memory subtotals in agent reports.
+- Add aggregate queue ages, session counts, requested memory and configured admission limits. Persist fixed last-admission blocker codes for read-only reporting without taking the queue lock.
+- Explain measurement freshness and unknown values; instruct agents to report suspected excessive throttling with `queue-stall`. No hostnames, project identities or raw diagnostics are published.
+
 ## v0.14.0 — 2026-09-22
 
 - Add `memcap report CATEGORY` with private local drafts and one-time opt-in to public GitHub reporting using the user's own GitHub CLI login.

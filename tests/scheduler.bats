@@ -74,6 +74,19 @@ sample_fixture() {
   [ "${#lines[@]}" = 4 ]
 }
 
+@test "REPORT: sampler returns only totals and policy, never process rows" {
+  sample_fixture
+  QUEUE_MAX_JOBS=8; QUEUE_HEADROOM_GB=2; QUEUE_MAX_PRESSURE=yellow; QUEUE_WORKERS=2
+  run mc_queue_sample report
+  [ "$status" = 0 ]
+  assert_contains "$output" '16777216 3072 12582912 1 0'
+  assert_contains "$output" '3072 0 0'
+  assert_contains "$output" '8 2097152 2 2'
+  assert_not_contains "$output" '100 1024 1'
+  assert_not_contains "$output" '300 4096 0'
+  [ "${#lines[@]}" = 3 ]
+}
+
 @test "QUEUE: unknown pressure is a measurement fault rather than normal" {
   sample_fixture
   fixture_pressure=unknown

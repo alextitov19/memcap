@@ -24,25 +24,7 @@ KINDS = {
     "unexpected-termination": "Suspected unexpected process termination",
     "missing-task-poll": "Agent cannot poll its existing task",
 }
-FACTS = {
-    "cap_kb",
-    "tracked_kb",
-    "available_kb",
-    "pressure",
-    "waiting",
-    "running",
-    "registry_age_seconds",
-}
-
-
-def read_json(path):
-    if path.is_symlink():
-        raise ValueError("symlinked report state")
-    with path.open() as stream:
-        raw = stream.read(1048577)
-    if len(raw) > 1048576:
-        raise ValueError("oversized report state")
-    return json.loads(raw)
+from report_metrics import capture, read_json, sanitize
 
 
 def private_dir(path):
@@ -74,47 +56,6 @@ def issue_url(value):
     ):
         raise ValueError("invalid issue URL")
     return value
-
-
-def capture(state):
-    """Numeric allowlist only. Queue counts describe stored entries, not live jobs."""
-    facts = {}
-    try:
-        root = Path(__file__).resolve().parents[1]
-        result = subprocess.run(
-            [str(root / "bin/memcap"), "_queue-sample"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        cap, tracked, available, pressure, fault = map(
-            int, result.stdout.splitlines()[0].split()
-        )
-        if result.returncode == 0 and not fault and pressure in (1, 2, 4):
-            facts.update(
-                cap_kb=cap,
-                tracked_kb=tracked,
-                available_kb=available,
-                pressure=pressure,
-            )
-    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
-        pass
-    try:
-        path = state / "queue/jobs.json"
-        jobs = read_json(path)["jobs"]
-        if not isinstance(jobs, list) or not all(
-            isinstance(j, dict) and j.get("status") in ("waiting", "running")
-            for j in jobs
-        ):
-            raise ValueError("invalid registry")
-        facts.update(
-            waiting=sum(j["status"] == "waiting" for j in jobs),
-            running=sum(j["status"] == "running" for j in jobs),
-            registry_age_seconds=max(0, int(time.time() - path.stat().st_mtime)),
-        )
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
-    return facts
 
 
 class GitHub:
@@ -238,18 +179,22 @@ class Reporter:
         draft = self.directory / f"{fingerprint}.md"
         now = self.now()
         raw = self.snapshot()
-        facts = {
-            key: value
-            for key, value in raw.items()
-            if key in FACTS and type(value) is int and 0 <= value <= 2**63 - 1
-        }
-        if facts.get("pressure") not in (1, 2, 4):
-            facts.pop("pressure", None)
+        facts = sanitize(raw)
         body = (
             f"{marker}\n## Agent-reported observation\n\n{KINDS[kind]}. This is a suspected problem, not a confirmed root cause.\n\n"
             f"Memcap version: {self.version}\nCategory: {kind}\nReport identifier: {fingerprint}\nObserved at: {datetime.fromtimestamp(now, timezone.utc).isoformat()}\n\n"
             "Snapshot collected at report time, which may differ from failure time. Missing values are unknown. "
-            "Queue counts are stored registry entries, not verified live jobs. Pressure: 1=green, 2=yellow, 4=red.\n\n"
+            "Queue counts, session counts and ages describe stored entries, not verified live jobs. "
+            "Blockers describe each waiting entry's last recorded admission decision; old runners may have none. "
+            "Registry/decision ages show evidence freshness, not how long a lock was held.\n\n"
+            "Units: `_kb` = KiB; `_seconds` = seconds; load averages are multiplied by 1000 (not CPU percentages). "
+            "Pressure: 1=green, 2=yellow, 4=red. Architecture: 1=arm64, 2=x86_64. "
+            "`enforcement_paused`: 1=paused, 0=not paused (not proof the watchdog is running). "
+            "`measurement_fault`: 1=host sample unavailable/unreliable. "
+            "Simulator/browser memory is a subset of agent memory; do not add it twice. "
+            "`*_requested_kb` sums original job requests, not effective reservations after adjustment. "
+            "`blocked_pressure_or_measurement` includes failed pressure/measurement checks. "
+            "Unknown/missing decisions are counted in `blocked_unknown`.\n\n"
             f"```json\n{json.dumps(facts, sort_keys=True, indent=2)}\n```\n\n"
             "No source code, project paths, commands, process identities, raw logs or tool output are included. "
             "Maintainers may request a minimal reproduction after triage.\n"
