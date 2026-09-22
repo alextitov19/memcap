@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.10.0 — 2026-09-21
+
+- Add lifecycle-based garbage collection for idle agent-owned Playwright
+  browsers and recognized development servers, plus abandoned iOS runtime
+  leaves. Completion hooks, subagent state, CPU history, TCP connections and
+  fresh process identities guard a narrow exception to live-tree protection.
+  Agent CLIs, MCP/language servers and Docker are retained. Default mode is
+  observation; `GC_MODE=on` enables automatic collection after a ten-minute grace.
+- Let the oldest waiting job that fits run, so an oversized reservation cannot
+  stall smaller jobs. Document a throughput preset for 24 GB Macs: eight possible
+  jobs, 20 GB combined budget, 2 GB headroom, two workers and yellow permitted.
+- Keep grep searches and quoted ripgrep regex/glob patterns outside the build
+  queue. Shell substitutions, execution hooks and heavy pipeline stages still queue.
+- Claude launches managed tasks in the background with an unlimited queue wait.
+  Lifecycle feedback asks it to keep polling pending finite jobs and read their
+  final result. The host retains control of cancellation and tool deadlines.
+
 ## v0.9.1 — 2026-09-21
 
 - Keep lightweight search pipelines, bounded sed reads, memcap diagnostics and

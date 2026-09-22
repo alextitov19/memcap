@@ -253,6 +253,15 @@ class Scheduler:
         except (KeyError, TypeError, ValueError):
             return False, "invalid memory measurement"
 
+    def next_waiter(self, jobs, resource, sample):
+        # Oldest request that actually fits. A large waiting reservation does
+        # not consume RAM or stop unrelated smaller work from making progress.
+        for job in jobs:
+            if job["status"] == "waiting" and bool(job["resource"]) == bool(resource):
+                if self.admissible(jobs, job["memory_kb"], job["resource"], sample)[0]:
+                    return job["id"]
+        return None
+
     def nested(self, data, table):
         token = os.environ.get("MEMCAP_QUEUE_LEASE")
         if not token:
@@ -273,10 +282,16 @@ class Scheduler:
             pid = str(row["ppid"])
         return False
 
-    def run(self, argv, cwd=None, resource="", memory_gb=None, wait=1800):
+    def run(
+        self, argv, cwd=None, resource="", memory_gb=None, wait=1800, session_key=""
+    ):
         cwd = Path(cwd or os.getcwd()).resolve(strict=True)
         memory = self.memory_kb if memory_gb is None else int(memory_gb * GIB)
-        if not argv or memory <= 0 or not math.isfinite(wait) or wait < 0:
+        if (
+            not argv
+            or memory <= 0
+            or (wait is not None and (not math.isfinite(wait) or wait < 0))
+        ):
             raise QueueError(
                 "command, positive reservation and nonnegative wait are required"
             )
@@ -332,6 +347,7 @@ class Scheduler:
                         "enqueued": time.time(),
                         "label": Path(argv[0]).name,
                         "cancel": False,
+                        "session_key": session_key,
                     }
                 )
                 self.save(data)
@@ -341,7 +357,7 @@ class Scheduler:
             while child is None:
                 if self.cancelled:
                     return 128 + self.cancelled
-                if waited and time.monotonic() - began >= wait:
+                if waited and wait is not None and time.monotonic() - began >= wait:
                     print(
                         "memcap: queue wait expired; command not started",
                         file=sys.stderr,
@@ -366,17 +382,10 @@ class Scheduler:
                             file=sys.stderr,
                         )
                         return 0
-                    waiting = [j for j in data["jobs"] if j["status"] == "waiting"]
                     allowed, reason = False, "waiting for earlier queued work"
-                    # Persistent launches can pass a slot-blocked finite job;
-                    # finite jobs preserve FIFO, preventing session starvation.
-                    eligible = next(
-                        (j for j in waiting if bool(j["resource"]) == bool(resource)),
-                        job,
-                    )
                     if (self.directory.parent / "paused").exists():
                         allowed, reason = True, "memcap is paused"
-                    elif eligible["id"] == ident:
+                    else:
                         try:
                             sample = self.sampler()
                             if memory > sample["cap_kb"]:
@@ -386,6 +395,15 @@ class Scheduler:
                             allowed, reason = self.admissible(
                                 data["jobs"], memory, resource, sample
                             )
+                            if (
+                                allowed
+                                and self.next_waiter(data["jobs"], resource, sample)
+                                != ident
+                            ):
+                                allowed, reason = (
+                                    False,
+                                    "waiting for earlier work that fits",
+                                )
                         except (
                             OSError,
                             KeyError,
@@ -398,7 +416,7 @@ class Scheduler:
                             ) from exc
                     if self.cancelled:
                         return 128 + self.cancelled
-                    if waited and time.monotonic() - began >= wait:
+                    if waited and wait is not None and time.monotonic() - began >= wait:
                         print(
                             "memcap: queue wait expired; command not started",
                             file=sys.stderr,
@@ -409,7 +427,7 @@ class Scheduler:
                     else:
                         waited = True
                         self.save(data)
-                        if time.monotonic() - began >= wait:
+                        if wait is not None and time.monotonic() - began >= wait:
                             print(
                                 f"memcap: queue wait expired: {reason}; command not started",
                                 file=sys.stderr,
@@ -625,6 +643,12 @@ def main():
         "--wait", type=float, default=env_number("QUEUE_WAIT_SEC", 1800)
     )
     parser.add_argument("--cwd")
+    parser.add_argument("--session-key", default="", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--wait-forever",
+        action="store_true",
+        help="poll until admitted or cancelled; no queue deadline",
+    )
     parser.add_argument("--shell", default="/bin/bash")
     parser.add_argument("--login", action="store_true")
     parser.add_argument("--shell-command")
@@ -649,7 +673,14 @@ def main():
         parser.error("a command is required after --")
     if args.memory is not None and (not math.isfinite(args.memory) or args.memory <= 0):
         parser.error("--memory must be positive and finite (GB)")
-    return scheduler.run(argv, args.cwd, args.resource, args.memory, args.wait)
+    return scheduler.run(
+        argv,
+        args.cwd,
+        args.resource,
+        args.memory,
+        None if args.wait_forever else args.wait,
+        args.session_key,
+    )
 
 
 if __name__ == "__main__":

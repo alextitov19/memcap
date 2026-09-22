@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -19,7 +20,7 @@ def simple_words(command: str) -> list[str] | None:
         return None
 
 
-def light_words(words: list[str]) -> bool:
+def light_words(words: list[str], glob_checked=False) -> bool:
     if not words:
         return False
     # A bare glob can expand to execution options such as rg's --pre. Require
@@ -27,7 +28,11 @@ def light_words(words: list[str]) -> bool:
     for word in words:
         expanded_status = word.replace("$?", "0")
         wildcard = re.search(r"[\*?\[]", expanded_status)
-        if wildcard and "/" not in expanded_status[: wildcard.start()]:
+        if (
+            not glob_checked
+            and wildcard
+            and "/" not in expanded_status[: wildcard.start()]
+        ):
             return False
     name = Path(words[0]).name
     if name in {
@@ -41,6 +46,9 @@ def light_words(words: list[str]) -> bool:
         "false",
         "printf",
         "echo",
+        "grep",
+        "egrep",
+        "fgrep",
     }:
         # tail -f is a persistent process, not a short read.
         if name == "tail" and any(
@@ -76,6 +84,7 @@ def light_words(words: list[str]) -> bool:
             "diagnostics",
             "help",
             "version",
+            "gc",
         } and all(word in {"--json", "--summary"} for word in words[2:])
     if name == "gh" and len(words) >= 3 and words[1] == "run":
         return words[2] in {"watch", "view", "list"} and not any(
@@ -84,10 +93,49 @@ def light_words(words: list[str]) -> bool:
     return False
 
 
+def literal_shell(command: str) -> bool:
+    """Check expansions before shlex discards whether a regex/glob was quoted."""
+    quote = ""
+    prefix = ""
+    escaped = False
+    i = 0
+    while i < len(command):
+        c = command[i]
+        if c in "\n\r":
+            return False
+        if escaped:
+            prefix += c
+            escaped = False
+        elif c == "\\" and quote != "'":
+            escaped = True
+        elif quote and c == quote:
+            quote = ""
+        elif c in "\"'" and not quote:
+            quote = c
+        elif quote != "'" and c in "$`":
+            if c == "$" and command[i : i + 2] == "$?":
+                prefix += "0"
+                i += 1
+            else:
+                return False
+        elif not quote and c in "*?[":
+            if "/" not in prefix:
+                return False
+            prefix += c
+        elif not quote and c in "{}~":
+            return False
+        elif not quote and (c.isspace() or c in "|&;<>()"):
+            prefix = ""
+        else:
+            prefix += c
+        i += 1
+    return not quote and not escaped
+
+
 def light_shell(command: str) -> bool:
     # Recognize a narrow shell grammar solely for lightweight commands. Every
     # stage must qualify. Never evaluate substitutions or reconstruct the input.
-    if any(char in command.replace("$?", "") for char in "$`\n\r"):
+    if not literal_shell(command):
         return False
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;<>()")
@@ -103,7 +151,7 @@ def light_shell(command: str) -> bool:
     while i < len(tokens):
         token = tokens[i]
         if token in separators:
-            if not light_words(words):
+            if not light_words(words, glob_checked=True):
                 return False
             words = []
         else:
@@ -125,7 +173,7 @@ def light_shell(command: str) -> bool:
             else:
                 words.append(token)
         i += 1
-    return light_words(words)
+    return light_words(words, glob_checked=True)
 
 
 def classify_shell(command: str) -> tuple[str, str]:
@@ -320,14 +368,30 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
     if isinstance(cwd, str):
         args += ["--cwd", cwd]
     timeout = original.get("timeout")
-    if isinstance(timeout, (int, float)) and timeout > 0:
+    if agent == "claude":
+        args.append("--wait-forever")
+    elif isinstance(timeout, (int, float)) and timeout > 0:
         args += ["--wait", str(max(1, int(timeout / 1000) - 5))]
+    if isinstance(payload.get("session_id"), str) and payload["session_id"]:
+        args += [
+            "--session-key",
+            hashlib.sha256(payload["session_id"].encode()).hexdigest(),
+        ]
     args += ["--shell-command", command]
     updated = dict(original)
+    if agent == "claude":
+        updated["run_in_background"] = True
     updated["command"] = shlex.join(args)
     # Codex's hook schema uses command even when its exec tool uses cmd.
     updated.pop("cmd", None)
     result = {"hookEventName": "PreToolUse", "updatedInput": updated}
+    if agent == "claude":
+        result["additionalContext"] = (
+            "memcap keeps this task queued until memory is available, then starts it automatically. "
+            "Use TaskOutput with block=true to wait for this background task (repeat while pending). "
+            "Do not submit duplicates, stop because it is queued, or bypass memcap. "
+            "Read the final output and exit status before continuing dependent work."
+        )
     if agent == "codex":
         # Codex requires allow with updatedInput. Do not silently grant broader
         # command approval in a session that has not already opted out of prompts.

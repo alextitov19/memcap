@@ -455,6 +455,9 @@ class SchedulerTests(unittest.TestCase):
 
     def test_lightweight_inspection_and_ci_watch_do_not_reserve_build_slots(self):
         for command in (
+            r'grep -rln "weatherKitEntitled\|WeatherProviderFactory" KoreSkinSyncTests/ 2>/dev/null',
+            "rg --files -g '*.swift' | head -20",
+            "rg -n 'weather.*Entitled$' KoreSkinSyncTests/",
             'rg -n "zip-counties|case" backend/cmd/ingest/main.go | head -30',
             'rg -n "zip-counties" backend/cmd/ingest/*.go',
             "memcap status 2>&1 | head -30",
@@ -466,6 +469,70 @@ class SchedulerTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.policy.classify_shell(command)[0], "light")
 
+    def test_memory_capacity_can_admit_more_than_two_jobs(self):
+        q = self.queue(max_jobs=8, headroom_gb=2, max_pressure="yellow")
+        sample = healthy()
+        sample["pressure"] = 2
+        active = [
+            dict(status="running", resource="", memory_kb=2 * 1048576, members={})
+            for _ in range(3)
+        ]
+        self.assertTrue(q.admissible(active, 2 * 1048576, "", sample)[0])
+        sample["pressure"] = 4
+        self.assertFalse(q.admissible(active, 2 * 1048576, "", sample)[0])
+        sample["pressure"] = 2
+        sample["available_kb"] = 9 * 1048576
+        self.assertFalse(q.admissible(active, 2 * 1048576, "", sample)[0])
+
+    def test_claude_queued_jobs_wait_in_background_until_admitted(self):
+        payload = dict(
+            hook_event_name="PreToolUse",
+            tool_name="Bash",
+            cwd=str(self.root),
+            tool_input=dict(command="make preflight", timeout=120000),
+        )
+        response = self.policy.hook_response(payload, "/opt/memcap", "claude")[
+            "hookSpecificOutput"
+        ]
+        self.assertTrue(response["updatedInput"]["run_in_background"])
+        self.assertIn("--wait-forever", response["updatedInput"]["command"])
+        self.assertIn("TaskOutput", response["additionalContext"])
+
+    def test_unlimited_queue_wait_polls_and_eventually_executes_once(self):
+        calls = []
+
+        def sample():
+            calls.append(1)
+            value = healthy()
+            if len(calls) < 4:
+                value["pressure"] = 4
+            return value
+
+        q = self.queue()
+        q.sampler = sample
+        marker = self.root / "ran"
+        self.assertEqual(
+            q.run(
+                [sys.executable, "-c", f"open({str(marker)!r},'a').write('once')"],
+                wait=None,
+            ),
+            0,
+        )
+        self.assertEqual(marker.read_text(), "once")
+        self.assertGreaterEqual(len(calls), 4)
+
+    def test_large_waiter_does_not_block_smaller_job_that_fits(self):
+        q = self.queue(max_jobs=8, headroom_gb=2)
+        sample = healthy()
+        sample["tracked_kb"] = 12 * 1048576
+        jobs = [
+            dict(id="large", status="waiting", resource="", memory_kb=6 * 1048576),
+            dict(id="small", status="waiting", resource="", memory_kb=2 * 1048576),
+        ]
+        self.assertEqual(q.next_waiter(jobs, "", sample), "small")
+        sample["tracked_kb"] = 8 * 1048576
+        self.assertEqual(q.next_waiter(jobs, "", sample), "large")
+
     def test_lightweight_shell_parsing_keeps_execution_and_heavy_stages_queued(self):
         for command in (
             "rg x file | python worker.py",
@@ -475,6 +542,8 @@ class SchedulerTests(unittest.TestCase):
             "cat <(npm test)",
             "rg --pre ./expensive x file | head",
             "rg x *",
+            "rg x {--pre,/tmp/worker}",
+            "rg x ~[worker]",
             'sed -n "1e npm test" file',
             "gh run view 123 --web",
             "memcap off",
