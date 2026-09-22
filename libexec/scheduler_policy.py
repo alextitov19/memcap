@@ -92,6 +92,23 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             not word.startswith("-") for word in words[3:]
         )
     if name == "memcap" and len(words) >= 2:
+        if words[1] in {"doctor", "integrate"}:
+            # Repair/diagnostic commands must not wait behind the queue they inspect.
+            i = 2
+            while i < len(words):
+                if words[i] in {"--claude", "--codex", "--help", "-h"} or (
+                    words[1] == "doctor" and words[i] == "--no-runtime"
+                ):
+                    i += 1
+                elif (
+                    words[i] in {"--claude-dir", "--codex-dir"}
+                    and i + 1 < len(words)
+                    and not words[i + 1].startswith("-")
+                ):
+                    i += 2
+                else:
+                    return False
+            return True
         return words[1] in {
             "status",
             "queue",
