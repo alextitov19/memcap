@@ -90,6 +90,8 @@ case "${1:-help}" in
     ;;
   watch)
     # shellcheck source=/dev/null
+    . "$LIB/boot_timeout.sh"
+    # shellcheck source=/dev/null
     . "$LIB/idle_gc.sh"
     # shellcheck source=/dev/null
     . "$LIB/enforce.sh"

@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.11.0 — 2026-09-21
+
+- Ask agents to use a blocking 60-second task poll while pending, and reduce
+  queue reminders to once per minute. Local admission checks still run every two
+  seconds without model calls.
+
+- Rotate new admissions between sessions across jobs and persistent resources.
+  A request waiting at the front for 60 seconds can hold back newer admissions
+  while existing work finishes, preventing continuous small jobs from starving it.
+- Cancel confirmed standalone simulator boot attempts after three minutes via
+  the watchdog, including older registered runners. Fresh identity, whole-group
+  ownership and narrow command checks protect active builds and simulator services.
+  Keep reservations until managed processes exit and report preparation failure.
+- Keep bounded `sed -n '1,20p'` reads from stdin outside the heavy-work queue.
+
 ## v0.10.1 — 2026-09-21
 
 - Deliver queue, polling and verification guidance through standard agent hooks,

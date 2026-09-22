@@ -153,6 +153,14 @@ and still excludes agent CLIs and memcap ancestry. Never use it for pressure
 cleanup. Keep test cancellation dry-run gated. The queue behavioral suite
 (`python3 tests/test_scheduler.py`) also runs through Bats.
 
+The `boot-timeout` scope is a separate, narrow watchdog deadline for registered
+standalone Apple `simctl boot UUID` attempts older than 180 seconds. Never infer
+eligibility from a shell argument mentioning simctl. Validate the complete group,
+agent ancestry, UID and PID start identities; builds and unknown descendants veto.
+Plans expire after 30 seconds. Escalation permits only unchanged original
+survivors. Python never signals or edits queue reservations. Do not extend this
+to arbitrary command timeouts or simulator-service termination.
+
 ## Assertions
 
 Use `assert_contains` / `assert_not_contains` / `assert_matches` from

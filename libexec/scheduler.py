@@ -161,6 +161,12 @@ class Scheduler:
                 data = json.loads(path.read_text())
                 if not isinstance(data, dict) or not isinstance(data["jobs"], list):
                     raise ValueError("invalid registry")
+                turns = data.get("session_turns", {})
+                if not isinstance(turns, dict) or any(
+                    not isinstance(k, str) or type(v) is not int or v < 0
+                    for k, v in turns.items()
+                ):
+                    raise ValueError("invalid session rotation history")
                 for job in data["jobs"]:
                     if (
                         not isinstance(job, dict)
@@ -258,14 +264,39 @@ class Scheduler:
         except (KeyError, TypeError, ValueError):
             return False, "invalid memory measurement"
 
-    def next_waiter(self, jobs, resource, sample):
-        # Oldest request that actually fits. A large waiting reservation does
-        # not consume RAM or stop unrelated smaller work from making progress.
-        for job in jobs:
-            if job["status"] == "waiting" and bool(job["resource"]) == bool(resource):
-                if self.admissible(jobs, job["memory_kb"], job["resource"], sample)[0]:
-                    return job["id"]
+    @staticmethod
+    def session_bucket(job):
+        # Older runners have no session key; keep their project's work together.
+        return job.get("session_key") or "project:" + job.get("cwd", "")
+
+    def next_waiter(self, jobs, resource, sample, turns=None, now=None):
+        # One rotation across finite jobs and resources, shared under the queue lock.
+        turns = turns or {}
+        now = time.time() if now is None else now
+        waiting = [j for j in jobs if j["status"] == "waiting"]
+        waiting.sort(
+            key=lambda j: (turns.get(self.session_bucket(j), 0), j.get("enqueued", now))
+        )
+        for job in waiting:
+            # Give a large, aging request a chance to accumulate capacity. This
+            # gates new admissions only; running jobs and reservations stay intact.
+            age = now - job.get("enqueued", now)
+            if (
+                age >= 60
+                or self.admissible(jobs, job["memory_kb"], job["resource"], sample)[0]
+            ):
+                return job["id"]
         return None
+
+    def record_turn(self, data, job):
+        turns = data.setdefault("session_turns", {})
+        turns[self.session_bucket(job)] = max(turns.values(), default=0) + 1
+        present = {self.session_bucket(j) for j in data["jobs"]}
+        # Retain live contenders and a bounded recent history across completed jobs.
+        recent = set(sorted(turns, key=turns.get, reverse=True)[:128])
+        data["session_turns"] = {
+            k: v for k, v in turns.items() if k in present or k in recent
+        }
 
     def nested(self, data, table):
         token = os.environ.get("MEMCAP_QUEUE_LEASE")
@@ -403,12 +434,17 @@ class Scheduler:
                             )
                             if (
                                 allowed
-                                and self.next_waiter(data["jobs"], resource, sample)
+                                and self.next_waiter(
+                                    data["jobs"],
+                                    resource,
+                                    sample,
+                                    data.get("session_turns"),
+                                )
                                 != ident
                             ):
                                 allowed, reason = (
                                     False,
-                                    "waiting for earlier work that fits",
+                                    "waiting for another session’s turn or an aged job to fit",
                                 )
                         except (
                             OSError,
@@ -448,10 +484,10 @@ class Scheduler:
                                 file=sys.stderr,
                             )
                             return 75
-                        if time.monotonic() - last_notice > 10:
+                        if time.monotonic() - last_notice > 60:
                             print(
                                 f"memcap: queued {ident[:8]}: {reason}. Command has not started; "
-                                "keep polling this existing task (TaskOutput block=true or tool session poll). "
+                                "keep polling this existing task once per minute (TaskOutput block=true timeout=60000 or a 60000ms blocking tool-session poll). "
                                 "Continue independent work; do not submit duplicates or bypass memcap.",
                                 file=sys.stderr,
                             )
@@ -525,6 +561,7 @@ class Scheduler:
                 group=child.pid,
                 members={str(child.pid): leader["start"]},
             )
+            self.record_turn(data, job)
             self.save(data)
             os.write(write_fd, b"1")
             return child

@@ -87,7 +87,7 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             return True
     if name == "cd" and len(words) == 2:
         return True
-    if name == "sed" and len(words) >= 4 and words[1] == "-n":
+    if name == "sed" and len(words) >= 3 and words[1] == "-n":
         return bool(re.fullmatch(r"[0-9]+(?:,[0-9]+)?p", words[2])) and all(
             not word.startswith("-") for word in words[3:]
         )
@@ -402,7 +402,7 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
     if agent == "claude":
         result["additionalContext"] = (
             "memcap keeps this task queued until memory is available, then starts it automatically. "
-            "Use TaskOutput with block=true to wait for this background task (repeat while pending). "
+            "Use TaskOutput with block=true and timeout=60000 for one blocking wait of up to 60 seconds. Repeat once per minute while pending; do not repeatedly read output files or emit holding messages. "
             "Do not submit duplicates, stop because it is queued, or bypass memcap. "
             "Read the final output and exit status before continuing dependent work."
         )

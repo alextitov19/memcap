@@ -633,8 +633,9 @@ class Collector:
         return {
             "decision": "block",
             "reason": f"memcap still owns pending work for this session: {ids}. "
-            "Keep waiting on the existing background task with TaskOutput block=true "
-            "(or the tool's session poll); repeat while pending. Read its final output "
+            "Use TaskOutput block=true timeout=60000, or a tool-session blocking poll of up to 60000ms. "
+            "While pending, poll once per minute; do not repeatedly read output files, emit holding messages, or attempt to stop. "
+            "The local scheduler keeps checking capacity without model calls. Read its final output "
             "and exit status before finishing. Queue waiting is not a task failure. "
             "Do not resubmit duplicate jobs or disable/change memcap to get around the queue. "
             "Respect an explicit user cancellation.",
