@@ -30,6 +30,8 @@ SESSION_GUIDANCE = (
     " For suspected memcap defects, use memcap report CATEGORY once: queue-lock, measurement, "
     "integration, queue-stall, unexpected-termination, or missing-task-poll. Reporting saves a "
     "sanitized local draft and publishes only after the user's one-time reporting opt-in. "
+    "Reports include available machine, memory/load and queue age/blocker metrics; "
+    "use queue-stall for suspected excessive throttling or starvation. "
     "Never enable reporting on the user's behalf or upload raw logs. Normal capacity waiting "
     "alone is not a defect; do not loop on reporting failures."
 )

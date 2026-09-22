@@ -186,6 +186,48 @@ class ReportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.reporter.report("other SECRET_TOKEN")
 
+    def test_machine_and_queue_metrics_reach_public_issue_without_private_fields(self):
+        self.reporter.snapshot = lambda: {
+            "physical_memory_kb": 25165824,
+            "logical_cpus": 12,
+            "macos_major": 26,
+            "macos_minor": 0,
+            "architecture": 1,
+            "swap_used_kb": 1048576,
+            "disk_available_kb": 50000000,
+            "load_1m_milli": 4200,
+            "enforcement_paused": 1,
+            "docker_kb": 6000000,
+            "agents_including_simulators_kb": 8000000,
+            "waiting_oldest_seconds": 900,
+            "waiting_sessions": 3,
+            "blocked_budget": 2,
+            "blocked_headroom": 1,
+            "hostname": "SECRET_MACHINE",
+            "command": "SECRET_COMMAND",
+        }
+        self.reporter.consent(True)
+        self.reporter.report("queue-stall")
+        body = self.github.issues[0]["body"]
+        self.assertIn('"physical_memory_kb": 25165824', body)
+        self.assertIn('"blocked_budget": 2', body)
+        self.assertIn('"waiting_oldest_seconds": 900', body)
+        self.assertNotIn("SECRET", body)
+
+    def test_new_metric_fields_reject_strings_booleans_and_invalid_enums(self):
+        self.reporter.snapshot = lambda: {
+            "physical_memory_kb": "SECRET",
+            "logical_cpus": True,
+            "swap_used_kb": -1,
+            "architecture": 999,
+            "enforcement_paused": 2,
+            "measurement_fault": 42,
+            "macos_major": 10**100,
+            "blocked_budget": "SECRET_REASON",
+        }
+        draft = Path(self.reporter.report("queue-stall")["draft"]).read_text()
+        self.assertIn("```json\n{}\n```", draft)
+
     def test_corrupt_consent_cannot_enable_publication(self):
         self.reporter.consent(True)
         self.reporter.consent_path.write_text("{broken")

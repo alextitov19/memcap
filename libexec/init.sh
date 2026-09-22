@@ -225,7 +225,7 @@ EOF
     # Separate one-time consent. EOF and unattended upgrades never opt in.
     # No GitHub request is made here; reporting uses the user's own gh login.
     echo '  Optional: agents can file public issues at github.com/alextitov19/memcap.'
-    echo '  Reports contain fixed error categories and numeric memory/queue facts, never raw logs or project paths.'
+    echo '  Reports contain fixed categories and numeric hardware, OS, memory, load and queue facts; never raw logs or project paths.'
     answer=$(mc_ask "Allow automatic sanitized GitHub reports? (yes/no)" "no")
     # shellcheck source=/dev/null
     . "$LIB/report.sh"

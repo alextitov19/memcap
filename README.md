@@ -100,11 +100,28 @@ Consent is stored separately in `~/.config/memcap/reporting.json`; upgrades and
 repeated setup preserve it. Agents must not opt in on a user's behalf.
 
 Public reports contain the memcap version, a fixed error category, UTC report
-time and allowlisted numeric pressure/memory/queue facts. No project paths,
+time and allowlisted numeric diagnostics:
+
+- **Machine:** physical RAM, logical/physical CPU counts, architecture, macOS version.
+- **Current state:** measured tracked memory and cap, available memory, pressure,
+  Docker footprint, agents including simulators/browsers and their simulator/browser
+  subtotal, swap used, home-volume free space, 1/5/15-minute load, enforcement pause state.
+- **Queue:** configured slots/workers/headroom/pressure policy, stored waiting/running
+  counts, distinct session counts, oldest wait/runtime and original requested memory.
+- **Blockers:** counts of last recorded budget, headroom, slot, pressure/measurement
+  and fairness decisions, plus unknown decisions and their evidence age.
+
+No hostnames, serial numbers, project paths,
 commands, process identities, source, raw logs or tool output are uploaded.
 Snapshots describe report time, not necessarily failure time; registry counts
-are not proof that jobs are still alive. Reports are observations for triage,
+are not proof that jobs are still alive. Original requests are not effective
+reservations after adjustment, and simulator/browser usage is already included
+in agent usage. Missing/invalid probes are omitted, not reported as healthy zeros.
+Queue decisions come from runners started after this update; older runners have
+unknown blockers. This is a current snapshot plus last decisions, not a historical
+pressure trace or a measurement of completed-job throughput. Reports are observations for triage,
 not automatic root-cause findings. Do not append unreviewed raw diagnostics.
+Agents should use `queue-stall` for suspected excessive throttling or starvation.
 
 Matching category/version reports share an issue; a different installation can
 add one sanitized comment. Local locking prevents competing sessions from posting
@@ -115,8 +132,9 @@ simultaneous first reports from different Macs can still produce duplicates;
 cross-machine deduplication is best-effort. The reporter never edits or closes
 existing issues, resets devices, changes budgets, or resumes enforcement.
 
-Reporting runs outside the workload queue. Snapshot collection has a two-second
-timeout; GitHub requests share an eight-second deadline. A deferred report must
+Reporting runs outside the workload queue and reads its registry without a lock.
+The footprint probe has a two-second timeout and each of three lightweight system
+probes has a half-second timeout; GitHub requests share an eight-second deadline. A deferred report must
 not turn into another agent retry loop. Maintainers and other contributors can
 triage issues and propose fixes through the normal pull-request workflow.
 

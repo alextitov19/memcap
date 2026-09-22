@@ -248,3 +248,9 @@ commands, paths or tool output to GitHub. All tests use temporary config/state
 and a fake transport; do not create public test issues. Reporting must not acquire
 the scheduler registry lock or consume a workload slot. Agents may report once
 but must not enable reporting on a user's behalf or retry reports in a loop.
+
+`report_metrics.py` collects allowlisted numeric hardware, OS, memory/load and
+aggregate queue facts. Keep raw identities/commands out of reports. Queue ages and
+blocker counts describe stored entries and last decisions, never proven liveness
+or a history of pressure. Missing probes remain unknown; simulator/browser memory
+is already in the agent subtotal. The reporting sampler must never emit PID rows.

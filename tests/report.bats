@@ -7,6 +7,12 @@ setup() { setup_common; export MC_DRY_RUN=1; }
   assert_contains "$output" 'OK'
 }
 
+@test "REPORT: machine metrics and queue evidence stay aggregate and read-only" {
+  run python3 "$MEMCAP_ROOT/tests/test_report_metrics.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}
+
 @test "REPORT: CLI defaults to local drafts and never queues reporting" {
   run "$MEMCAP_ROOT/bin/memcap" report queue-lock
   [ "$status" = 0 ]

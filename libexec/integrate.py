@@ -53,6 +53,9 @@ For suspected memcap defects, run `memcap report CATEGORY` once. Categories are
 `queue-lock`, `measurement`, `integration`, `queue-stall`, `unexpected-termination`
 and `missing-task-poll`. Reports use fixed categories and sanitized numeric facts;
 they publish to GitHub only after the user's one-time opt-in, otherwise stay local.
+They automatically include available machine capacity, OS version, memory/load,
+pause state and queue ages/blockers. Suspected excessive throttling or starvation
+belongs in `queue-stall`; do not attach raw logs to supply that context.
 Normal capacity waiting is not itself a bug. Never enable reporting on the user's
 behalf or upload raw logs, commands, paths or source. Continue work if reporting is
 deferred; do not create a reporting retry loop. Reuse any returned issue URL.

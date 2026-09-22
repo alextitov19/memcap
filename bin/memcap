@@ -51,6 +51,11 @@ case "${1:-help}" in
     . "$LIB/scheduler.sh"
     mc_queue_sample
     ;;
+  _report-sample)
+    # shellcheck source=/dev/null
+    . "$LIB/scheduler.sh"
+    mc_queue_sample report
+    ;;
   _queue-cancel)
     [ $# -eq 2 ] || exit 2
     # shellcheck source=/dev/null
