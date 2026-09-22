@@ -6,6 +6,12 @@ expensive.
 
 ## Reporting a bug
 
+Coding agents can use `memcap report CATEGORY` to prepare a sanitized local draft.
+Users can opt in once with `memcap report enable` to publish reports through their
+own GitHub login. See the README's agent-reporting section for categories, data
+sharing and limits. Before manually sharing the raw diagnostics below, inspect
+them for project paths, command arguments, tokens and other private information.
+
 Open an issue using the **Bug report** template. The two things that matter most:
 
 1. **`memcap status` output** and your `~/.config/memcap/memcap.conf`.

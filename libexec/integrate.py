@@ -49,6 +49,14 @@ A simulator preparation timeout does not prove memory starvation or failed tests
 Check device readiness and the runner's admission reason. Do not reset another
 session's device or kill Docker to unblock work; establish ownership before cleanup.
 
+For suspected memcap defects, run `memcap report CATEGORY` once. Categories are
+`queue-lock`, `measurement`, `integration`, `queue-stall`, `unexpected-termination`
+and `missing-task-poll`. Reports use fixed categories and sanitized numeric facts;
+they publish to GitHub only after the user's one-time opt-in, otherwise stay local.
+Normal capacity waiting is not itself a bug. Never enable reporting on the user's
+behalf or upload raw logs, commands, paths or source. Continue work if reporting is
+deferred; do not create a reporting retry loop. Reuse any returned issue URL.
+
 This block is managed by `memcap integrate`. Limits and detailed policy come from
 memcap's current configuration and hook feedback, not hardcoded values here.
 {END}"""
