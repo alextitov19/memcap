@@ -92,7 +92,7 @@ memcap queue --json
 ```
 
 `--memory` reserves GB, not a hard memory limit. Each workload is charged the
-greater of its reservation and observed footprint, without double-counting
+greater of its effective reservation and observed footprint, without double-counting
 memory already in the combined budget. Unknown measurements admit nothing.
 Reservations larger than the entire budget fail immediately. Waiting defaults
 to 1,800 seconds, then exits **75** without launching. Notices go to stderr;
@@ -102,7 +102,7 @@ between sessions, across finite jobs and persistent resources. A session that
 just started work goes behind other waiting sessions; requests within a session
 keep their enqueue order. A request that does not fit can be passed initially,
 but after 60 seconds at the front of the rotation it holds back new admissions
-while running work finishes. This lets a larger request accumulate capacity.
+while finite jobs are running. This lets a larger request accumulate capacity.
 At most 64 requests may wait. Rotation history is shared and survives completed
 jobs; older requests without a session key are grouped by project.
 
@@ -997,3 +997,19 @@ repository.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+Automatic job estimates reserve the full startup allowance for 30 seconds. After
+that, complete process measurements can reduce unused reservations to the greater
+of 512 MB or 125% of the highest footprint observed at admission checks, capped
+at the original estimate. Actual usage above that estimate is always counted.
+Explicit `--memory` reservations and uncertain or orphaned groups retain their
+full allowance. This permits more concurrency without raising the configured
+20 GB cap or admitting at red pressure; later allocation bursts can still raise
+pressure, so this is a throughput tradeoff, not a guarantee against overload.
+
+Generated Stop hooks now use `memcap feedback --wait` with a 75-second timeout.
+They wait locally for up to 60 seconds before asking the model to continue,
+waking early when pending work ends. Other lifecycle hooks and file reads remain
+immediate. Regenerate/merge hooks to enable this mode on existing installations;
+legacy hooks keep their immediate behavior and receive blocking-poll guidance.
+The wait holds no lifecycle lock or pending-activity marker, so cleanup continues.

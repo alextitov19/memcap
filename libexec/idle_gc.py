@@ -642,6 +642,37 @@ class Collector:
         }
 
 
+COMPLETED_GUIDANCE = {
+    "decision": "block",
+    "reason": "memcap's pending work finished or was canceled while this hook waited. "
+    "Read the existing task's final output and exit status before finishing or "
+    "starting dependent work. Respect explicit cancellation; do not resubmit it.",
+}
+
+
+def wait_for_pending(
+    gc,
+    caller,
+    session,
+    duration=60,
+    clock=time.monotonic,
+    sleep=time.sleep,
+    table_reader=process_table,
+):
+    """Wait in the hook process, with no model calls or lifecycle lock held."""
+    deadline = clock() + duration
+    response = gc.continuation(caller, table_reader(), session)
+    if not response:
+        return {}
+    while clock() < deadline:
+        sleep(min(2, deadline - clock()))
+        updated = gc.continuation(caller, table_reader(), session)
+        if not updated:
+            return dict(COMPLETED_GUIDANCE)
+        response = updated
+    return response
+
+
 def main():
     root = (
         Path(os.environ.get("MEMCAP_STATE_HOME", str(Path.home() / ".local/state")))
@@ -657,6 +688,17 @@ def main():
             response = gc.continuation(
                 str(os.getpid()), table, payload.get("session_id", "")
             )
+            if response:
+                print(json.dumps(response))
+        return 0
+    if action == "wait":
+        payload = json.load(sys.stdin)
+        if payload.get("hook_event_name") == "Stop":
+            # The shell invokes wait only after event observed pending work.
+            # It may have completed between interpreters; still request its result.
+            response = wait_for_pending(
+                gc, str(os.getpid()), payload.get("session_id", "")
+            ) or dict(COMPLETED_GUIDANCE)
             if response:
                 print(json.dumps(response))
         return 0

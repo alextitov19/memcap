@@ -628,6 +628,63 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(set(order[:2]), {"b", "c"}, order)
         self.assertEqual(set(order[2:]), {"a1", "a2"}, order)
 
+    def test_automatic_reservation_releases_unused_startup_allowance(self):
+        q = self.queue(headroom_gb=2)
+        sample = healthy()
+        sample.update(
+            cap_kb=20 * 1048576,
+            tracked_kb=17 * 1048576,
+            available_kb=5 * 1048576,
+            footprints={"42": 10485},
+            tracked_pids=[42],
+        )
+        job = dict(
+            status="running",
+            resource="",
+            memory_kb=2 * 1048576,
+            members={"42": "start"},
+            elastic=True,
+            started=time.time() - 60,
+        )
+        self.assertTrue(q.admissible([job], 2 * 1048576, "", sample)[0])
+        # Explicit reservations, startup bursts, unknown members and lost owners retain capacity.
+        for changes in (
+            {"elastic": False},
+            {"started": time.time()},
+            {"members": {"43": "unknown"}},
+            {"orphaned": True},
+        ):
+            self.assertFalse(
+                q.admissible([{**job, **changes}], 2 * 1048576, "", sample)[0]
+            )
+        self.assertFalse(
+            q.admissible([job], 2 * 1048576, "", {**sample, "pressure": 4})[0]
+        )
+
+    def test_observed_growth_is_counted_and_not_forgotten(self):
+        q = self.queue(headroom_gb=2)
+        sample = healthy()
+        sample.update(
+            cap_kb=20 * 1048576,
+            tracked_kb=17 * 1048576,
+            available_kb=5 * 1048576,
+            footprints={"42": 10485},
+            tracked_pids=[42],
+        )
+        job = dict(
+            status="running",
+            resource="",
+            memory_kb=2 * 1048576,
+            members={"42": "start"},
+            elastic=True,
+            started=time.time() - 60,
+            observed_peak_kb=2 * 1048576,
+        )
+        self.assertFalse(q.admissible([job], 2 * 1048576, "", sample)[0])
+        sample["footprints"]["42"] = 4 * 1048576
+        sample["tracked_pids"] = []
+        self.assertFalse(q.admissible([job], 2 * 1048576, "", sample)[0])
+
     def test_aged_large_waiter_drains_new_admissions_without_interrupting_running_jobs(
         self,
     ):
@@ -653,7 +710,11 @@ class SchedulerTests(unittest.TestCase):
             ),
         ]
         self.assertEqual(q.next_waiter(jobs, "", sample, {}, now=1000), "small")
-        self.assertEqual(q.next_waiter(jobs, "", sample, {}, now=1011), "large")
+        self.assertEqual(q.next_waiter(jobs, "", sample, {}, now=1011), "small")
+        running = dict(status="running", resource="", memory_kb=1048576, members={})
+        self.assertEqual(
+            q.next_waiter(jobs + [running], "", sample, {}, now=1011), "large"
+        )
         self.assertEqual([j["status"] for j in jobs], ["waiting", "waiting"])
         sample["tracked_kb"] = 8 * 1048576
         self.assertEqual(q.next_waiter(jobs, "", sample, {}, now=1012), "large")

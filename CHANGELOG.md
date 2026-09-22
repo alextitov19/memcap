@@ -2,6 +2,12 @@
 
 ## v0.11.0 — 2026-09-21
 
+- Reduce unused automatic reservations after the 30-second startup window using
+  measured demand plus growth allowance; keep explicit and uncertain reservations.
+- Avoid blocking smaller work behind an aged request when no finite job can finish
+  to free capacity. Generated Stop hooks wait locally up to a minute, with a matching
+  75-second timeout, preventing rapid read/Stop/model loops after hook updates.
+
 - Ask agents to use a blocking 60-second task poll while pending, and reduce
   queue reminders to once per minute. Local admission checks still run every two
   seconds without model calls.

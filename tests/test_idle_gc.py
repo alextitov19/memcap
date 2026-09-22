@@ -115,6 +115,54 @@ class IdleGCTests(unittest.TestCase):
             self.gc.continuation("90", self.table, "a")["decision"], "block"
         )
 
+    def test_stop_wait_spends_a_minute_locally_without_model_or_state_writes(self):
+        now = [0]
+
+        def sleep(seconds):
+            self.assertGreater(seconds, 0)
+            now[0] += seconds
+
+        response = {"decision": "block", "reason": "pending"}
+        with patch.object(self.gc, "continuation", return_value=response) as pending:
+            result = idle_gc.wait_for_pending(
+                self.gc,
+                "90",
+                "a",
+                clock=lambda: now[0],
+                sleep=sleep,
+                table_reader=lambda: self.table,
+            )
+        self.assertEqual(now[0], 60)
+        self.assertEqual(result, response)
+        self.assertEqual(pending.call_count, 31)
+        self.assertFalse(self.gc.activity_pending())
+
+    def test_stop_wait_returns_promptly_on_completion_or_no_pending_work(self):
+        now = [0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        for responses, expected_seconds in (
+            ([{}], 0),
+            ([{"decision": "block"}, {}], 2),
+        ):
+            now[0] = 0
+            with patch.object(self.gc, "continuation", side_effect=responses):
+                result = idle_gc.wait_for_pending(
+                    self.gc,
+                    "90",
+                    "a",
+                    clock=lambda: now[0],
+                    sleep=sleep,
+                    table_reader=lambda: self.table,
+                )
+            self.assertEqual(now[0], expected_seconds)
+            if expected_seconds:
+                self.assertIn("final output and exit status", result["reason"])
+            else:
+                self.assertEqual(result, {})
+
     def test_runtime_path_with_spaces_is_collected(self):
         self.table = {
             "1": row(0, "/sbin/launchd"),

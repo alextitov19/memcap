@@ -15,15 +15,21 @@ mc_gc_config() {
 }
 
 mc_gc_event() {
-  local marker
+  local marker response
   mc_gc_config || return 0
   # A failed or timed-out hook must not leave a stale idle authorization behind.
   # Mark first, before Python starts; only a successfully recorded event clears
   # this invocation's marker. No prompt or tool arguments are persisted.
   marker="$(mc_state_dir)/gc-activity-pending/$$"
   mc_state_write "$marker" pending || return 1
-  if printf '%s' "$1" | "$MC_GC_PYTHON" "$LIB/idle_gc.py" event; then
+  if response=$(printf '%s' "$1" | "$MC_GC_PYTHON" "$LIB/idle_gc.py" event); then
     rm -f "$marker"
+    # Clear the activity marker BEFORE waiting; idle cleanup must keep working.
+    if [ "${MC_FEEDBACK_WAIT:-0}" = 1 ] && [ -n "$response" ]; then
+      printf '%s' "$1" | "$MC_GC_PYTHON" "$LIB/idle_gc.py" wait
+    elif [ -n "$response" ]; then
+      printf '%s\n' "$response"
+    fi
   else
     mc_log_throttled gc-hook 'garbage collector: lifecycle hook failed; cleanup held pending inspection'
     return 1

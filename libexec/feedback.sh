@@ -100,7 +100,7 @@ mc_agent_hooks() {
   printf -v queue_command '%q queue-hook %q' "$MEMCAP_ROOT/bin/memcap" "$agent"
   "$jqbin" -n --arg command "$command_text" --argjson events "$events" \
     --arg queue "$queue" --arg queue_command "$queue_command" \
-    '{hooks:($events | map({key:.,value:[{hooks:[{type:"command",command:$command,timeout:5}]}]}) | from_entries)} |
+    '{hooks:($events | map({key:.,value:[{hooks:[{type:"command",command:($command + (if . == "Stop" then " --wait" else "" end)),timeout:(if . == "Stop" then 75 else 5 end)}]}]}) | from_entries)} |
      if $queue == "--queue" then .hooks.PreToolUse +=
        [{matcher:"Bash",hooks:[{type:"command",command:$queue_command,timeout:5}]}]
      else . end'

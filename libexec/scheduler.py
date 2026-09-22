@@ -234,6 +234,23 @@ class Scheduler:
                 ) from exc
         data["jobs"] = live
 
+    @staticmethod
+    def reservation(job, sample, measured):
+        # Automatic estimates cover the startup burst, then follow observed demand.
+        # Explicit requests and uncertain/departed owners keep their full allowance.
+        reserve = job["memory_kb"]
+        if (
+            job.get("elastic") is True
+            and not job.get("orphaned")
+            and job["members"]
+            and all(p in sample["footprints"] for p in job["members"])
+        ):
+            peak = max(measured, job.get("observed_peak_kb", 0))
+            job["observed_peak_kb"] = peak
+            if 30 <= time.time() - job.get("started", time.time()):
+                reserve = min(reserve, max(GIB // 2, int(peak * 1.25)))
+        return max(reserve, measured)
+
     def admissible(self, jobs, memory, resource, sample):
         try:
             if sample["fault"] or sample["pressure"] not in self.allowed_pressure:
@@ -254,8 +271,9 @@ class Scheduler:
                     for p in job["members"]
                     if p in counted
                 )
-                accounted += max(job["memory_kb"], measured) - already
-                outstanding += max(0, job["memory_kb"] - measured)
+                reserve = self.reservation(job, sample, measured)
+                accounted += reserve - already
+                outstanding += max(0, reserve - measured)
             if accounted + memory > sample["cap_kb"]:
                 return False, "combined budget reserved or in use"
             if sample["available_kb"] - outstanding - memory < self.headroom_kb:
@@ -283,8 +301,8 @@ class Scheduler:
             age = now - job.get("enqueued", now)
             if (
                 age >= 60
-                or self.admissible(jobs, job["memory_kb"], job["resource"], sample)[0]
-            ):
+                and any(j["status"] == "running" and not j["resource"] for j in jobs)
+            ) or self.admissible(jobs, job["memory_kb"], job["resource"], sample)[0]:
                 return job["id"]
         return None
 
@@ -380,6 +398,7 @@ class Scheduler:
                         "resource": resource,
                         "cwd": str(cwd),
                         "memory_kb": memory,
+                        "elastic": memory_gb is None,
                         "enqueued": time.time(),
                         "label": Path(argv[0]).name,
                         "cancel": False,
@@ -558,6 +577,7 @@ class Scheduler:
                 )
             job.update(
                 status="running",
+                started=time.time(),
                 group=child.pid,
                 members={str(child.pid): leader["start"]},
             )
