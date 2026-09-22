@@ -316,6 +316,41 @@ The generated command uses the memcap installation it was generated from; genera
 it again if that installation moves. Feedback requires `jq`; enforcement does not.
 Codex requires reviewing and trusting a new hook in `/hooks` before it runs.
 
+Session-start and prompt hooks supply operating guidance automatically: keep
+polling existing queued tasks, continue independent work, avoid duplicate retries,
+and distinguish simulator readiness from test assertions. This ships with memcap;
+users do not need to copy instructions into their agent's Markdown files.
+For a separate Claude profile (`CLAUDE_CONFIG_DIR`), merge the generated hooks
+into that profile's `settings.json` too. Existing hooked installations pick up
+updated feedback from the installed executable; new hook registrations may require
+a new session. Queue output also includes polling and expired-waiter instructions
+when agent hooks are absent.
+
+When tool results mention a simulator boot timeout, memory allocation failure or
+memcap queue delay, feedback adds a timestamped, read-only diagnostic report. It
+samples pressure, tracked memory and estimated available memory; checks queue
+supervisor identities; and, for simulator preparation messages, lists device-state
+counts. It includes up to three recent project-scoped oversized-job termination
+requests without repeating command arguments. A shared 1.5-second probe deadline
+keeps context bounded; missing or unreliable measurements are reported as unknown.
+This extra context requires Python 3 as well as jq.
+
+Output text is a trigger for investigation, **not a diagnosis**. The report labels
+measurements as current, not evidence of conditions at the earlier failure time.
+It asks the agent to establish which tests actually executed, wait for relevant
+conditions before retrying, and check other sessions' ownership before simulator
+recovery. It never boots, resets or erases devices, changes limits, deletes queue
+records, or automatically reruns a failed build. Tool output is not persisted or
+echoed into the report. The host agent still controls polling, cancellation and
+whether it follows the guidance.
+
+The suggested read-only commands `xcrun simctl list devices --json`,
+`docker stats --no-stream`, `docker ps` (also `-a`/`--all`), `docker buildx ls`, and
+`ps -Ao pid,ppid,command` do not reserve build slots. Streaming stats, simulator
+changes, builder bootstrap/stop and unknown command chains still use normal queue
+classification. Docker's VM subtotal alone does not identify an admission blocker;
+feedback asks agents to use the runner's reason and preserve other sessions' work.
+
 Hooks deliver a notice on the next tool/prompt lifecycle event: PID, measured
 footprint, configured limit, and instructions to split batches/tests, reduce
 workers, and investigate unbounded allocation. They explicitly discourage retrying

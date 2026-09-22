@@ -30,6 +30,11 @@ from scheduler_policy import (
 
 GIB = 1048576
 ROOT = Path(__file__).resolve().parents[1]
+EXPIRED_GUIDANCE = (
+    " This waiter has exited and cannot resume. Check memcap status/queue and confirm "
+    "no existing live task before retrying through memcap with background waiting. "
+    "Do not blindly repeat an expired deadline or bypass protection."
+)
 
 
 class QueueError(Exception):
@@ -359,7 +364,8 @@ class Scheduler:
                     return 128 + self.cancelled
                 if waited and wait is not None and time.monotonic() - began >= wait:
                     print(
-                        "memcap: queue wait expired; command not started",
+                        "memcap: queue wait expired; command not started."
+                        + EXPIRED_GUIDANCE,
                         file=sys.stderr,
                     )
                     return 75
@@ -418,24 +424,36 @@ class Scheduler:
                         return 128 + self.cancelled
                     if waited and wait is not None and time.monotonic() - began >= wait:
                         print(
-                            "memcap: queue wait expired; command not started",
+                            "memcap: queue wait expired; command not started."
+                            + EXPIRED_GUIDANCE,
                             file=sys.stderr,
                         )
                         return 75
                     if allowed:
                         child = self.launch(argv, cwd, job, data)
+                        if waited:
+                            print(
+                                f"memcap: admitted {ident[:8]}; command started. "
+                                "Admission confirms capacity at launch, not simulator readiness "
+                                "or test success. Read final output and exit status.",
+                                file=sys.stderr,
+                            )
                     else:
                         waited = True
                         self.save(data)
                         if wait is not None and time.monotonic() - began >= wait:
                             print(
-                                f"memcap: queue wait expired: {reason}; command not started",
+                                f"memcap: queue wait expired: {reason}; command not started."
+                                + EXPIRED_GUIDANCE,
                                 file=sys.stderr,
                             )
                             return 75
                         if time.monotonic() - last_notice > 10:
                             print(
-                                f"memcap: queued {ident[:8]}: {reason}", file=sys.stderr
+                                f"memcap: queued {ident[:8]}: {reason}. Command has not started; "
+                                "keep polling this existing task (TaskOutput block=true or tool session poll). "
+                                "Continue independent work; do not submit duplicates or bypass memcap.",
+                                file=sys.stderr,
                             )
                             last_notice = time.monotonic()
                 if child is None:

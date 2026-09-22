@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.10.1 — 2026-09-21
+
+- Deliver queue, polling and verification guidance through standard agent hooks,
+  including fresh sessions and separate Claude profiles, without custom Markdown.
+- Add bounded read-only diagnostics when tool results mention simulator boot,
+  memory allocation or queue problems. Report current measurements and device
+  states without inferring a past cause or declaring tests passed/failed.
+- Explain live waiting versus expired waiters directly in queue output, and
+  report when a waiting command starts. Never automatically retry or reset devices.
+
 ## v0.10.0 — 2026-09-21
 
 - Add lifecycle-based garbage collection for idle agent-owned Playwright

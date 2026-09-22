@@ -87,3 +87,20 @@ hook_input() {
   run "$MEMCAP_ROOT/bin/memcap" agent-hooks claude
   [ "$status" = 0 ]; assert_contains "$output" 'PostToolUseFailure'
 }
+
+@test "FEEDBACK: a new session gets operational guidance without a termination record" {
+  hook_event=SessionStart
+  hook_input > "$BATS_TEST_TMPDIR/input"
+  run bash -c '"$MEMCAP_ROOT/bin/memcap" feedback < "$BATS_TEST_TMPDIR/input"'
+  [ "$status" = 0 ]
+  assert_contains "$output" 'TaskOutput'
+  assert_contains "$output" 'independent work'
+  assert_contains "$output" 'not proof of memory starvation'
+  assert_not_contains "$output" 'permissionDecision'
+}
+
+@test "FEEDBACK: diagnostic behavioral suite" {
+  run python3 "$MEMCAP_ROOT/tests/test_agent_diagnostics.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" OK
+}
