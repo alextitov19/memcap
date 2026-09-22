@@ -135,6 +135,13 @@ wrong reason.** Concretely —
 Every kill routes through `mc_kill_pids`. If you are adding a code path that
 terminates a process and it does not go through that function, that is the bug.
 
+The `idle-gc` exception requires a fresh lifecycle collector authorization, not
+just low CPU or a live-agent ownership guess. Keep the default `GC_MODE=observe`,
+all tests dry-run, and the session/subagent, PID identity, network and active-job
+checks. Missing hooks or failed lifecycle markers must retain helpers. Python's
+collector never sends signals itself. `tests/test_idle_gc.py` uses synthetic
+process trees and also runs through Bats.
+
 The oversized-job policy intentionally permits killing an active Claude/Codex child
 above `AGENT_JOB_MAX_GB` after fresh footprint and ownership checks. It must never
 become a general protection bypass. It still spares the agent CLI and memcap's

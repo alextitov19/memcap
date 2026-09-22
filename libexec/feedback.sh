@@ -46,6 +46,7 @@ mc_feedback_hook() {
   # Only fields required for routing are read, not transcript contents or tool
   # arguments. Invalid JSON or an unsupported event yields no injected context.
   payload=$(cat)
+  if command -v mc_gc_event >/dev/null 2>&1; then mc_gc_event "$payload" || :; fi
   event=$(printf '%s' "$payload" | "$jqbin" -er '.hook_event_name | strings') || return 1
   case "$event" in PreToolUse|PostToolUse|PostToolUseFailure|SessionStart|UserPromptSubmit) ;; *) return 0 ;; esac
   cwd=$(printf '%s' "$payload" | "$jqbin" -er '.cwd | strings | select(length>0)') || return 1
@@ -83,8 +84,8 @@ mc_agent_hooks() {
   jqbin=$(mc_feedback_jq) || return 1
   printf -v command_text '%q feedback' "$MEMCAP_ROOT/bin/memcap"
   case "$agent" in
-    codex) events='["PreToolUse","PostToolUse","SessionStart","UserPromptSubmit"]' ;;
-    claude) events='["PreToolUse","PostToolUse","PostToolUseFailure","SessionStart","UserPromptSubmit"]' ;;
+    codex) events='["PreToolUse","PostToolUse","SessionStart","UserPromptSubmit","Stop","SessionEnd","SubagentStart","SubagentStop"]' ;;
+    claude) events='["PreToolUse","PostToolUse","PostToolUseFailure","SessionStart","UserPromptSubmit","Stop","SessionEnd","SubagentStart","SubagentStop"]' ;;
     *) echo 'usage: memcap agent-hooks codex|claude' >&2; return 2 ;;
   esac
   printf -v queue_command '%q queue-hook %q' "$MEMCAP_ROOT/bin/memcap" "$agent"

@@ -96,8 +96,10 @@ greater of its reservation and observed footprint, without double-counting
 memory already in the combined budget. Unknown measurements admit nothing.
 Reservations larger than the entire budget fail immediately. Waiting defaults
 to 1,800 seconds, then exits **75** without launching. Notices go to stderr;
-the command retains stdin, stdout, stderr and exit status. Requests are FIFO
-within the finite-job and resource queues; at most 64 requests may wait.
+the command retains stdin, stdout, stderr and exit status. `--wait-forever` polls
+until admission or cancellation without a queue deadline. Each queue selects
+the oldest request that fits; a large reservation does not block smaller work.
+Continuous smaller work can delay a larger request. At most 64 requests may wait.
 
 **Persistent resources:** `--resource NAME` reserves memory without occupying
 a finite-job slot. A second request for the same name in the same canonical
@@ -133,12 +135,20 @@ than a complete enforcement boundary.
 Lightweight reads/searches, basic Git inspection, memcap diagnostics and GitHub
 run viewing/watching stay outside the expensive-work queue. Pipelines and chains
 qualify only when every stage is recognized as lightweight; ordinary file
-redirections and directory-prefixed search globs are supported. Substitutions
+redirections, quoted search patterns/globs, and directory-prefixed search globs
+are supported. `grep`, `egrep`, and `fgrep` searches are included. Substitutions
 (except numeric `$?`), arbitrary sed scripts, background launches and unknown or
 expensive stages remain queued. Simple npm/pnpm/yarn dev/start and Vite
 launches get resource keys. Shell text, cwd and tool options are preserved.
-An explicit tool timeout may end a wait sooner than the queue default. Nested
-managed commands share a verified ancestor reservation to avoid slot deadlock.
+Claude's hook sets `run_in_background` and `--wait-forever`: the existing task
+polls automatically and starts once capacity is available. It tells Claude to
+wait with `TaskOutput`, read the final result, and avoid duplicate submissions.
+The generated `Stop` hook asks the agent to continue while its finite jobs are
+still queued/running; persistent resources do not hold a conversation open.
+The host agent still controls cancellation, session exit and tool deadlines;
+this does not keep an exited Claude process alive. Codex tools retain their
+normal session polling and explicit timeouts. Nested managed commands share a
+verified ancestor reservation to avoid slot deadlock.
 
 **Worker controls:** default two. Recognized Jest/Vitest/Playwright test commands,
 simple package scripts calling them, Go builds/tests and Cargo jobs receive
@@ -177,6 +187,67 @@ while managed work runs; that discards reservations. `memcap status` displays a
 queue summary once used. The 60-second cleanup watchdog remains independent;
 queued runners check admission every two seconds. No jobs are suspended or
 retried automatically, and normal cleanup protections are unchanged.
+
+## Automatically retire unused helpers
+
+The optional garbage collector runs on each watchdog pass, even below the RAM
+cap. It releases disposable helper processes after completed work instead of
+waiting for the machine to reach red pressure. It requires Python 3.9+ and the
+generated lifecycle hooks (`Stop`, `SubagentStart`, `SubagentStop`, and the
+existing prompt/tool hooks). Agent CLIs and memcap's ancestry are never targets.
+
+`GC_MODE=observe` is the default: track and log eligible processes without
+stopping them. Set `GC_MODE=on` to enable automatic collection, or `off` to
+disable this collector. `GC_IDLE_SEC=600` is the default grace (minimum 300).
+`memcap gc` reports the mode, tracked sessions and candidate idle clocks.
+
+Eligible resources are:
+
+- Dedicated Playwright Chrome/headless browser groups whose owning agent has
+  completed its turn and has no active subagents or unrecognized background
+  work. The MCP server stays open; a later browser request must reopen a browser.
+- Recognized Node/Vite development servers, including registered queue
+  resources, after their owner finishes. An active recorded session in the
+  same project, or any TCP client connection, protects a shared server.
+- Same-user, childless iOS runtime processes reparented to PID 1, only after a
+  successful device query shows all devices shut down and no mobile build or
+  simulator UI is present. Root-owned system services are never targeted.
+
+All candidates also require quiet CPU across the observation period, unchanged
+process identities and membership, and a successful network inspection with no
+active TCP connections. Unknown descendants, queued/build processes, resumed
+prompts, or helper activity reset eligibility. An open session without completion
+hooks is **unknown**, not idle. Language servers, MCP servers, ordinary Chrome
+tabs and Docker containers/VMs are retained: automatic restart/ownership is not
+established for those by this collector.
+
+Every termination goes through `mc_kill_pids`, with fresh authorization before
+TERM and escalation, plus the existing pause and ancestry protections. Batches
+are bounded to roughly 32 processes (keeping a browser group intact). The audit
+log records the kind, owning candidate PID, grace and actions. `MC_DRY_RUN=1`
+previews actions without signals. State is private under `idle-gc/`; prompts and
+tool payloads are not stored. A failed lifecycle hook leaves a marker under
+`gc-activity-pending/` and inhibits collection rather than trusting old idle
+state. Investigate the hook error before clearing a failed marker.
+
+For a 24 GB Mac prioritizing throughput, a starting configuration is:
+
+```bash
+TOTAL_BUDGET_GB=20
+QUEUE_MAX_JOBS=8
+QUEUE_WORKERS=2
+QUEUE_JOB_GB=2
+QUEUE_HEADROOM_GB=2
+QUEUE_MAX_PRESSURE=yellow
+GC_MODE=on
+GC_IDLE_SEC=600
+```
+
+Eight is a ceiling, not eight reserved build slots: the combined-memory and
+headroom checks still decide how many jobs fit. Yellow is allowed; red prevents
+new admissions. These are admission estimates, not OS memory limits, so rapid
+growth inside already-running jobs can still overshoot. Cleanup targets known
+idle resources; it does not promise to prevent every possible red-pressure event.
 
 ## Install
 

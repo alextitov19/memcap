@@ -307,7 +307,18 @@ mc_filter_protected() {
   mc_protection_ready || return 1
   self=$(mc_self_ancestry) || return 1
   mc_veto_evidence_warm
+  if [ "$scope" = idle-gc ]; then
+    command -v mc_gc_prepare >/dev/null 2>&1 || return 1
+    mc_gc_prepare "$1" || return 1
+  fi
   for pid in $1; do
+    if [ "$scope" = idle-gc ]; then
+      command -v mc_gc_allowed >/dev/null 2>&1 || continue
+      mc_gc_allowed "$pid" || continue
+      case " ${AGENTPIDS} $self " in *" $pid "*) continue ;; esac
+      out="$out $pid"
+      continue
+    fi
     if [ "$scope" = scheduled ]; then
       command -v mc_scheduled_allowed >/dev/null 2>&1 || continue
       mc_scheduled_allowed "$pid" || continue
@@ -397,7 +408,7 @@ mc_kill_pids() {
     idents="$idents$p|$(mc_pid_identity "$p")
 "
   done
-  if [ "$scope" = oversized ] || [ "$scope" = scheduled ]; then
+  if [ "$scope" = oversized ] || [ "$scope" = scheduled ] || [ "$scope" = idle-gc ]; then
     # Logging and feedback can take time under pressure. Revalidate the original
     # identity after those subprocesses, as close to TERM as shell permits.
     pids=$(mc_filter_protected "$pids" "$scope") || return 1
@@ -1709,6 +1720,22 @@ mc_watch() {
   fi
 
   mc_reap_sims
+
+  if command -v mc_reap_idle_helpers >/dev/null 2>&1; then
+    mc_reap_idle_helpers
+    if [ "${MC_GC_RECLAIMED:-0}" = 1 ]; then
+      mc_snapshot_capture
+      sample="$MC_CAPTURE_SNAPSHOT"
+      unset AGENT_KB DOCKER_KB SIM_KB AGENTPIDS PROTECTEDPIDS SIMPIDS ORPHANS DEVPIDS
+      eval "$(printf '%s\n' "$sample" | mc_classify)"
+      if [ -z "${AGENT_KB+x}" ] || [ -z "${DOCKER_KB+x}" ] || [ -z "${SIMPIDS+x}" ]; then
+        mc_finish_pass degraded-measurement
+        return 1
+      fi
+      [ "${MC_MEASURE_FAULT:-0}" = 1 ] && initial_fault=1
+      agent_net_gb=$(mc_gb "$(mc_agent_net_kb "$AGENT_KB" "$SIM_KB")")
+    fi
+  fi
 
   over=$(awk -v a="$agent_net_gb" -v b="$agents_budget" 'BEGIN{print (a > b) ? 1 : 0}')
   if [ "$over" = "1" ]; then
