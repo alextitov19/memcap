@@ -125,6 +125,7 @@ mc_run_init() {
 # memcap configuration -- edit freely. Not touched by brew upgrade.
 # Machine at init: ${total} GB RAM, ${cores} cores.
 TOTAL_BUDGET_GB=$cap
+BUDGET_MODE=${BUDGET_MODE:-shared}
 DOCKER_BUDGET_GB=$docker_gb
 DOCKER_CPUS=$((cores * 55 / 100))
 SOFT_TRIGGER=0.80

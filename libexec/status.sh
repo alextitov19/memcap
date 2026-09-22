@@ -240,7 +240,7 @@ mc_render_heartbeat() {
 }
 
 mc_render_status() {
-  local total default_cap cap default_docker docker_budget agents_budget
+  local total default_cap cap default_docker docker_budget agents_budget budget_mode
   local agent_gb agent_net_gb docker_gb combined free free_marker free_label
   local docker_ceiling_label agents_budget_label missing measure_label docker_drift
   local paused_since now conf
@@ -280,6 +280,7 @@ mc_render_status() {
   default_docker=$(mc_docker_gb "$cap")
   docker_budget=$(mc_num "${DOCKER_BUDGET_GB:-$default_docker}" "$default_docker" DOCKER_BUDGET_GB)
   agents_budget=$((cap - docker_budget))
+  budget_mode=$(mc_budget_mode) || return 4
 
   eval "$(mc_ps_snapshot | mc_classify)"
   # C4 (amended): the MC_MEASURE_* globals cannot survive the pipeline inside
@@ -361,7 +362,12 @@ mc_render_status() {
   # budget", the exact nonsense the Docker line is careful about. `watch`
   # refuses to act at all in this state, so `status` says so rather than
   # printing an unsatisfiable budget as though it were a live one.
-  if [ "$agents_budget" -lt 1 ]; then
+  if [ "$budget_mode" = shared ]; then
+    agents_budget_label="shares ${cap} GB total ($(mc_pool_agent_gb "$cap" "$DOCKER_KB") GB pool after measured Docker use)"
+    if [ -n "$docker_drift" ]; then
+      docker_drift="Docker's actual VM ceiling differs from its config target; shared admission uses measured usage, not the ceiling."
+    fi
+  elif [ "$agents_budget" -lt 1 ]; then
     agents_budget_label="NO BUDGET LEFT -- see below"
     MC_STATUS_SAW_MISCONFIG=1
     mc_status_warn "MEMCAP IS NOT ENFORCING -- DOCKER_BUDGET_GB ($docker_budget) leaves nothing of TOTAL_BUDGET_GB ($cap) for agents, so every pass refuses and returns. Fix $conf"
@@ -383,7 +389,7 @@ mc_render_status() {
   fi
   mc_status_row "docker VM + helpers" "${docker_gb} GB / ${docker_ceiling_label}"
   echo "  ---------------------------------------------------------"
-  mc_status_row "combined" "${combined} GB / ${cap} GB budget"
+  mc_status_row "combined" "${combined} GB / ${cap} GB budget (${budget_mode})"
   mc_status_row "system memory available" "$free_label"
   if [ -d "$(mc_state_dir)/queue" ]; then
     if command -v python3 >/dev/null 2>&1; then
@@ -406,7 +412,7 @@ mc_render_status() {
       mc_status_warn "$MC_HOST_SUMMARY"
     fi
   fi
-  if [ -n "$docker_drift" ]; then
+  if [ "$budget_mode" = split ] && [ -n "$docker_drift" ]; then
     mc_status_row "agent + Docker allowances" "$((agents_budget + MC_DOCKER_CEILING_GB)) GB / ${cap} GB target (${MC_DOCKER_CEILING_SOURCE})"
     mc_status_row "headroom at current Docker use" "$(awk -v cap="$cap" -v d="$docker_gb" 'BEGIN {printf "%.2f GB for agents + sims",cap-d}')"
   fi

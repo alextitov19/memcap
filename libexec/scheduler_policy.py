@@ -23,13 +23,23 @@ POLL_GUIDANCE = (
 def polling_loop(command):
     """Only known waiting-only scripts; never infer from a command description."""
     tick = re.fullmatch(
-        r"end=\$\(\(SECONDS\+([1-9][0-9]?)\)\)\s*"
-        r"while \[ \$SECONDS -lt \$end \]; do sleep ([1-9][0-9]?); done\s*"
-        r'echo (?:tick|"drain tick done")',
+        r"end=\$\(\(SECONDS\+([1-9][0-9]?)\)\)[;\s]*"
+        r"while \[ \$SECONDS -lt \$end \]; do sleep ([1-9][0-9]?); done[;\s]*"
+        r'echo (?:tick|"drain tick done"|"poll tick")',
         command.strip(),
     )
     if tick:
         return int(tick[1]) <= 60 and int(tick[2]) <= 60
+    file_tick = re.fullmatch(
+        r"f=/(?:private/)?tmp/claude-[0-9]+/[A-Za-z0-9_./-]+/tasks/[A-Za-z0-9_-]+\.output[;\s]+"
+        r"end=\$\(\(SECONDS\+([1-9][0-9]?)\)\)[;\s]+"
+        r"while \[ \$SECONDS -lt \$end \]; do\s+"
+        r'grep -q "[A-Za-z0-9_ |\\-]+" "\$f" 2>/dev/null && break[;\s]+'
+        r'sleep ([1-9][0-9]?)[;\s]+done[;\s]+tail -n ([1-9][0-9]?) "\$f"',
+        command.strip(),
+    )
+    if file_tick:
+        return all(int(n) <= 60 for n in file_tick.groups())
     return bool(
         re.fullmatch(
             r"F=/(?:private/)?tmp/claude-[0-9]+/[A-Za-z0-9_./-]+/tasks/[A-Za-z0-9_-]+\.output; "

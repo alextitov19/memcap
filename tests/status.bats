@@ -1,5 +1,5 @@
 load helper
-setup() { setup_common; }
+setup() { setup_common; export BUDGET_MODE="split"; }
 
 @test "status runs and reports a budget line" {
   run "$MEMCAP_ROOT/bin/memcap" status

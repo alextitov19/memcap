@@ -80,11 +80,11 @@ setup() {
     mc_total_ram_gb() { echo 32; }
     mc_profile_list
   "
-  # cap for 32 GB is 21 (budget.bats); stacks is 65% -> 14 GB docker / 7 GB agents.
+  # cap for 32 GB is 21 (budget.bats); stacks is 65% -> 14 GB Docker ceiling with a 21 GB shared total.
   # The old hardcoded fallback would show 16's split (10 GB / 6 GB) instead.
   # assert_matches, not assert_contains: the original ordered-substring check
-  # (14 GB appearing before 7 GB on the row) is preserved via `.*` between them.
-  assert_matches "$(echo "$output" | grep stacks)" "14 GB.*7 GB"
+  # (14 GB appearing before 21 GB on the row) is preserved via `.*` between them.
+  assert_matches "$(echo "$output" | grep stacks)" "14 GB.*21 GB"
 }
 
 @test "profile set writes a DOCKER_BUDGET_GB sized for the computed cap, not 16" {

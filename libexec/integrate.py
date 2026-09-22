@@ -32,6 +32,10 @@ memcap coordinates memory across agent sessions. Its installed hooks supply curr
 operating guidance and diagnostics; use `memcap status`, `memcap queue` and
 `memcap doctor` to inspect capacity, queued work and integration health.
 
+In the default shared mode, measured Docker, agent and simulator memory count
+toward one total. Docker's VM ceiling is not a reservation or an admission reason.
+Use current queue diagnostics to distinguish capacity, pressure and lock failures.
+
 Keep polling an existing queued task with TaskOutput block=true timeout=60000 or a
 blocking tool-session poll, once per minute. If unavailable, run
 `memcap wait JOB_ID --timeout 60` using the existing ID from `memcap queue`.
