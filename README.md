@@ -92,14 +92,24 @@ memcap queue --json
 ```
 
 `--memory` reserves GB, not a hard memory limit. Each workload is charged the
-greater of its reservation and observed footprint, without double-counting
+greater of its effective reservation and observed footprint, without double-counting
 memory already in the combined budget. Unknown measurements admit nothing.
 Reservations larger than the entire budget fail immediately. Waiting defaults
 to 1,800 seconds, then exits **75** without launching. Notices go to stderr;
 the command retains stdin, stdout, stderr and exit status. `--wait-forever` polls
-until admission or cancellation without a queue deadline. Each queue selects
-the oldest request that fits; a large reservation does not block smaller work.
-Continuous smaller work can delay a larger request. At most 64 requests may wait.
+until admission or cancellation without a queue deadline. Admissions rotate
+between sessions, across finite jobs and persistent resources. A session that
+just started work goes behind other waiting sessions; requests within a session
+keep their enqueue order. A request that does not fit can be passed initially,
+but after 60 seconds at the front of the rotation it holds back new admissions
+while finite jobs are running. This lets a larger request accumulate capacity.
+At most 64 requests may wait. Rotation history is shared and survives completed
+jobs; older requests without a session key are grouped by project.
+
+Rotation governs new admissions; it does not suspend builds, interrupt deploys,
+or make unavailable RAM available. Active persistent resources and unmanaged
+work can still prevent admission. Old runners retain their scheduling code until
+they finish; start new queued work with the upgraded executable.
 
 **Persistent resources:** `--resource NAME` reserves memory without occupying
 a finite-job slot. A second request for the same name in the same canonical
@@ -185,8 +195,22 @@ policy. The combined budget is resampled from configuration while they wait.
 Private reservations live in the state directory's `queue/`. Do not delete it
 while managed work runs; that discards reservations. `memcap status` displays a
 queue summary once used. The 60-second cleanup watchdog remains independent;
-queued runners check admission every two seconds. No jobs are suspended or
+queued runners check admission every two seconds without model calls. Agent guidance
+requests one blocking poll of up to 60 seconds while pending, with no repeated
+output-file reads or holding messages. Queue reminders print at most once per minute. No jobs are suspended or
 retried automatically, and normal cleanup protections are unchanged.
+
+**Stalled standalone simulator boots:** the watchdog cancels a registered
+`simctl boot UUID` attempt after three minutes, checked on its normal ~60-second
+interval. This also covers jobs launched by older memcap runners. It requires
+a live, same-user agent owner, matching supervisor/start identities, and a fully
+registered group containing only the Apple boot command, shells and narrow
+head/sleep helpers. Active builds, bootstatus waits, unrelated/detached children,
+unknown identities and other sessions are retained. It does not reset devices or
+terminate simulator services. Every signal uses the existing kill choke point,
+with fresh authorization before TERM and escalation. A notice describes the
+preparation failure; the supervisor releases its reservation only after the
+managed group exits. Remaining simulator-service memory stays in the host budget.
 
 ## Automatically retire unused helpers
 
@@ -973,3 +997,19 @@ repository.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+Automatic job estimates reserve the full startup allowance for 30 seconds. After
+that, complete process measurements can reduce unused reservations to the greater
+of 512 MB or 125% of the highest footprint observed at admission checks, capped
+at the original estimate. Actual usage above that estimate is always counted.
+Explicit `--memory` reservations and uncertain or orphaned groups retain their
+full allowance. This permits more concurrency without raising the configured
+20 GB cap or admitting at red pressure; later allocation bursts can still raise
+pressure, so this is a throughput tradeoff, not a guarantee against overload.
+
+Generated Stop hooks now use `memcap feedback --wait` with a 75-second timeout.
+They wait locally for up to 60 seconds before asking the model to continue,
+waking early when pending work ends. Other lifecycle hooks and file reads remain
+immediate. Regenerate/merge hooks to enable this mode on existing installations;
+legacy hooks keep their immediate behavior and receive blocking-poll guidance.
+The wait holds no lifecycle lock or pending-activity marker, so cleanup continues.

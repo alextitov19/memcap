@@ -15,7 +15,8 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_GUIDANCE = (
     "memcap manages shared memory across agent sessions. Keep polling existing queued "
-    "tasks with TaskOutput block=true or the tool session poll until final output and "
+    "tasks with TaskOutput block=true timeout=60000 or a blocking tool-session poll of up to 60000ms. "
+    "Poll once per minute while pending; avoid repeated output-file reads and holding messages. Wait for final output and "
     "exit status; continue independent work while waiting. Do not submit duplicates "
     "or bypass/change memcap protection. Respect explicit cancellation. A simulator "
     "boot timeout is not proof of memory starvation or a failed test assertion. "
@@ -260,7 +261,7 @@ def guidance(payload, state):
         )
     else:
         lines.append(
-            "For an existing live queued task, keep polling TaskOutput block=true or the tool session poll; "
+            "For an existing live queued task, use TaskOutput block=true timeout=60000 or a tool-session blocking poll of up to 60000ms once per minute; "
             "do not resubmit it. Read final output and exit status before dependent work. "
             "If the command already finished, inspect its result instead of polling a dead task."
         )

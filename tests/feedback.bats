@@ -104,3 +104,35 @@ hook_input() {
   [ "$status" = 0 ]
   assert_contains "$output" OK
 }
+
+@test "FEEDBACK: only Stop waits locally and has the matching hook timeout" {
+  run "$MEMCAP_ROOT/bin/memcap" agent-hooks claude
+  [ "$status" = 0 ]
+  config="$output"
+  run jq -er '.hooks.Stop[0].hooks[0] | select(.timeout == 75) | .command | select(endswith(" feedback --wait"))' <<< "$config"
+  [ "$status" = 0 ]
+  run jq -e '[.hooks | to_entries[] | select(.key != "Stop") | .value[].hooks[] | select(.timeout != 5 or (.command | endswith(" --wait")))] | length == 0' <<< "$config"
+  [ "$status" = 0 ]
+}
+
+@test "FEEDBACK: local Stop wait releases the lifecycle marker before waiting" {
+  # shellcheck source=/dev/null
+  source "$MEMCAP_ROOT/libexec/idle_gc.sh"
+  cat > "$BATS_TEST_TMPDIR/hook-python" <<'SCRIPT'
+#!/bin/bash
+if [ "$2" = event ]; then
+  printf '{"decision":"block"}'
+else
+  count=$(find "$MEMCAP_STATE_HOME/memcap/gc-activity-pending" -type f | wc -l)
+  [ "$count" -eq 0 ] || exit 1
+  printf 'wait-without-marker'
+fi
+SCRIPT
+  chmod +x "$BATS_TEST_TMPDIR/hook-python"
+  mc_gc_config() { MC_GC_PYTHON="$BATS_TEST_TMPDIR/hook-python"; }
+  LIB="$MEMCAP_ROOT/libexec"
+  MC_FEEDBACK_WAIT=1
+  run mc_gc_event '{"hook_event_name":"Stop"}'
+  [ "$status" = 0 ]
+  assert_contains "$output" 'wait-without-marker'
+}

@@ -44,7 +44,7 @@ class SchedulerTests(unittest.TestCase):
             self.root / "queue", sampler=healthy, poll=0.02, **kwargs
         )
 
-    def fixture(self, code, wait=5, resource="", sample=None):
+    def fixture(self, code, wait=5, resource="", sample=None, session_key=""):
         """Separate interpreters exercise the real OS lock, registry and runner."""
         driver = (
             "import sys,json;sys.path.insert(0,sys.argv[1]);"
@@ -52,7 +52,7 @@ class SchedulerTests(unittest.TestCase):
             "s=Scheduler(sys.argv[2],sampler=lambda:json.loads(sys.argv[3]),"
             "poll=0.02);"
             "sys.exit(s.run([sys.executable,'-c',sys.argv[4]],"
-            "wait=float(sys.argv[5]),resource=sys.argv[6]))"
+            "wait=float(sys.argv[5]),resource=sys.argv[6],session_key=sys.argv[7]))"
         )
         proc = subprocess.Popen(
             [
@@ -65,6 +65,7 @@ class SchedulerTests(unittest.TestCase):
                 code,
                 str(wait),
                 resource,
+                session_key,
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -463,6 +464,8 @@ class SchedulerTests(unittest.TestCase):
             'rg -n "zip-counties|case" backend/cmd/ingest/main.go | head -30',
             'rg -n "zip-counties" backend/cmd/ingest/*.go',
             "memcap status 2>&1 | head -30",
+            "/opt/homebrew/opt/memcap/bin/memcap status 2>&1 | sed -n '1,20p'",
+            "cat Makefile | sed -n '1p'",
             "memcap queue --json",
             "cd /tmp/project && cat Makefile",
             "sed -n '1,120p' fastlane/Fastfile",
@@ -561,6 +564,160 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(q.next_waiter(jobs, "", sample), "small")
         sample["tracked_kb"] = 8 * 1048576
         self.assertEqual(q.next_waiter(jobs, "", sample), "large")
+
+    def test_session_rotation_applies_across_job_and_resource_types(self):
+        q = self.queue()
+        jobs = [
+            dict(
+                id=ident,
+                status="waiting",
+                resource=resource,
+                memory_kb=1048576,
+                session_key=session,
+                enqueued=990,
+            )
+            for ident, session, resource in [
+                ("a1", "a", ""),
+                ("a2", "a", ""),
+                ("b1", "b", "server"),
+                ("c1", "c", ""),
+            ]
+        ]
+        turns = {"a": 2, "b": 1}
+        self.assertEqual(q.next_waiter(jobs, "", healthy(), turns, now=1000), "c1")
+        turns["c"] = 3
+        self.assertEqual(q.next_waiter(jobs, "", healthy(), turns, now=1000), "b1")
+        turns["b"] = 4
+        self.assertEqual(
+            q.next_waiter(jobs, "server", healthy(), turns, now=1000), "a1"
+        )
+
+    def test_real_supervisors_rotate_sessions_when_slots_open(self):
+        gate = self.root / "release"
+        events = self.root / "fair-events"
+        holder = (
+            "import time;from pathlib import Path;"
+            f"p=Path({str(gate)!r});deadline=time.monotonic()+8;"
+            "exec('while not p.exists() and time.monotonic()<deadline: time.sleep(0.02)')"
+        )
+        holders = [self.fixture(holder, session_key="a") for _ in range(2)]
+        q = self.queue()
+        deadline = time.monotonic() + 4
+        while (
+            sum(j["status"] == "running" for j in q.status()) < 2
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.02)
+        self.assertEqual(sum(j["status"] == "running" for j in q.status()), 2)
+        work = []
+        for label, session in [("a1", "a"), ("a2", "a"), ("b", "b"), ("c", "c")]:
+            code = f"import time;open({str(events)!r},'a').write({label!r}+'\\n');time.sleep(0.1)"
+            work.append(self.fixture(code, session_key=session))
+        deadline = time.monotonic() + 4
+        while (
+            sum(j["status"] == "waiting" for j in q.status()) < 4
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.02)
+        self.assertEqual(sum(j["status"] == "waiting" for j in q.status()), 4)
+        gate.touch()
+        for proc in holders + work:
+            _, err = proc.communicate(timeout=10)
+            self.assertEqual(proc.returncode, 0, err)
+        order = events.read_text().splitlines()
+        self.assertEqual(set(order[:2]), {"b", "c"}, order)
+        self.assertEqual(set(order[2:]), {"a1", "a2"}, order)
+
+    def test_automatic_reservation_releases_unused_startup_allowance(self):
+        q = self.queue(headroom_gb=2)
+        sample = healthy()
+        sample.update(
+            cap_kb=20 * 1048576,
+            tracked_kb=17 * 1048576,
+            available_kb=5 * 1048576,
+            footprints={"42": 10485},
+            tracked_pids=[42],
+        )
+        job = dict(
+            status="running",
+            resource="",
+            memory_kb=2 * 1048576,
+            members={"42": "start"},
+            elastic=True,
+            started=time.time() - 60,
+        )
+        self.assertTrue(q.admissible([job], 2 * 1048576, "", sample)[0])
+        # Explicit reservations, startup bursts, unknown members and lost owners retain capacity.
+        for changes in (
+            {"elastic": False},
+            {"started": time.time()},
+            {"members": {"43": "unknown"}},
+            {"orphaned": True},
+        ):
+            self.assertFalse(
+                q.admissible([{**job, **changes}], 2 * 1048576, "", sample)[0]
+            )
+        self.assertFalse(
+            q.admissible([job], 2 * 1048576, "", {**sample, "pressure": 4})[0]
+        )
+
+    def test_observed_growth_is_counted_and_not_forgotten(self):
+        q = self.queue(headroom_gb=2)
+        sample = healthy()
+        sample.update(
+            cap_kb=20 * 1048576,
+            tracked_kb=17 * 1048576,
+            available_kb=5 * 1048576,
+            footprints={"42": 10485},
+            tracked_pids=[42],
+        )
+        job = dict(
+            status="running",
+            resource="",
+            memory_kb=2 * 1048576,
+            members={"42": "start"},
+            elastic=True,
+            started=time.time() - 60,
+            observed_peak_kb=2 * 1048576,
+        )
+        self.assertFalse(q.admissible([job], 2 * 1048576, "", sample)[0])
+        sample["footprints"]["42"] = 4 * 1048576
+        sample["tracked_pids"] = []
+        self.assertFalse(q.admissible([job], 2 * 1048576, "", sample)[0])
+
+    def test_aged_large_waiter_drains_new_admissions_without_interrupting_running_jobs(
+        self,
+    ):
+        q = self.queue(headroom_gb=2)
+        sample = healthy()
+        sample["tracked_kb"] = 12 * 1048576
+        jobs = [
+            dict(
+                id="large",
+                status="waiting",
+                resource="",
+                memory_kb=6 * 1048576,
+                session_key="a",
+                enqueued=950,
+            ),
+            dict(
+                id="small",
+                status="waiting",
+                resource="",
+                memory_kb=1048576,
+                session_key="b",
+                enqueued=960,
+            ),
+        ]
+        self.assertEqual(q.next_waiter(jobs, "", sample, {}, now=1000), "small")
+        self.assertEqual(q.next_waiter(jobs, "", sample, {}, now=1011), "small")
+        running = dict(status="running", resource="", memory_kb=1048576, members={})
+        self.assertEqual(
+            q.next_waiter(jobs + [running], "", sample, {}, now=1011), "large"
+        )
+        self.assertEqual([j["status"] for j in jobs], ["waiting", "waiting"])
+        sample["tracked_kb"] = 8 * 1048576
+        self.assertEqual(q.next_waiter(jobs, "", sample, {}, now=1012), "large")
 
     def test_lightweight_shell_parsing_keeps_execution_and_heavy_stages_queued(self):
         for command in (

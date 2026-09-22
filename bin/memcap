@@ -77,6 +77,13 @@ case "${1:-help}" in
     mc_render_diagnostics
     ;;
   feedback)
+    [ $# -le 2 ] || { echo 'usage: memcap feedback [--wait]' >&2; exit 2; }
+    # shellcheck disable=SC2034 # consumed by sourced idle_gc.sh
+    case "${2:-}" in
+      --wait) MC_FEEDBACK_WAIT=1 ;;
+      '') MC_FEEDBACK_WAIT=0 ;;
+      *) echo 'usage: memcap feedback [--wait]' >&2; exit 2 ;;
+    esac
     # shellcheck source=/dev/null
     . "$LIB/idle_gc.sh"
     # shellcheck source=/dev/null
@@ -89,6 +96,8 @@ case "${1:-help}" in
     mc_agent_hooks "${2:-}" "${3:-}"
     ;;
   watch)
+    # shellcheck source=/dev/null
+    . "$LIB/boot_timeout.sh"
     # shellcheck source=/dev/null
     . "$LIB/idle_gc.sh"
     # shellcheck source=/dev/null

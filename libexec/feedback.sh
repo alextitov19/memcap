@@ -13,7 +13,7 @@ mc_feedback_jq() {
 }
 
 mc_job_feedback() {
-  local jqbin dir body command_text file number
+  local jqbin dir body command_text
   jqbin=$(mc_feedback_jq) || {
     mc_log 'oversized-job: jq unavailable; agent feedback could not be recorded'; return 1;
   }
@@ -29,6 +29,11 @@ mc_job_feedback() {
         " GB footprint exceeds the " + $limit + " GB per-process limit. Command identity: " + $command +
         ". Split the workload into smaller batches or test files, reduce parallel workers, and investigate unbounded allocation. Do not retry the identical job or increase/disable the cap to get around this. Exit 137/143 may be memcap, not a Docker OOM. This notice is shared with agents working in this project; it may refer to another session.")}') || return 1
   mc_state_write "$dir/$MC_JOB_PID.json" "$body" || return 1
+  mc_feedback_trim "$dir"
+}
+
+mc_feedback_trim() {
+  local dir="$1" file number
   # Only memcap-created numeric filenames are removed. Keep the latest 32 jobs.
   # shellcheck disable=SC2012 # numeric basenames only, not arbitrary paths
   while IFS= read -r file; do
@@ -95,7 +100,7 @@ mc_agent_hooks() {
   printf -v queue_command '%q queue-hook %q' "$MEMCAP_ROOT/bin/memcap" "$agent"
   "$jqbin" -n --arg command "$command_text" --argjson events "$events" \
     --arg queue "$queue" --arg queue_command "$queue_command" \
-    '{hooks:($events | map({key:.,value:[{hooks:[{type:"command",command:$command,timeout:5}]}]}) | from_entries)} |
+    '{hooks:($events | map({key:.,value:[{hooks:[{type:"command",command:($command + (if . == "Stop" then " --wait" else "" end)),timeout:(if . == "Stop" then 75 else 5 end)}]}]}) | from_entries)} |
      if $queue == "--queue" then .hooks.PreToolUse +=
        [{matcher:"Bash",hooks:[{type:"command",command:$queue_command,timeout:5}]}]
      else . end'

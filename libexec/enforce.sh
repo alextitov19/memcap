@@ -307,11 +307,26 @@ mc_filter_protected() {
   mc_protection_ready || return 1
   self=$(mc_self_ancestry) || return 1
   mc_veto_evidence_warm
+  if [ "$scope" = boot-timeout ]; then
+    command -v mc_boot_prepare >/dev/null 2>&1 || return 1
+    mc_boot_prepare || return 1
+    # Never cancel only the children of a protected shell and let its remaining
+    # script continue after a failed boot. The whole planned attempt must qualify.
+    for pid in $MC_BOOT_ALLOWED; do
+      case " ${AGENTPIDS} $self " in *" $pid "*) return 1 ;; esac
+    done
+  fi
   if [ "$scope" = idle-gc ]; then
     command -v mc_gc_prepare >/dev/null 2>&1 || return 1
     mc_gc_prepare "$1" || return 1
   fi
   for pid in $1; do
+    if [ "$scope" = boot-timeout ]; then
+      mc_boot_allowed "$pid" || continue
+      case " ${AGENTPIDS} $self " in *" $pid "*) continue ;; esac
+      out="$out $pid"
+      continue
+    fi
     if [ "$scope" = idle-gc ]; then
       command -v mc_gc_allowed >/dev/null 2>&1 || continue
       mc_gc_allowed "$pid" || continue
@@ -403,12 +418,15 @@ mc_kill_pids() {
     # Publish before TERM so a tool-failure hook can already read the reason.
     command -v mc_job_feedback >/dev/null 2>&1 && mc_job_feedback || :
   fi
+  if [ "$scope" = boot-timeout ]; then
+    mc_boot_notice || mc_log 'boot timeout: could not record agent feedback'
+  fi
   for p in $pids; do
     mc_log "$reason: $(mc_abbrev "$(ps -o pid=,rss=,command= -p "$p" 2>/dev/null)")"
     idents="$idents$p|$(mc_pid_identity "$p")
 "
   done
-  if [ "$scope" = oversized ] || [ "$scope" = scheduled ] || [ "$scope" = idle-gc ]; then
+  if [ "$scope" = oversized ] || [ "$scope" = scheduled ] || [ "$scope" = idle-gc ] || [ "$scope" = boot-timeout ]; then
     # Logging and feedback can take time under pressure. Revalidate the original
     # identity after those subprocesses, as close to TERM as shell permits.
     pids=$(mc_filter_protected "$pids" "$scope") || return 1
@@ -437,6 +455,8 @@ mc_kill_pids() {
   # taken before the TERM, and SIGKILL is the irreversible half of this function.
   # An agent session, or a tooling process, that appeared in the intervening two
   # seconds must get the same protection it would have got two seconds earlier.
+  # shellcheck disable=SC2034 # read by boot_timeout.sh during the fresh filter
+  if [ "$scope" = boot-timeout ]; then MC_BOOT_ESCALATING=1; fi
   alive=$(mc_filter_protected "$alive" "$scope") || alive=""
   # shellcheck disable=SC2086
   [ -n "${alive// /}" ] && kill -KILL $alive 2>/dev/null
@@ -1721,20 +1741,24 @@ mc_watch() {
 
   mc_reap_sims
 
+  MC_BOOT_RECLAIMED=0
+  if command -v mc_reap_boot_timeouts >/dev/null 2>&1; then
+    mc_reap_boot_timeouts
+  fi
   if command -v mc_reap_idle_helpers >/dev/null 2>&1; then
     mc_reap_idle_helpers
-    if [ "${MC_GC_RECLAIMED:-0}" = 1 ]; then
-      mc_snapshot_capture
-      sample="$MC_CAPTURE_SNAPSHOT"
-      unset AGENT_KB DOCKER_KB SIM_KB AGENTPIDS PROTECTEDPIDS SIMPIDS ORPHANS DEVPIDS
-      eval "$(printf '%s\n' "$sample" | mc_classify)"
-      if [ -z "${AGENT_KB+x}" ] || [ -z "${DOCKER_KB+x}" ] || [ -z "${SIMPIDS+x}" ]; then
-        mc_finish_pass degraded-measurement
-        return 1
-      fi
-      [ "${MC_MEASURE_FAULT:-0}" = 1 ] && initial_fault=1
-      agent_net_gb=$(mc_gb "$(mc_agent_net_kb "$AGENT_KB" "$SIM_KB")")
+  fi
+  if [ "${MC_GC_RECLAIMED:-0}" = 1 ] || [ "$MC_BOOT_RECLAIMED" = 1 ]; then
+    mc_snapshot_capture
+    sample="$MC_CAPTURE_SNAPSHOT"
+    unset AGENT_KB DOCKER_KB SIM_KB AGENTPIDS PROTECTEDPIDS SIMPIDS ORPHANS DEVPIDS
+    eval "$(printf '%s\n' "$sample" | mc_classify)"
+    if [ -z "${AGENT_KB+x}" ] || [ -z "${DOCKER_KB+x}" ] || [ -z "${SIMPIDS+x}" ]; then
+      mc_finish_pass degraded-measurement
+      return 1
     fi
+    [ "${MC_MEASURE_FAULT:-0}" = 1 ] && initial_fault=1
+    agent_net_gb=$(mc_gb "$(mc_agent_net_kb "$AGENT_KB" "$SIM_KB")")
   fi
 
   over=$(awk -v a="$agent_net_gb" -v b="$agents_budget" 'BEGIN{print (a > b) ? 1 : 0}')
