@@ -71,11 +71,44 @@ The watchdog uses system `bash` (3.2); no newer shell is needed. The optional
 workload queue additionally requires **Python 3.9+** (`brew install python`),
 using only the standard library.
 
+## Upgrading to v0.11.0
+
+v0.11.0 reduces unnecessary waiting: automatic reservations adapt to measured
+usage after startup, admissions rotate between sessions, and the watchdog cancels
+confirmed stuck standalone simulator boot attempts. Bounded file-reading pipelines
+stay outside the expensive-work queue. See [CHANGELOG.md](CHANGELOG.md) for details.
+
+1. Run `brew upgrade alextitov19/memcap/memcap`. Existing memory settings are preserved;
+   the upgrade does not change your cap, pressure policy, job slots or worker limits.
+2. Run `memcap agent-hooks claude --queue` and/or `memcap agent-hooks codex --queue`.
+   These print JSON. Merge the generated memcap entries into your existing hook
+   configuration, preserving unrelated hooks. **Replace old memcap entries instead
+   of adding duplicates.** Update separate `CLAUDE_CONFIG_DIR` profiles too.
+3. Confirm the generated Stop entry uses `memcap feedback --wait` with `timeout: 75`.
+   Restart/reload agent sessions to load changed hooks, and review/trust the updated
+   Codex hook in `/hooks`. Changing Markdown instructions alone does not install hooks.
+4. Check `memcap version`, `memcap status`, and `memcap queue`. Waiting tasks report
+   their admission reason. Keep polling an existing task with a blocking 60-second
+   poll and read its final output/exit status; do not submit duplicate work.
+
+A Mac reboot is not required. The next normal watchdog pass uses the upgraded
+executable. Existing runners retain their loaded scheduler code until they finish;
+new runners use the new policy. Legacy Stop hooks without `--wait` return immediately
+with polling guidance. The new hook waits locally for up to a minute, waking early
+when pending work ends, so it does not repeatedly wake the model while nothing changes.
+
+Green or yellow pressure does not guarantee admission: measured usage, outstanding
+reservations, configured headroom and job slots still matter. The aim is more useful
+concurrency, not a promise of zero waits or zero pressure spikes. The boot deadline
+releases a reservation only after its managed processes exit; it does not reset a
+simulator or prove that app tests ran.
+
 ## Queue expensive agent work before it starts
 
-The cleanup budget cannot force protected active work back under the cap. The
-optional queue admits at most **two finite jobs** across participating sessions,
-reserving **2 GB per job** by default. Other commands wait without starting.
+The cleanup budget cannot force protected active work back under the cap. By
+default, the optional queue admits at most **two finite jobs** across participating
+sessions, using an automatic **2 GB startup estimate per job**. Other commands
+wait without starting.
 Admission defaults to normal (green) macOS pressure and **3 GB of host headroom**
 after reservations. Set `QUEUE_MAX_PRESSURE=yellow` to also admit work at warning
 pressure; critical (red) and unknown pressure always block admission. The combined
@@ -94,6 +127,16 @@ memcap queue --json
 `--memory` reserves GB, not a hard memory limit. Each workload is charged the
 greater of its effective reservation and observed footprint, without double-counting
 memory already in the combined budget. Unknown measurements admit nothing.
+
+Automatic job estimates reserve the full startup allowance for 30 seconds. After
+that, complete process measurements can reduce unused reservations to the greater
+of 512 MB or 125% of the highest footprint observed at admission checks, capped
+at the original estimate. Actual usage above that estimate is always counted.
+Explicit `--memory` reservations and uncertain or orphaned groups retain their
+full allowance. This permits more concurrency without raising your configured
+memory cap or admitting at red pressure; later allocation bursts can still raise
+pressure, so this is a throughput tradeoff, not a guarantee against overload.
+
 Reservations larger than the entire budget fail immediately. Waiting defaults
 to 1,800 seconds, then exits **75** without launching. Notices go to stderr;
 the command retains stdin, stdout, stderr and exit status. `--wait-forever` polls
@@ -130,7 +173,8 @@ memcap agent-hooks codex --queue
 
 Existing feedback hooks are included. The added synchronous `PreToolUse` hook
 matches `Bash`, including Codex unified exec, and immediately rewrites launches
-through the runner. Waiting happens in the runner, not the hook. Enable Codex's
+through the runner. Admission waiting happens in the runner; the Stop hook
+separately waits locally to reduce model polling. Enable Codex's
 hooks feature as required by your installed version and restart/resume sessions
 to load changes. Preserve other hooks and permissions. Verify the rewritten
 tool call in a sandboxed session before rollout.
@@ -153,8 +197,12 @@ launches get resource keys. Shell text, cwd and tool options are preserved.
 Claude's hook sets `run_in_background` and `--wait-forever`: the existing task
 polls automatically and starts once capacity is available. It tells Claude to
 wait with `TaskOutput`, read the final result, and avoid duplicate submissions.
-The generated `Stop` hook asks the agent to continue while its finite jobs are
-still queued/running; persistent resources do not hold a conversation open.
+The generated `Stop` hook uses `memcap feedback --wait` with a 75-second timeout.
+It waits locally up to 60 seconds before asking the agent to continue while finite
+jobs are queued/running, and wakes early when they finish. This wait holds no
+lifecycle lock or pending-activity marker, so cleanup can continue. Other lifecycle
+hooks and file reads remain immediate; persistent resources do not hold a
+conversation open.
 The host agent still controls cancellation, session exit and tool deadlines;
 this does not keep an exited Claude process alive. Codex tools retain their
 normal session polling and explicit timeouts. Nested managed commands share a
@@ -189,8 +237,9 @@ QUEUE_MAX_PRESSURE=green
 ```
 
 New runners load queue settings when they start. Already-waiting runners retain
-their pressure policy; cancel and resubmit those commands to load a changed
-policy. The combined budget is resampled from configuration while they wait.
+their pressure policy until they finish or are explicitly canceled. Do not create
+a duplicate to pick up new settings; confirm cancellation and process exit before
+any replacement. The combined budget is resampled from configuration while they wait.
 
 Private reservations live in the state directory's `queue/`. Do not delete it
 while managed work runs; that discards reservations. `memcap status` displays a
@@ -997,19 +1046,3 @@ repository.
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-Automatic job estimates reserve the full startup allowance for 30 seconds. After
-that, complete process measurements can reduce unused reservations to the greater
-of 512 MB or 125% of the highest footprint observed at admission checks, capped
-at the original estimate. Actual usage above that estimate is always counted.
-Explicit `--memory` reservations and uncertain or orphaned groups retain their
-full allowance. This permits more concurrency without raising the configured
-20 GB cap or admitting at red pressure; later allocation bursts can still raise
-pressure, so this is a throughput tradeoff, not a guarantee against overload.
-
-Generated Stop hooks now use `memcap feedback --wait` with a 75-second timeout.
-They wait locally for up to 60 seconds before asking the model to continue,
-waking early when pending work ends. Other lifecycle hooks and file reads remain
-immediate. Regenerate/merge hooks to enable this mode on existing installations;
-legacy hooks keep their immediate behavior and receive blocking-poll guidance.
-The wait holds no lifecycle lock or pending-activity marker, so cleanup continues.

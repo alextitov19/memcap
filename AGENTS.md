@@ -161,6 +161,28 @@ Plans expire after 30 seconds. Escalation permits only unchanged original
 survivors. Python never signals or edits queue reservations. Do not extend this
 to arbitrary command timeouts or simulator-service termination.
 
+## Queue throughput and hook compatibility
+
+Automatic reservations hold the startup estimate for 30 seconds, then may shrink
+with complete measurements to at least 512 MB or 125% of observed peak usage,
+capped at the original estimate. Always count actual usage above the estimate.
+Explicit `--memory`, orphaned groups and incomplete measurements retain their
+allowances. Do not equate a smaller reservation with process termination or reclaim
+capacity by deleting leases. A lease remains until its managed group exits.
+
+Rotate new admissions across sessions and resource types. The aged-request gate
+may hold back new work while finite jobs drain, but must not leave smaller jobs
+blocked when no running finite job can free capacity. Never implement rotation by
+suspending builds or terminating another session's active work.
+
+Generated Stop hooks pair `feedback --wait` with a 75-second timeout and wait
+locally up to 60 seconds. Clear lifecycle activity markers before waiting; hold no
+collector locks while waiting. Other hooks remain prompt. Legacy five-second
+hooks must remain compatible and must not acquire a hidden minute-long wait.
+Document hook replacement, separate Claude profiles, session reload and Codex
+trust whenever changing this contract. Existing runners retain their loaded code;
+a daemon upgrade is not evidence that every old session has adopted new behavior.
+
 ## Assertions
 
 Use `assert_contains` / `assert_not_contains` / `assert_matches` from
