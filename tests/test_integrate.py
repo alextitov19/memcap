@@ -92,6 +92,15 @@ class IntegrateTests(unittest.TestCase):
         self.assertEqual(json.loads(backups[0].read_text()), original)
         self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
 
+    def test_profile_block_uses_the_same_scoped_protection_guidance(self):
+        from report import PROTECTION_GUIDANCE
+
+        self.install()
+        text = (self.profile / "CLAUDE.md").read_text()
+        self.assertIn(PROTECTION_GUIDANCE, text)
+        self.assertIn("never extends to other tasks", text)
+        self.assertNotIn("to escape the queue", text)
+
     def test_repeat_install_changes_nothing_and_makes_no_extra_backups(self):
         self.config.write_text('{"hooks":{}}\n')
         (self.profile / "CLAUDE.md").write_text("# My rules\nKeep this exactly.\n")

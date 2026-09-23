@@ -80,22 +80,24 @@ class StormTests(unittest.TestCase):
                     f.write("sample\n")
                 return dict(sample)
 
-            with patch("scheduler.sample_host", measure):
+            with (
+                patch("scheduler.sample_host", measure),
+                patch("scheduler_metrics.vm_sample", return_value={}),
+            ):
                 for _ in range(24):
                     q = scheduler.Scheduler(Path(tmp) / "queue", sampler=measure)
-                    with q.locked() as data:
-                        observed = q.measure(data)
-                        q.save(data)
-                        self.assertEqual(
-                            q.admissible([], 2 * 1048576, "", observed),
-                            (True, "capacity available"),
-                        )
+                    observed = q.measure()
+                    self.assertEqual(
+                        q.admissible([], 2 * 1048576, "", observed),
+                        (True, "capacity available"),
+                    )
                 self.assertEqual(len(count.read_text().splitlines()), 1)
-                with q.locked() as data:
-                    data["measurement"]["at"] -= 3
-                    q.save(data)
-                with q.locked() as data:
-                    q.measure(data)
+                # Cache now belongs to the sampler, independent of the registry.
+                path = q.directory / "sample.json"
+                cached = json.loads(path.read_text())
+                cached["sample"]["monotonic"] -= 3
+                path.write_text(json.dumps(cached))
+                q.measure()
                 self.assertEqual(len(count.read_text().splitlines()), 2)
 
     def test_wait_fallback_is_read_only_bounded_and_never_queued(self):

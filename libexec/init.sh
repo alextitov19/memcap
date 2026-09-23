@@ -126,6 +126,14 @@ mc_run_init() {
 # Machine at init: ${total} GB RAM, ${cores} cores.
 TOTAL_BUDGET_GB=$cap
 BUDGET_MODE=${BUDGET_MODE:-shared}
+# Adaptive: footprint is a planning target; yellow allowed, red blocks starts.
+# Use strict to retain an absolute combined admission budget.
+QUEUE_POLICY=adaptive
+QUEUE_MAX_PRESSURE=yellow
+QUEUE_MAX_JOBS=12
+QUEUE_WORKERS=8
+QUEUE_JOB_GB=1
+QUEUE_HEADROOM_GB=2
 DOCKER_BUDGET_GB=$docker_gb
 DOCKER_CPUS=$((cores * 55 / 100))
 SOFT_TRIGGER=0.80

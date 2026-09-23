@@ -138,3 +138,23 @@ sample_fixture() {
   [ "$status" = 0 ]
   assert_contains "$output" 'OK'
 }
+
+@test "QUEUE: adaptive admission, shared sampling and learned demand contracts" {
+  for suite in admission scheduler_metrics workload_estimates adaptive_scheduler; do
+    run python3 "$MEMCAP_ROOT/tests/test_${suite}.py"
+    [ "$status" = 0 ] || return 1
+    assert_contains "$output" 'OK'
+  done
+}
+
+@test "QUEUE: adaptive policy reaches runner; unknown policy fails closed" {
+  mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
+  printf 'QUEUE_POLICY=adaptive\n' > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  run "$MEMCAP_ROOT/bin/memcap" queue --json
+  [ "$status" = 0 ]
+  assert_contains "$output" '[]'
+  printf 'QUEUE_POLICY=unrestricted\n' > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf"
+  run "$MEMCAP_ROOT/bin/memcap" queue --json
+  [ "$status" = 75 ]
+  assert_contains "$output" 'QUEUE_POLICY must be strict or adaptive'
+}

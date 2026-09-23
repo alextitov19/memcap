@@ -318,7 +318,8 @@ simulator or prove that app tests ran. See [CHANGELOG.md](CHANGELOG.md) for deta
 ## Queue expensive agent work before it starts
 
 The cleanup budget cannot force protected active work back under the cap. By
-default, the optional queue admits at most **two finite jobs** across participating
+default on an existing configuration without `QUEUE_POLICY`, the optional strict
+queue admits at most **two finite jobs** across participating
 sessions, using an automatic **2 GB startup estimate per job**. Other commands
 wait without starting.
 Admission defaults to normal (green) macOS pressure and **3 GB of host headroom**
@@ -460,9 +461,11 @@ suppresses signals too, but **`memcap run` still runs the requested command**.
 `memcap off` bypasses admission and suppresses cancellation enforcement until
 resumed: it is an explicit opt-out from queue protection.
 
-Optional `memcap.conf` settings (defaults):
+Optional `memcap.conf` settings (legacy/strict fallback defaults; new `init` uses
+the adaptive profile documented below):
 
 ```bash
+QUEUE_POLICY=strict
 QUEUE_MAX_JOBS=2
 QUEUE_WORKERS=2
 QUEUE_JOB_GB=2
@@ -543,9 +546,10 @@ For a 24 GB Mac prioritizing throughput, a starting configuration is:
 
 ```bash
 TOTAL_BUDGET_GB=20
-QUEUE_MAX_JOBS=8
-QUEUE_WORKERS=2
-QUEUE_JOB_GB=2
+QUEUE_POLICY=adaptive
+QUEUE_MAX_JOBS=12
+QUEUE_WORKERS=8
+QUEUE_JOB_GB=1
 QUEUE_HEADROOM_GB=2
 QUEUE_MAX_PRESSURE=yellow
 GC_MODE=on
@@ -1288,3 +1292,70 @@ repository.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Adaptive throughput (0.16)
+
+`memcap init` now writes the adaptive settings above. Existing configurations that
+omit `QUEUE_POLICY` keep `strict`; upgrading never silently migrates owner policy
+or resumes a paused installation. The owner may choose `QUEUE_POLICY=adaptive`
+and the 12-slot / 8-worker / 1-GB profile above in `memcap.conf`.
+
+Adaptive admission treats `TOTAL_BUDGET_GB` as a **planning target**. A 24-GB Mac
+can have charged footprints above 20 GB while pressure remains green or yellow:
+compressed/swapped accounting, Docker guest usage and the VM ceiling are different
+measurements. Memcap keeps the footprint measurement, but no longer treats it as
+an unconditional veto in adaptive mode. Docker is included through host pressure
+and headroom; its configured ceiling is not a reservation. No Docker restart or
+ceiling change is part of this feature.
+
+New heavy work requires a fresh reliable sample, permitted pressure and estimated
+physical headroom covering outstanding reservations, its startup request and a
+512-MiB emergency margin (or a smaller explicit `QUEUE_HEADROOM_GB`). Red blocks
+new starts. Sustained yellow plus swap-out >=128 MiB/s for 10 seconds adds a
+six-second recovery window. Existing swap volume alone does not block work.
+Unknown paging counters remain unknown; pressure and footprint signals are still
+required. Starts are spaced by at least two seconds across **all sessions**.
+These are initial tuning parameters, not a guarantee that running or unmanaged
+work can never push the machine into red.
+
+Recognized searches, reads, status and remote SSM control remain outside the heavy
+queue. Managed work uses the configured startup prior, with smaller priors for
+recognized small tool families and at least 4 GB for direct Xcode/Swift builds.
+Successful, sufficiently sampled runs teach private estimates keyed by project,
+command, executable metadata, dependency manifests, worker allocation and common
+cache-directory presence. This cache distinction is a heuristic, not detection of
+every build system's cold state. Recent peak observations include a 25% margin;
+estimates decrease at most 10% per completed run. Cancelled, failed or incomplete
+samples never teach a lower value. Explicit `--memory` retains its allowance.
+Short jobs may finish between samples and do not teach an estimate.
+
+Worker limits are chosen at launch from the CPU pool and contending sessions,
+up to `QUEUE_WORKERS`. Smaller explicit limits survive. Already-running jobs
+are not interrupted or dynamically resized. Session rotation spans job types;
+aged large jobs get bounded drain windows (six seconds in each thirty), then
+smaller fitting jobs can progress. Arbitrary running processes are never suspended
+or killed merely to rotate a slot. Dead waiters are removed only after identity
+checks; a dead supervisor with surviving children keeps its reservation.
+
+Sampling has its own nonblocking lock. Queue status and wait operations do not
+acquire the admission lock or create jobs. The supervisor waits internally; agents
+use their existing task's blocking poll once a minute, or `memcap wait --session
+--timeout 60` when native polling is unavailable. No drain ticks or duplicate jobs.
+
+`memcap queue --summary` identifies older supervisors that still have pre-upgrade
+code loaded. New commands and stable hooks use the new installation. Let existing
+tasks finish; upgrading cannot rewrite their in-memory code. Never duplicate
+pending tasks just to pick up the update. A machine restart is not required for
+new commands.
+
+Numeric local events (sample, admission, completion) are private, rotated and
+bounded to approximately 32 MiB / 24 hours. Reports include fresh paging rates,
+sample age, policy and legacy-supervisor counts when available, without raw
+commands, paths or process identifiers. Publication still requires the existing
+one-time opt-in; there is no memcap report quota. Report excessive waits and
+lightweight queuing even if work eventually succeeds.
+
+Adaptive mode also prevents tier-2 cleanup solely for exceeding the footprint
+target while pressure is green/yellow. Orphan/ownership/age protections, explicit
+oversized-child limits, idle-helper policy and the pause switch remain in force.
+See [validation and incident coverage](docs/adaptive-throughput-validation.md).

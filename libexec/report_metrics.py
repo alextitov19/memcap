@@ -17,8 +17,17 @@ BLOCKERS = {
     "measurement",
     "fairness",
     "unknown",
+    "startup",
+    "stabilizing",
+    "paging",
 }
 FACTS = {
+    "queue_policy",
+    "sample_age_ms",
+    "swap_in_kbps",
+    "swap_out_kbps",
+    "compressor_kb",
+    "legacy_supervisors",
     "cap_kb",
     "tracked_kb",
     "available_kb",
@@ -260,6 +269,22 @@ def capture(state):
             if math.isfinite(value) and value >= 0:
                 facts[f"load_{window}m_milli"] = round(value * 1000)
     except OSError:
+        pass
+    try:
+        sample = read_json(state / "queue/sample.json")["sample"]
+        stamp = sample.get("monotonic")
+        if type(stamp) in (int, float) and 0 <= time.monotonic() - stamp < 60:
+            facts["sample_age_ms"] = int((time.monotonic() - stamp) * 1000)
+            for key in ("swap_in_kbps", "swap_out_kbps", "compressor_kb"):
+                value = sample.get(key)
+                if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+                    facts[key] = int(value)
+        data = read_json(state / "queue/jobs.json")
+        facts["queue_policy"] = int(data.get("policy") == "adaptive")
+        facts["legacy_supervisors"] = sum(
+            j.get("scheduler_version", 1) < 2 for j in data["jobs"]
+        )
+    except (OSError, ValueError, KeyError, TypeError):
         pass
     facts.update(queue_facts(state))
     return sanitize(facts)

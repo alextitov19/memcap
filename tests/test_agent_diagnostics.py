@@ -123,6 +123,24 @@ class DiagnosticTests(unittest.TestCase):
         self.assertIn("TaskOutput", text)
         probe.assert_not_called()
 
+    def test_protection_guidance_is_scoped_to_unrelated_work_in_every_path(self):
+        # An unqualified "do not change memcap protection" forbids the owner's own
+        # memcap development; a missing prohibition would let any task weaken it.
+        p = self.payload("memcap: queued abcd1234: combined budget reserved or in use.")
+        with patch.object(self.mod, "measure", return_value=[]):
+            texts = [
+                self.mod.guidance({"hook_event_name": "SessionStart"}, self.root),
+                self.mod.guidance(p, self.root),
+            ]
+        for text in texts:
+            self.assertNotIn("bypass/change memcap protection", text)
+            self.assertIn(
+                "bypass memcap protection to unblock or speed up unrelated work", text
+            )
+            self.assertIn("explicitly authorizes work on memcap itself", text)
+            self.assertIn("never extends to other tasks", text)
+            self.assertIn("Do not use memcap off", text)
+
     def test_queue_feedback_requires_reporting_lightweight_latency_even_after_success(
         self,
     ):

@@ -375,6 +375,9 @@ mc_render_status() {
     agents_budget_label="${agents_budget} GB budget"
   fi
 
+  if [ "${QUEUE_POLICY:-strict}" = adaptive ]; then
+    agents_budget_label="shares ${cap} GB planning target (adaptive)"
+  fi
   [ -n "$docker_drift" ] && mc_status_warn "$docker_drift"
 
   printf 'memcap %s — %s\n\n' "${MEMCAP_VERSION:-unknown}" "$conf"
@@ -389,7 +392,12 @@ mc_render_status() {
   fi
   mc_status_row "docker VM + helpers" "${docker_gb} GB / ${docker_ceiling_label}"
   echo "  ---------------------------------------------------------"
-  mc_status_row "combined" "${combined} GB / ${cap} GB budget (${budget_mode})"
+  if [ "${QUEUE_POLICY:-strict}" = adaptive ]; then
+    mc_status_row "combined charged footprint" "${combined} GB / ${cap} GB planning target (adaptive; may exceed at green/yellow)"
+    mc_status_row "admission policy" "pressure + physical headroom + staged starts; red blocks new heavy jobs"
+  else
+    mc_status_row "combined" "${combined} GB / ${cap} GB budget (${budget_mode})"
+  fi
   mc_status_row "system memory available" "$free_label"
   if [ -d "$(mc_state_dir)/queue" ]; then
     if command -v python3 >/dev/null 2>&1; then
