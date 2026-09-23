@@ -167,7 +167,8 @@ to arbitrary command timeouts or simulator-service termination.
 
 Automatic reservations hold the startup estimate for 30 seconds, then may shrink
 with complete measurements to at least 512 MB or 125% of observed peak usage,
-capped at the original estimate. Always count actual usage above the estimate.
+without discarding an observed peak above the initial estimate. Always count
+actual usage above the estimate.
 Explicit `--memory`, orphaned groups and incomplete measurements retain their
 allowances. Do not equate a smaller reservation with process termination or reclaim
 capacity by deleting leases. A lease remains until its managed group exits.
@@ -260,5 +261,6 @@ inspection as `lightweight-queued`, wasted polling as `polling-overhead`, and
 excessive waits/starvation as `queue-stall`, once per incident. Do not dismiss them
 as ordinary capacity waiting. `--wait-seconds` is a bounded, agent-supplied numeric
 observation, not a measured duration; omit unknown values. Preserve consent,
-deduplication and rate limits. Both pending and successfully admitted queue output
+deduplication and uncertain-submission protection. Memcap has no publication
+quota or retry cooldown. Both pending and successfully admitted queue output
 must carry this instruction, without publishing the original command.

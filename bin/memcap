@@ -35,7 +35,7 @@ case "${1:-help}" in
     . "$LIB/idle_gc.sh"
     mc_gc_status
     ;;
-  run|queue|wait)
+  run|queue|wait|_inspect)
     action="$1"; shift
     # shellcheck source=/dev/null
     . "$LIB/scheduler.sh"

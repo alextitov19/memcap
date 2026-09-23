@@ -140,7 +140,10 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         return True
     if name == "ps" and words[1:] == ["-Ao", "pid,ppid,command"]:
         return True
+    if name == "printf" and "-v" in words[1:]:
+        return False
     if name in {
+        "ps",
         "cat",
         "head",
         "tail",
@@ -188,6 +191,9 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             re.fullmatch(r"(?:[0-9]+|/[^/\n]+/)(?:,(?:[0-9]+|\$))?p", words[2])
         ) and all(not word.startswith("-") for word in words[3:])
     if name == "memcap" and len(words) >= 2:
+        if words[1] == "_inspect":
+            # This runtime guard either execs proven inspection or enters the queue.
+            return True
         if words[1] == "report":
             from report import KINDS, CONTEXTS
 
@@ -269,7 +275,7 @@ def light_words(words: list[str], glob_checked=False) -> bool:
     return False
 
 
-def literal_shell(command: str) -> bool:
+def literal_shell(command: str, allow_bare_globs=False) -> bool:
     """Check expansions before shlex discards whether a regex/glob was quoted."""
     quote = ""
     prefix = ""
@@ -295,7 +301,7 @@ def literal_shell(command: str) -> bool:
             else:
                 return False
         elif not quote and c in "*?[":
-            if "/" not in prefix:
+            if "/" not in prefix and not allow_bare_globs:
                 return False
             prefix += c
         elif not quote and c in "{}~":
@@ -398,10 +404,20 @@ def light_file_loop(command: str) -> bool:
     return True
 
 
-def light_shell(command: str) -> bool:
+def light_shell(command: str, allow_bare_globs=False) -> bool:
     # Recognize a narrow shell grammar solely for lightweight commands. Every
     # stage must qualify. Never evaluate substitutions or reconstruct the input.
     command = normalized_lines(command)
+    # The reported finite directory-status loop uses quoted path operands only.
+    # Keep this exact read-only idiom narrow; substitutions or changed bodies queue.
+    if re.fullmatch(
+        r"\s*ls;\s*for (?P<v>[A-Za-z_][A-Za-z0-9_]*) in \*/;\s*do "
+        r'\[ -d "\$(?P=v)/\.git" \] && echo "GIT: \$(?P=v)" && '
+        r'git -C "\$(?P=v)" status -sb \| head -[1-9][0-9]? && '
+        r'git -C "\$(?P=v)" log --oneline -[1-9][0-9]?;\s*done\s*;?\s*',
+        command,
+    ):
+        return True
     if light_file_loop(command):
         return True
     # SSM workflows commonly save a command ID, wait briefly for propagation,
@@ -412,7 +428,7 @@ def light_shell(command: str) -> bool:
         "__MEMCAP_READ_SUBSTITUTION__",
         command,
     )
-    if not literal_shell(command):
+    if not literal_shell(command, allow_bare_globs):
         return False
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;<>()")
@@ -631,6 +647,14 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
             }
         }
     kind, resource = classify_shell(command)
+    from inspection import guarded_shell
+
+    session_key = (
+        hashlib.sha256(payload.get("session_id", "").encode()).hexdigest()
+        if isinstance(payload.get("session_id"), str)
+        else ""
+    )
+    guarded = guarded_shell(command, executable, session_key) if kind == "job" else None
     try:
         wrapped = shlex.split(command)
     except ValueError:
@@ -640,7 +664,7 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
     already_wrapped = (
         len(wrapped) > 1
         and wrapped[0] in {executable, "memcap"}
-        and wrapped[1] in {"run", "queue", "status", "feedback"}
+        and wrapped[1] in {"run", "queue", "status", "feedback", "_inspect"}
         and shlex.join(wrapped) == command
     )
     if kind == "light" or already_wrapped:
@@ -671,13 +695,13 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
         ]
     args += ["--shell-command", command]
     updated = dict(original)
-    if agent == "claude":
+    if agent == "claude" and not guarded:
         updated["run_in_background"] = True
-    updated["command"] = shlex.join(args)
+    updated["command"] = guarded or shlex.join(args)
     # Codex's hook schema uses command even when its exec tool uses cmd.
     updated.pop("cmd", None)
     result = {"hookEventName": "PreToolUse", "updatedInput": updated}
-    if agent == "claude":
+    if agent == "claude" and not guarded:
         from report import PERFORMANCE_GUIDANCE
 
         result["additionalContext"] = (

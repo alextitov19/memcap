@@ -913,7 +913,7 @@ class Scheduler:
             self.refresh(live, processes())
             if not live["jobs"]:
                 print(
-                    f"memcap: {ident} no longer pending. Read the ORIGINAL task's final output and exit status; this does not certify success. Do not resubmit a completed task."
+                    f"memcap: {ident} no longer pending. Read the ORIGINAL task's final output and exit status; this does not certify success. Do not repeat memcap wait for an unmanaged native task; use its completion notification and final output/status. Do not resubmit a completed task."
                 )
                 return 0
             if time.monotonic() >= deadline:
@@ -984,6 +984,20 @@ def main():
         policy=os.environ.get("QUEUE_POLICY", "strict"),
     )
     action = sys.argv[1]
+    if action == "_inspect":
+        from inspection import inspect_argv
+
+        parser = argparse.ArgumentParser(prog="memcap _inspect")
+        parser.add_argument("--session-key", default="")
+        parser.add_argument("command", nargs=argparse.REMAINDER)
+        args = parser.parse_args(sys.argv[2:])
+        argv = args.command[1:] if args.command[:1] == ["--"] else args.command
+        if not argv:
+            parser.error("inspection command required")
+        return inspect_argv(
+            argv,
+            lambda words: scheduler.run(words, wait=None, session_key=args.session_key),
+        )
     if action == "hook":
         try:
             agent = sys.argv[2] if len(sys.argv) > 2 else "codex"
@@ -1081,6 +1095,24 @@ def main():
         parser.error("a command is required after --")
     if args.memory is not None and (not math.isfinite(args.memory) or args.memory <= 0):
         parser.error("--memory must be positive and finite (GB)")
+    if (
+        args.session_key
+        and args.shell_command is not None
+        and args.memory is None
+        and not args.resource
+    ):
+        from inspection import guarded_shell
+
+        guarded = guarded_shell(
+            args.shell_command, str(ROOT / "bin/memcap"), args.session_key
+        )
+        if guarded and args.shell in {"/bin/bash", "/bin/zsh", "/bin/sh"}:
+            os.chdir(Path(args.cwd or os.getcwd()).resolve(strict=True))
+            os.execvpe(
+                args.shell,
+                [args.shell, "-lc" if args.login else "-c", guarded],
+                os.environ,
+            )
     if (
         args.session_key
         and args.shell_command is not None

@@ -158,3 +158,9 @@ sample_fixture() {
   [ "$status" = 75 ]
   assert_contains "$output" 'QUEUE_POLICY must be strict or adaptive'
 }
+
+@test "QUEUE: reported filename expansion and inspection commands avoid heavy reservations" {
+  run python3 "$MEMCAP_ROOT/tests/test_inspection_expansion.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}

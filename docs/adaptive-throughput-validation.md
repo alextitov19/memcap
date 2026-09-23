@@ -1,4 +1,4 @@
-# Adaptive throughput validation — 0.16.0
+# Adaptive throughput validation — 0.16.1
 
 ## Incident and design evidence
 
@@ -82,20 +82,35 @@ passes. The first complete Bats run also failed an old cache-location fixture an
 the changelog version-prefix guard. Both were fixed and their targeted checks
 passed; final full-suite and CI results are recorded with the release.
 
-## Issue coverage and remaining evidence
+## Issue coverage and evidence
+
+After the first adaptive release, local incident transcripts supplied sanitized
+reproductions missing from the numeric reports: bare `*.go` searches, a fixed
+directory-status loop, `ps` diagnostics, and `f=$(rg -l ...); sed ... $f`. Version
+0.16.1 adds an expanded-argument guard for these reads. Raw transcripts, project
+paths and commands are not included in public reports. Some reported scripts also
+contained real builds/deployments; these remain managed, with adaptive admission
+addressing the capacity stall rather than pretending those scripts are all reads.
 
 | Reports | Disposition / evidence |
 | --- | --- |
-| #31, #34, #39 | Sampling moved outside the registry lock; status is read-only. Lock contention tests exercise both boundaries. |
-| #37, #42 | Adaptive mode removes the reproduced strict-budget zero-running stall; five-session throughput and concurrent-run tests cover progress. |
-| #43 | Owner-authorized maintenance exception shared across runtime and installed guidance; regression tests cover both. |
-| #27, #35, #41, #45 | Existing `wait --session` fallback and internal Stop-hook waiting remain tested. A missing native polling tool is not installed by memcap. #45 was reported while paused with zero registry jobs; its actual failed command is not included. |
-| #28–30, #32–33, #38, #40, #44 | Known read/search/status/SSM forms and cached wrappers have regression coverage. Reports omit the exact failing shell command; #44 was collected while paused with zero registry jobs. Unknown syntax cannot honestly be declared fixed from aggregate counters alone. |
-| #36 | Fault-free report-time snapshot cannot establish the earlier measurement failure. Busy/failed sampling now keeps the task registered rather than exiting. A distinct underlying measurement defect still needs a reproduction. |
+| #31, #34, #39 | Sampling outside the registry lock; status is read-only. Lock contention tests exercise both boundaries. |
+| #37, #42 | Adaptive mode removes the reproduced strict-budget zero-running stall; concurrent-run and five-session throughput tests cover progress. |
+| #43 | Owner-authorized maintenance exception shared across runtime and installed guidance. |
+| #27, #35, #41, #45 | Read-only session wait, local Stop-hook waiting, and explicit no-managed-work guidance avoid drain jobs and loops over unmanaged native tasks. Memcap cannot install a missing native polling tool or certify its task outcome. |
+| #28–30, #32–33, #38, #40, #44 | Recovered inspection forms now execute without a reservation after argument validation; SSM control and cached-wrapper regressions remain covered. Actual mixed build scripts retain admission. |
+| #36 | Busy/failed host sampling keeps the waiter registered and retries internally, rather than exiting the task. A report-time fault-free snapshot cannot identify the earlier probe failure; this release fixes the interruption behavior, not every possible OS probe failure. |
 
-Reports without a reproducible failing command remain open for triage instead of
-being closed solely because a nearby scheduling defect was fixed. Report-time
-metrics are evidence of that moment, not necessarily the original incident.
+Report #47 (Docker-ceiling confusion) is additionally covered by shared guidance tests: no
+reservation arithmetic from the ceiling, no promised reclaim by subtracting
+container usage, and no manual hard target applied while the user paused admission.
+
+`test_inspection_expansion.py` exercises real shell expansion and execution with
+sandboxed state, including a filename that expands to an execution option. The
+unsafe command must reach a recording admission fallback without running the
+helper. Safe inspection must preserve output/status and create no queue registry.
+A negative control removed this argv check in a temporary copy: the helper ran
+and the regression failed as intended. Production source was not changed.
 
 ## Migration and limits
 

@@ -22,7 +22,7 @@ import sys
 import tempfile
 import uuid
 
-from report import PERFORMANCE_GUIDANCE, PROTECTION_GUIDANCE
+from report import PERFORMANCE_GUIDANCE, PROTECTION_GUIDANCE, MEMORY_GUIDANCE
 
 SCHEMA = 1
 BEGIN = "<!-- memcap:begin -->"
@@ -56,6 +56,7 @@ This creates no job or reservation. Never invent drain ticks or Bash sleep loops
 output and exit status before dependent work; waiting is not a failed command.
 Do not submit duplicates or repeatedly read unchanged output.
 {PROTECTION_GUIDANCE}
+{MEMORY_GUIDANCE}
 Respect explicit user cancellation. Preserve other sessions' processes and work.
 
 A simulator preparation timeout does not prove memory starvation or failed tests.

@@ -46,6 +46,21 @@ PROTECTION_GUIDANCE = (
     "the live queue. That authorization never extends to other tasks."
 )
 
+MEMORY_GUIDANCE = (
+    "Docker's configured VM ceiling is a limit, not a reservation. VM charged footprint, "
+    "resident memory and container usage are different measurements; never subtract container "
+    "usage from VM footprint and promise that stopping Docker will free that difference. "
+    "Accumulated swap is not current paging activity. Neither the footprint planning target "
+    "nor swap used alone proves a simulator cannot boot. A user-paused queue is not an "
+    "admission refusal: do not impose a manual hard cap from the displayed target. Continue "
+    "authorized work under the user's selected state, using current pressure, available "
+    "memory and device readiness as evidence. Never stop another project's stack or reset "
+    "its device based on those totals, and never resume or change protection yourself. "
+    "Green/yellow is not a guarantee against future pressure growth. "
+    "If memcap wait reports no pending managed work, do not loop on it for an unmanaged "
+    "native background task; use that task's completion notification and final output/status."
+)
+
 PERFORMANCE_GUIDANCE = (
     "You MUST report each observed memcap-caused productivity incident once, without a user reminder, "
     "even if the command eventually succeeds. Use memcap report lightweight-queued whenever ordinary "
