@@ -1812,13 +1812,13 @@ SCRIPT
   unset MC_ACTIVE_MOBILE_TOOLING
   # Narrowed to this test's own fixture -- see the previous test for why.
   # shellcheck disable=SC2034  # consumed by mc_mobile_tooling_pids
-  MC_MOBILE_TOOLING_ARGV_PATTERN='fake-busy\.jar'
+  MC_MOBILE_TOOLING_ARGV_PATTERN="memcap-busy-fixture-$$-$BATS_TEST_NUMBER"
   # shellcheck disable=SC2034  # consumed by mc_mobile_tooling_pids
   MC_MOBILE_TOOLING_EXACT=''
   # A tight loop actually burns CPU, unlike sleep -- this is what a real
   # maestro flow driving a simulator looks like, as opposed to its MCP server
   # idling between requests.
-  perl -e 'my $e=time()+2; while(time()<$e){1+1} sleep 600' ".maestro/lib/fake-busy.jar" & tooling=$!
+  perl -e 'my $e=time()+2; while(time()<$e){1+1} sleep 600' "$MC_MOBILE_TOOLING_ARGV_PATTERN" & tooling=$!
   perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!
   wait_spawned "$tooling" "$sim"
   AGENTPIDS=""
@@ -1866,12 +1866,12 @@ SCRIPT
   # Narrowed to this test's own fixture -- see the two tests above for why the
   # real pattern cannot be used here (this machine runs maestro MCP servers).
   # shellcheck disable=SC2034  # consumed by mc_mobile_tooling_pids
-  MC_MOBILE_TOOLING_ARGV_PATTERN='fake-hysteresis\.jar'
+  MC_MOBILE_TOOLING_ARGV_PATTERN="memcap-hysteresis-fixture-$$-$BATS_TEST_NUMBER"
   # shellcheck disable=SC2034  # consumed by mc_mobile_tooling_pids
   MC_MOBILE_TOOLING_EXACT=''
   # The shape of the real process: matches the maestro pattern, never exits,
   # burns no meaningful CPU between requests.
-  perl -e 'sleep 600' ".maestro/lib/fake-hysteresis.jar" & tooling=$!
+  perl -e 'sleep 600' "$MC_MOBILE_TOOLING_ARGV_PATTERN" & tooling=$!
   perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!
   wait_spawned "$tooling" "$sim"
   AGENTPIDS=""
