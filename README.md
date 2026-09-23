@@ -110,13 +110,15 @@ Optional `--context` distinguishes `repository-search`, `file-read`, `status-che
 `ssm-control`, `remote-control`, `wait-command`, `stop-hook`, and `heavy-work`.
 Deduplication includes this context, so a queued read and a queued wait command
 can produce separate reports even in the same category/version. It accepts only
-these fixed values, never arbitrary notes or commands. Existing consent, five
-submissions/day and uncertain-submission protections still apply.
+these fixed values, never arbitrary notes or commands. Existing consent and
+uncertain-submission protections still apply. Memcap imposes no publication quota
+or retry cooldown.
 
 Omit the duration when unknown. It is labeled agent-reported, not independently
 timed by memcap. Do not report again on every poll of the same incident; keep the
-returned URL and continue the existing task. Deduplication and rate limits still
-apply, so another invocation does not guarantee another GitHub post.
+returned URL and continue the existing task. Deduplication still applies, so another
+invocation does not guarantee another GitHub post. Authentication, GitHub service limits, network errors and uncertain
+submissions can still defer publishing.
 The installed Claude/Codex guidance explains this workflow; refresh it
 with `memcap integrate` and restart sessions to reload Markdown.
 
@@ -155,9 +157,10 @@ Agents should use `queue-stall` for suspected excessive throttling or starvation
 
 Matching category/version/context reports share an issue; a different installation can
 add one sanitized comment. Local locking prevents competing sessions from posting
-duplicates. Limit: five publication attempts per rolling day per installation,
-with a one-hour cooldown after a failed attempt. An uncertain POST is recorded
-before submission and is never blindly repeated. GitHub search indexing and
+duplicates. There is no memcap daily publication cap or retry cooldown, including
+for installations whose existing ledger reached the former five-report allowance.
+The rolling attempt history is retained for diagnostics only. An uncertain POST
+is recorded before submission and is never blindly repeated. GitHub search indexing and
 simultaneous first reports from different Macs can still produce duplicates;
 cross-machine deduplication is best-effort. The reporter never edits or closes
 existing issues, resets devices, changes budgets, or resumes enforcement.

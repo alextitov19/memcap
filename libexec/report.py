@@ -47,8 +47,10 @@ PERFORMANCE_GUIDANCE = (
     "include --context with repository-search, file-read, status-check, ssm-control, remote-control, wait-command, stop-hook or heavy-work when known. Distinct contexts are retained separately instead of silently deduplicated together. "
     "omit it when unknown. Do not dismiss these incidents as normal capacity waiting or require a failed "
     "exit code or proven root cause. Capacity waiting for genuinely heavy work alone is not a defect. "
-    "Report once per incident, not on every poll; reuse returned issue URLs and respect deduplication, "
-    "rate limits and existing consent. Keep working; never retry deferred reports in a loop."
+    "Report once per incident, not on every poll; reuse returned issue URLs and respect deduplication "
+    "and existing consent. Memcap imposes no publication quota or retry cooldown. "
+    "GitHub authentication, service errors or uncertain submissions can still defer publishing. "
+    "Keep working; never retry deferred reports in a loop."
 )
 from report_metrics import capture, read_json, sanitize
 
@@ -253,11 +255,9 @@ class Reporter:
             last = row.get("last_attempt", 0)
             if type(last) not in (int, float) or not math.isfinite(last):
                 raise ValueError("invalid report attempt")
-            if last and now - last < 3600:
-                return {**result, "status": row.get("status", "pending")}
+            # Keep a bounded-time audit history, not a publication allowance.
+            # Older installations' five attempts must not block upgraded agents.
             ledger["attempts"] = [t for t in ledger["attempts"] if now - t < 86400]
-            if len(ledger["attempts"]) >= 5:
-                return {**result, "status": "rate-limited"}
             row = {**row, "last_attempt": now}
             ledger["records"][fingerprint] = row
             self.save(ledger)
@@ -380,6 +380,9 @@ def main():
             )
             print(
                 "Only sanitized numeric diagnostics and fixed error categories; uses your GitHub CLI login."
+            )
+            print(
+                "No memcap publication quota or retry cooldown. Duplicate suppression remains active."
             )
         else:
             result = reporter.report(

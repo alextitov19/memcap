@@ -142,13 +142,13 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(self.reporter.report("queue-lock")["status"], "draft")
         self.assertEqual(len(self.github.issues), 0)
 
-    def test_search_failure_keeps_draft_and_cools_down_without_leaking_error(self):
+    def test_search_failure_keeps_draft_without_imposing_retry_cooldown(self):
         self.reporter.consent(True)
         self.github.fail = "get"
         first = self.reporter.report("measurement")
         self.assertTrue(Path(first["draft"]).exists())
         self.reporter.report("measurement")
-        self.assertEqual(self.github.gets, 1)
+        self.assertEqual(self.github.gets, 2)
         self.assertNotIn("SECRET", json.dumps(first))
         self.assertEqual(len(self.github.issues), 0)
 
@@ -157,7 +157,6 @@ class ReportTests(unittest.TestCase):
         self.github.fail = "post"
         first = self.reporter.report("queue-lock")
         self.assertEqual(first["status"], "submission-uncertain")
-        self.now += 3601
         self.github.fail = ""
         self.assertEqual(
             self.reporter.report("queue-lock")["url"], self.github.issues[0]["html_url"]
@@ -170,27 +169,25 @@ class ReportTests(unittest.TestCase):
         self.github.fail = "post"
         self.reporter.report("queue-lock")
         self.github.issues.clear()
-        self.now += 3601
         self.github.fail = ""
         self.assertEqual(
             self.reporter.report("queue-lock")["status"], "submission-uncertain"
         )
         self.assertEqual(len(self.github.issues), 0)
 
-    def test_daily_limit_spans_categories(self):
+    def test_no_publication_quota_across_categories_or_contexts(self):
         self.reporter.consent(True)
-        for kind in [
-            "queue-lock",
-            "measurement",
-            "integration",
-            "queue-stall",
-            "unexpected-termination",
-        ]:
-            self.reporter.report(kind)
-        self.assertEqual(
-            self.reporter.report("missing-task-poll")["status"], "rate-limited"
-        )
-        self.assertEqual(len(self.github.issues), 5)
+        count = 0
+        for kind in self.mod.KINDS:
+            for context in [None, *sorted(self.mod.CONTEXTS)]:
+                self.assertEqual(
+                    self.reporter.report(kind, context=context)["status"], "published"
+                )
+                count += 1
+        self.assertEqual(len(self.github.issues), count)
+        self.assertGreater(count, 5)
+        self.assertEqual(self.reporter.report("queue-lock")["status"], "deduplicated")
+        self.assertEqual(len(self.github.issues), count)
 
     def test_private_strings_cannot_enter_numeric_facts_or_category(self):
         self.reporter.snapshot = lambda: {
@@ -415,7 +412,6 @@ class ReportTests(unittest.TestCase):
         self.reporter.consent(True)
         self.github.fail = "get"
         self.reporter.report("queue-lock")
-        self.now += 3601
         self.github.fail = ""
         self.assertEqual(self.reporter.report("queue-lock")["status"], "published")
         self.assertEqual(len(self.github.issues), 1)

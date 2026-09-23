@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.15.1 — 2026-09-23
+
+- Remove memcap’s shared five-report daily publication cap and one-hour retry cooldown. Existing ledgers no longer prevent new reports after an upgrade.
+- Keep publishing consent, duplicate suppression, private sanitized drafts, bounded network calls and uncertain-POST protection. No automatic retry loop or replay of saved drafts.
+- Refresh agent guidance and reporting status to explain that memcap has no publication quota; GitHub/network/authentication errors can still defer a report.
+
 ## v0.15.0 — 2026-09-23
 
 - Fix unnecessary 2 GB reservations for multiline and finite file-loop inspection, literal locale/AWS prefixes, Git directory options and SSM control calls. Keep unknown execution and heavy stages managed.
