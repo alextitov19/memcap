@@ -65,6 +65,20 @@ def simple_words(command: str) -> list[str] | None:
 def light_words(words: list[str], glob_checked=False) -> bool:
     if not words:
         return False
+    # Literal, non-executing environment prefixes only. In particular BASH_ENV,
+    # LD_PRELOAD, and arbitrary env options must not open an execution escape.
+    words = list(words)
+    if Path(words[0]).name == "env":
+        words.pop(0)
+    while words and re.fullmatch(
+        r"(?:LC_ALL|LANG|AWS_PROFILE|AWS_REGION|AWS_DEFAULT_REGION|AWS_PAGER)=[^\n]*",
+        words[0],
+    ):
+        if words[0].startswith("AWS_PAGER=") and words[0] != "AWS_PAGER=":
+            return False
+        words.pop(0)
+    if not words:
+        return False
     # A bare glob can expand to execution options such as rg's --pre. Require
     # a literal directory prefix for pathname globs; uncertain patterns queue.
     for word in words:
@@ -77,6 +91,41 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         ):
             return False
     name = Path(words[0]).name
+    if any("__MEMCAP_READ_SUBSTITUTION__" in w for w in words) and name != "aws":
+        # Unquoted substitution can turn an rg argument into --pre, for example.
+        # Only the fixed SSM API operations below may receive these values.
+        return False
+    if name == "aws":
+        args = words[1:]
+        while args and args[0].startswith("--"):
+            if args[0] in {"--no-cli-pager", "--no-cli-auto-prompt"}:
+                args = args[1:]
+            elif (
+                args[0] in {"--profile", "--region", "--output", "--query"}
+                and len(args) > 1
+            ):
+                args = args[2:]
+            else:
+                return False
+        # These are API control calls; remote script contents do not execute on
+        # this host. Interactive sessions and arbitrary AWS transfers still queue.
+        return (
+            len(args) >= 2
+            and args[0] == "ssm"
+            and (
+                args[1]
+                in {
+                    "send-command",
+                    "get-command-invocation",
+                    "list-command-invocations",
+                    "list-commands",
+                }
+                or args[1:3] == ["wait", "command-executed"]
+            )
+        )
+    if name == "git":
+        while len(words) > 2 and words[1] == "-C":
+            words = [words[0]] + words[3:]
     # The diagnostic next steps must remain usable while build capacity is full.
     # Exact read-only forms only: no streaming stats, bootstrap or device changes.
     if name == "xcrun" and words[1:] == ["simctl", "list", "devices", "--json"]:
@@ -129,13 +178,18 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             return True
     if name == "cd" and len(words) == 2:
         return True
-    if name == "sed" and len(words) >= 3 and words[1] == "-n":
-        return bool(re.fullmatch(r"[0-9]+(?:,[0-9]+)?p", words[2])) and all(
-            not word.startswith("-") for word in words[3:]
+    if name == "sleep" and len(words) == 2:
+        return (
+            bool(re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", words[1]))
+            and float(words[1]) <= 60
         )
+    if name == "sed" and len(words) >= 3 and words[1] == "-n":
+        return bool(
+            re.fullmatch(r"(?:[0-9]+|/[^/\n]+/)(?:,(?:[0-9]+|\$))?p", words[2])
+        ) and all(not word.startswith("-") for word in words[3:])
     if name == "memcap" and len(words) >= 2:
         if words[1] == "report":
-            from report import KINDS
+            from report import KINDS, CONTEXTS
 
             if len(words) < 3:
                 return False
@@ -152,6 +206,12 @@ def light_words(words: list[str], glob_checked=False) -> bool:
                 if option == "--dry-run":
                     i += 1
                 elif (
+                    option == "--context"
+                    and i + 1 < len(words)
+                    and words[i + 1] in CONTEXTS
+                ):
+                    i += 2
+                elif (
                     option == "--wait-seconds"
                     and i + 1 < len(words)
                     and re.fullmatch(r"[0-9]{1,6}", words[i + 1])
@@ -164,7 +224,10 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         if words[1] == "wait":
             return (
                 len(words) in (3, 5)
-                and bool(re.fullmatch(r"[a-f0-9]{8,32}", words[2]))
+                and (
+                    words[2] == "--session"
+                    or bool(re.fullmatch(r"[a-f0-9]{8,32}", words[2]))
+                )
                 and (
                     len(words) == 3
                     or (
@@ -214,7 +277,7 @@ def literal_shell(command: str) -> bool:
     i = 0
     while i < len(command):
         c = command[i]
-        if c in "\n\r":
+        if c == "\r":
             return False
         if escaped:
             prefix += c
@@ -245,9 +308,52 @@ def literal_shell(command: str) -> bool:
     return not quote and not escaped
 
 
+def normalized_lines(command: str) -> str:
+    """Normalize separators for classification only; never change execution text.
+
+    Quotes retain literal newlines. A backslash-newline is continuation except
+    inside single quotes. Only an unquoted # at the start of a word is a comment;
+    quotes inside comments must not hide executable lines from classification.
+    """
+    result, quote, i = [], "", 0
+    word_start = True
+    while i < len(command):
+        char = command[i]
+        if char == "#" and not quote and word_start:
+            while i < len(command) and command[i] != "\n":
+                i += 1
+            continue
+        if char == "\\" and quote != "'" and i + 1 < len(command):
+            if command[i + 1] != "\n":
+                result.extend(command[i : i + 2])
+                word_start = False
+            i += 2
+            continue
+        if char in "\"'":
+            if char == quote:
+                quote = ""
+            elif not quote:
+                quote = char
+            word_start = False
+        elif not quote:
+            word_start = char.isspace() or char in "|&;<>()"
+        result.append(" ; " if char == "\n" and not quote else char)
+        i += 1
+    return "".join(result)
+
+
 def light_shell(command: str) -> bool:
     # Recognize a narrow shell grammar solely for lightweight commands. Every
     # stage must qualify. Never evaluate substitutions or reconstruct the input.
+    command = normalized_lines(command)
+    # SSM workflows commonly save a command ID, wait briefly for propagation,
+    # then query it with $(cat /tmp/id). Do not generalize this to arbitrary
+    # substitutions or consumers capable of executing expanded arguments.
+    command = re.sub(
+        r"\$\(\s*cat\s+(?:/(?:[A-Za-z0-9_./-]+)|\./[A-Za-z0-9_./-]+)\s*\)",
+        "__MEMCAP_READ_SUBSTITUTION__",
+        command,
+    )
     if not literal_shell(command):
         return False
     try:
@@ -264,6 +370,9 @@ def light_shell(command: str) -> bool:
     while i < len(tokens):
         token = tokens[i]
         if token in separators:
+            if token == ";" and not words:
+                i += 1
+                continue
             if not light_words(words, glob_checked=True):
                 return False
             words = []
@@ -286,7 +395,11 @@ def light_shell(command: str) -> bool:
             else:
                 words.append(token)
         i += 1
-    return light_words(words, glob_checked=True)
+    return (
+        light_words(words, glob_checked=True)
+        if words
+        else bool(tokens) and tokens[-1] == ";"
+    )
 
 
 def classify_shell(command: str) -> tuple[str, str]:

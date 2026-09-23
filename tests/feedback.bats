@@ -136,3 +136,21 @@ SCRIPT
   [ "$status" = 0 ]
   assert_contains "$output" 'wait-without-marker'
 }
+
+@test "FEEDBACK: existing session receives updated guidance once at its next tool" {
+  hook_event=PreToolUse
+  hook_input > "$BATS_TEST_TMPDIR/input"
+  run bash -c '"$MEMCAP_ROOT/bin/memcap" feedback < "$BATS_TEST_TMPDIR/input"'
+  [ "$status" = 0 ]
+  assert_contains "$output" 'memcap wait --session'
+  assert_contains "$output" '--context'
+  run bash -c '"$MEMCAP_ROOT/bin/memcap" feedback < "$BATS_TEST_TMPDIR/input"'
+  [ "$status" = 0 ]; [ -z "$output" ]
+  # Simulate a session which last saw guidance from a previous installation.
+  for receipt in "$MEMCAP_STATE_HOME"/memcap/job-feedback/guidance-*.receipt; do
+    printf '%s\n' old-version > "$receipt"
+  done
+  run bash -c '"$MEMCAP_ROOT/bin/memcap" feedback < "$BATS_TEST_TMPDIR/input"'
+  [ "$status" = 0 ]
+  assert_contains "$output" 'memcap wait --session'
+}

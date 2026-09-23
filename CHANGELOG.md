@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.15.0 — 2026-09-23
+
+- Fix unnecessary 2 GB reservations for multiline inspection, literal locale/AWS prefixes, Git directory options and SSM control calls. Keep unknown execution and heavy stages managed.
+- Add read-only `memcap wait --session --timeout 60`, avoiding queued shell pipelines for job lookup. Explain cancellation of obsolete owned tasks without abandoning needed work.
+- Refresh running agents’ guidance once per installed version on their next tool call; reclassify newly launched cached automatic wrappers. Existing running supervisors retain their code.
+- Add fixed `--context` report details and include them in deduplication, retaining separate read/wait/remote/Stop-hook incidents without uploading commands or free text.
+- Cover the failures reported in #19, #20, #22, #23 and #24. Real heavy-work capacity waits still honor pressure, total budget, headroom and reservations; snapshots alone do not prove deadlock.
+
 ## v0.14.2 — 2026-09-23
 
 - Require agents to report memcap-caused productivity regressions even when commands succeed: queued lightweight inspection, excessive waiting/starvation, and wasteful polling.

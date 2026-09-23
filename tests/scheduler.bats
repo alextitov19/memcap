@@ -132,3 +132,9 @@ sample_fixture() {
   [ "$status" = 1 ]
   assert_not_contains "$output" 'would kill'
 }
+
+@test "QUEUE: reported productivity regression suite" {
+  run python3 "$MEMCAP_ROOT/tests/test_productivity.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}

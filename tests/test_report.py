@@ -77,6 +77,24 @@ class ReportTests(unittest.TestCase):
             },
         )
 
+    def test_distinct_contexts_survive_dedup_without_uploading_raw_text(self):
+        self.reporter.consent(True)
+        first = self.reporter.report("integration", context="file-read")
+        second = self.reporter.report("integration", context="wait-command")
+        self.assertEqual(first["status"], "published")
+        self.assertEqual(second["status"], "published")
+        self.assertNotEqual(first["draft"], second["draft"])
+        self.assertEqual(
+            self.reporter.report("integration", context="wait-command")["status"],
+            "deduplicated",
+        )
+        self.assertIn(
+            "Activity context: wait-command", Path(second["draft"]).read_text()
+        )
+        with self.assertRaises(ValueError):
+            self.reporter.report("integration", context="SECRET_TOKEN /private/project")
+        self.assertEqual(len(self.github.issues), 2)
+
     def test_no_consent_never_contacts_github_and_exports_only_allowed_facts(self):
         result = self.reporter.report("queue-lock")
         self.assertEqual(result["status"], "draft")

@@ -1772,13 +1772,13 @@ SCRIPT
   # under full-suite load. The pattern itself is spot-checked against a
   # maestro-shaped fixture by its own test above.
   # shellcheck disable=SC2034  # consumed by mc_mobile_tooling_pids
-  MC_MOBILE_TOOLING_ARGV_PATTERN='fake-mcp-server\.jar'
+  MC_MOBILE_TOOLING_ARGV_PATTERN="memcap-idle-fixture-$$-$BATS_TEST_NUMBER"
   # shellcheck disable=SC2034  # consumed by mc_mobile_tooling_pids
   MC_MOBILE_TOOLING_EXACT=''
   # Mimics maestro's MCP server: matches the maestro pattern, never exits,
   # never does meaningful CPU work -- exactly the shape of the real process
   # that reproduced this bug in production.
-  perl -e 'sleep 600' ".maestro/lib/fake-mcp-server.jar" & tooling=$!
+  perl -e 'sleep 600' "$MC_MOBILE_TOOLING_ARGV_PATTERN" & tooling=$!
   perl -e 'sleep 600' "ms-playwright-fixture" & sim=$!
   wait_spawned "$tooling" "$sim"
   AGENTPIDS=""
