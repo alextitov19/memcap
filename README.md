@@ -1359,3 +1359,31 @@ Adaptive mode also prevents tier-2 cleanup solely for exceeding the footprint
 target while pressure is green/yellow. Orphan/ownership/age protections, explicit
 oversized-child limits, idle-helper policy and the pause switch remain in force.
 See [validation and incident coverage](docs/adaptive-throughput-validation.md).
+
+### Inspection and memory interpretation (0.16.1)
+
+Bare filename globs such as `rg -n pattern *.go` and the narrow
+`f=$(rg -l pattern src); sed -n 1,200p $f` form no longer reserve a heavy-job slot.
+The shell expands arguments once; an internal guard checks those exact arguments
+before executing the read. A filename that becomes an execution option (for
+example `--pre=helper.go`) still enters normal admission. Mixed scripts containing
+builds or unknown execution remain managed. Existing automatic wrappers receive
+this reclassification when newly invoked, without resubmitting pending jobs.
+
+Docker’s configured maximum is **not reserved RAM**. Container memory, the VM’s
+charged footprint, and resident host memory measure different things. Subtracting
+container usage from VM footprint does not establish how much quitting Docker
+would free. Accumulated swap is not current swap traffic. Do not stop another
+project’s stack on the strength of those numbers.
+
+When the owner has paused memcap, its displayed planning target is not an
+admission refusal. Agents should continue authorized work under that selected
+state using fresh pressure, available memory and device readiness as evidence.
+Neither a target overage nor accumulated swap alone proves a simulator cannot
+boot; green/yellow pressure does not guarantee future growth will remain safe.
+
+`memcap wait` observes managed jobs only. If it reports no pending work, do not
+loop on it for an unmanaged native background task: use that task’s completion
+notification and read its final output and exit status. Updated hook context
+conveys this guidance to existing sessions on their next hook invocation; an
+already-running supervisor retains its loaded code.

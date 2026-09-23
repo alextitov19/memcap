@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.16.1 — 2026-09-23
+
+- Run reported glob searches and narrow path-query/file-read commands immediately
+  after validating the actual shell-expanded arguments. Execution options still
+  enter normal admission. Newly invoked cached wrappers gain the same behavior.
+- Recognize the reported finite directory-status loop and process diagnostics as
+  lightweight inspection; preserve foreground output and exit status, including
+  127/126 for missing or non-executable tools instead of queue-failure 75.
+- Teach all agent integrations that Docker’s ceiling is not reserved RAM, VM and
+  container figures cannot be subtracted to promise reclaim, and accumulated swap
+  is not current paging. Paused admission is not a refusal to execute.
+- Stop directing agents back to memcap wait when no managed work remains; native
+  background tasks need their own completion notification and final status.
+
 ## v0.16.0 — 2026-09-23
 
 - Add owner-selected adaptive admission: allow green/yellow launches above the

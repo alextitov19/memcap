@@ -6,7 +6,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install tools
-        run: brew install bats-core shellcheck
+        run: brew install bats-core shellcheck ripgrep
       # Bats files MUST be checked one at a time. In a single group invocation
       # shellcheck resolves `source` targets across the whole file list, so a bats file
       # missing its `# shellcheck source=/dev/null` directive still exits 0 — which is

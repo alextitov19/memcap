@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 
-from report import PERFORMANCE_GUIDANCE, PROTECTION_GUIDANCE
+from report import PERFORMANCE_GUIDANCE, PROTECTION_GUIDANCE, MEMORY_GUIDANCE
 
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_GUIDANCE = (
@@ -40,6 +40,8 @@ SESSION_GUIDANCE = (
     "Reports include available machine, memory/load and queue age/blocker metrics; "
     "Never enable reporting on the user's behalf or upload raw logs. "
     + PERFORMANCE_GUIDANCE
+    + " "
+    + MEMORY_GUIDANCE
 )
 BOOT = re.compile(
     r"timed out trying to boot simulator|failed to prepare device.{0,180}impending launch|"
@@ -303,6 +305,8 @@ def guidance(payload, state, refresh=False):
     lines.append(
         "Continue independent work. Do not delete reservations or blindly retry. "
         + PROTECTION_GUIDANCE
+        + " "
+        + MEMORY_GUIDANCE
         + " "
         "Use memcap status and memcap diagnostics for further evidence; correlate timestamps before attributing a failure to memcap."
         " Docker's VM subtotal alone does not explain a queue delay; read the runner's admission reason. "
