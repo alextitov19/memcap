@@ -351,7 +351,7 @@ class SchedulerTests(unittest.TestCase):
     def test_queue_recovers_and_launches_when_pressure_clears(self):
         q = self.queue()
         samples = iter([{**healthy(), "pressure": 4}, healthy()])
-        q.sampler = lambda: next(samples)
+        q.sampler = lambda: next(samples, healthy())
         marker = self.root / "recovered"
         self.assertEqual(
             q.run([sys.executable, "-c", f"open({str(marker)!r},'w').close()"]), 0
@@ -366,7 +366,7 @@ class SchedulerTests(unittest.TestCase):
         q = self.queue()
         q.poll = 1.1
         samples = iter([{**healthy(), "pressure": 4}, healthy()])
-        q.sampler = lambda: next(samples)
+        q.sampler = lambda: next(samples, healthy())
         marker = self.root / "too-late"
         self.assertEqual(
             q.run([sys.executable, "-c", f"open({str(marker)!r},'w').close()"], wait=1),

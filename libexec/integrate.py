@@ -22,7 +22,7 @@ import sys
 import tempfile
 import uuid
 
-from report import PERFORMANCE_GUIDANCE
+from report import PERFORMANCE_GUIDANCE, PROTECTION_GUIDANCE
 
 SCHEMA = 1
 BEGIN = "<!-- memcap:begin -->"
@@ -37,6 +37,13 @@ operating guidance and diagnostics; use `memcap status`, `memcap queue` and
 In the default shared mode, measured Docker, agent and simulator memory count
 toward one total. Docker's VM ceiling is not a reservation or an admission reason.
 Use current queue diagnostics to distinguish capacity, pressure and lock failures.
+QUEUE_POLICY=adaptive treats that total as a planning target and uses fresh pressure,
+physical headroom and staged starts. Yellow is allowed when configured; red stops
+new heavy launches. Strict mode keeps the absolute budget. Neither promises running
+or unmanaged work cannot reach red. Inspect actual admission reasons instead of
+inferring a blocker from Docker's ceiling or charged footprint.
+Old queue supervisors keep their loaded version until their tasks finish. New
+commands use the updated installed runner; do not duplicate old pending work.
 
 Keep polling an existing queued task with TaskOutput block=true timeout=60000 or a
 blocking tool-session poll, once per minute. If unavailable, run
@@ -47,8 +54,8 @@ whose result is no longer needed using native task cancellation, then read its
 final status; never cancel still-needed work or other sessions' tasks.
 This creates no job or reservation. Never invent drain ticks or Bash sleep loops. Continue independent work. Read final
 output and exit status before dependent work; waiting is not a failed command.
-Do not submit duplicates, repeatedly read unchanged output, or disable/raise/bypass
-memcap protection to escape the queue, even in maximum/skip-permissions modes.
+Do not submit duplicates or repeatedly read unchanged output.
+{PROTECTION_GUIDANCE}
 Respect explicit user cancellation. Preserve other sessions' processes and work.
 
 A simulator preparation timeout does not prove memory starvation or failed tests.

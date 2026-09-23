@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.16.0 — 2026-09-23
+
+- Add owner-selected adaptive admission: allow green/yellow launches above the
+  footprint planning target while retaining physical headroom, staged starts,
+  fresh measurement, explicit reservations and red-pressure blocking.
+- Move host sampling out of the shared registry lock; status and wait remain
+  read-only. Busy sampling no longer makes ordinary queue observation contend.
+- Learn private workload estimates from completed sampled runs, allocate workers
+  from shared CPU capacity, and bound large-job fairness drain windows.
+- Keep adaptive watchdog behavior consistent with its planning target; preserve
+  existing termination exclusions and explicitly configured oversized-job limits.
+- Add numeric bounded local events and sanitized policy/paging/sample-age reports.
+  New setup selects adaptive; existing settings and paused state remain untouched.
+
+
+- Scope the agent protection guidance (#43): hook context and diagnostics previously forbade any change to memcap protection, which also blocked explicitly owner-authorized memcap development. Hooks and the integrated profile block now share one wording: never weaken protection to unblock unrelated work; development, testing, releases and installation of memcap itself are permitted only when the user explicitly authorizes them.
+
 ## v0.15.1 — 2026-09-23
 
 - Remove memcap’s shared five-report daily publication cap and one-hour retry cooldown. Existing ledgers no longer prevent new reports after an upgrade.

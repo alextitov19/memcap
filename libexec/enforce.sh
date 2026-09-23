@@ -1632,6 +1632,14 @@ mc_watch() {
     return 1
   fi
 
+  case "${QUEUE_POLICY:-strict}" in
+    strict|adaptive) ;;
+    *)
+      mc_log "watch: refusing unknown QUEUE_POLICY; expected strict or adaptive"
+      mc_finish_pass refused-misconfig
+      return 1
+      ;;
+  esac
   if ! budget_mode=$(mc_budget_mode); then
     mc_finish_pass refused-misconfig
     return 1
@@ -1801,6 +1809,15 @@ mc_watch() {
     if [ "$DOCKER_KB" -lt "$((cap * 1048576))" ] &&
        [ "$(( $(mc_agent_net_kb "$AGENT_KB" "$SIM_KB") + DOCKER_KB ))" -gt "$((cap * 1048576))" ]; then over=1; fi
   fi
+  # Adaptive admission may intentionally exceed the charged-footprint target.
+  # Do not undo it by killing an otherwise protected workload at green/yellow.
+  # Keep all existing ownership, age, orphan and explicit oversized-job gates.
+  if [ "${QUEUE_POLICY:-strict}" = adaptive ]; then
+    case "$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null)" in
+      4) ;; # Red permits the existing narrowly scoped cleanup tier.
+      *) over=0 ;; # Unknown pressure cannot authorize termination either.
+    esac
+  fi
   if [ "$over" = "1" ]; then
     if [ "$initial_fault" = 1 ]; then
       mc_log_throttled tier2-measurement "tier2: declining -- footprint measurement unreliable; safe orphan cleanup remains available"
@@ -1867,7 +1884,9 @@ mc_watch() {
       # test sourcing the modules by hand may not.
       docker_note=""
       [ -n "${drift:-}" ] && docker_note=" -- ${drift}"
-      if [ "$budget_mode" = shared ]; then
+      if [ "${QUEUE_POLICY:-strict}" = adaptive ]; then
+        mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the adaptive ${cap} GB planning target; admission follows pressure, physical headroom and startup demand. Docker footprint is not its resident usage or configured ceiling."
+      elif [ "$budget_mode" = shared ]; then
         mc_log_throttled "combined-over-cap" "watch: combined ${combined_gb} GB exceeds the shared ${cap} GB cap -- measured Docker ${docker_gb} GB, agents net ${agent_net_gb} GB, sims/browser ${sim_gb} GB. New admissions remain constrained; protected or active work may prevent cleanup. Docker's VM ceiling is not a reservation."
         [ "$MC_DRY_RUN" = "1" ] || mc_notify "Over shared ${cap} GB budget: combined ${combined_gb} GB. Inspect measured usage and the runner's admission reason; active work may prevent cleanup."
       elif [ "$over" = "1" ]; then

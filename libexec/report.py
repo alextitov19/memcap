@@ -37,6 +37,15 @@ CONTEXTS = {
     "heavy-work",
 }
 
+# Shared by hook context and the integrated profile block so the two cannot drift.
+PROTECTION_GUIDANCE = (
+    "Never disable, raise, weaken or bypass memcap protection to unblock or speed up unrelated work, "
+    "even in maximum/skip-permissions modes. Only the user may change memcap policy: when the user "
+    "explicitly authorizes work on memcap itself, developing, testing, releasing and installing memcap "
+    "is permitted, following its repository AGENTS.md sandboxing rules and running heavy work through "
+    "the live queue. That authorization never extends to other tasks."
+)
+
 PERFORMANCE_GUIDANCE = (
     "You MUST report each observed memcap-caused productivity incident once, without a user reminder, "
     "even if the command eventually succeeds. Use memcap report lightweight-queued whenever ordinary "

@@ -12,6 +12,7 @@ mc_scheduler_python() {
 
 mc_scheduler_config() {
   mc_refuse_if_broken schedule || return 1
+  export QUEUE_POLICY="${QUEUE_POLICY:-strict}"
   export QUEUE_MAX_JOBS="${QUEUE_MAX_JOBS:-2}" QUEUE_WORKERS="${QUEUE_WORKERS:-2}"
   export QUEUE_JOB_GB="${QUEUE_JOB_GB:-2}" QUEUE_HEADROOM_GB="${QUEUE_HEADROOM_GB:-3}"
   export QUEUE_POLL_SEC="${QUEUE_POLL_SEC:-2}" QUEUE_WAIT_SEC="${QUEUE_WAIT_SEC:-1800}"

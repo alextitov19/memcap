@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 
-from report import PERFORMANCE_GUIDANCE
+from report import PERFORMANCE_GUIDANCE, PROTECTION_GUIDANCE
 
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_GUIDANCE = (
@@ -21,13 +21,17 @@ SESSION_GUIDANCE = (
     "If TaskOutput/tool polling is unavailable, run memcap wait JOB_ID --timeout 60 using the existing ID from memcap queue; do not create drain ticks or Bash sleep loops. "
     "Use memcap wait --session --timeout 60 to wait on this agent process's finite jobs without any job-ID lookup pipeline. Cancel an owned obsolete background task using native task cancellation; never cancel still-needed work or other sessions' tasks. "
     "Poll once per minute while pending; avoid repeated output-file reads and holding messages. Wait for final output and "
-    "exit status; continue independent work while waiting. Do not submit duplicates "
-    "or bypass/change memcap protection. Respect explicit cancellation. A simulator "
+    "exit status; continue independent work while waiting. Do not submit duplicates. "
+    + PROTECTION_GUIDANCE
+    + " Respect explicit cancellation. A simulator "
     "boot timeout is not proof of memory starvation or a failed test assertion. "
     "Check memcap status and device readiness before retrying; keep tests unverified "
     "until they execute. Never reset a device used by another session."
     " Docker's VM subtotal alone does not explain a queue delay; use the runner's "
-    "admission reason. Do not use memcap off or killall Docker to unblock work. "
+    "admission reason. Adaptive policy uses pressure, physical headroom and staged starts; "
+    "its footprint target is soft. Strict policy retains the absolute budget. "
+    "New commands pick up the installed runner; existing supervisors retain their loaded version until finished. "
+    "Do not use memcap off or killall Docker to unblock work. "
     "Inspect docker stats --no-stream and docker buildx ls, and establish ownership "
     "before cleanup; preserve other sessions' containers and deployments."
     " For suspected memcap defects, use memcap report CATEGORY once: queue-lock, measurement, "
@@ -297,7 +301,9 @@ def guidance(payload, state, refresh=False):
             "If the command already finished, inspect its result instead of polling a dead task."
         )
     lines.append(
-        "Continue independent work. Do not bypass/change memcap protection, delete reservations, or blindly retry. "
+        "Continue independent work. Do not delete reservations or blindly retry. "
+        + PROTECTION_GUIDANCE
+        + " "
         "Use memcap status and memcap diagnostics for further evidence; correlate timestamps before attributing a failure to memcap."
         " Docker's VM subtotal alone does not explain a queue delay; read the runner's admission reason. "
         "Inspect docker stats --no-stream, docker ps and docker buildx ls before attributing usage to a builder. "

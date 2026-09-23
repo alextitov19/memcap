@@ -3965,3 +3965,36 @@ EOS
     return 1
   }
 }
+
+@test "ADAPTIVE: green and yellow footprint excess never trigger tier 2; red retains gates" {
+  for pressure in 1 2 4 0; do
+    run env QUEUE_POLICY=adaptive BUDGET_MODE=shared TOTAL_BUDGET_GB=10 DOCKER_BUDGET_GB=0 fixture_pressure="$pressure" bash -c "
+      for module in common config budget detect measure classify roots status enforce; do
+        source '$MEMCAP_ROOT/libexec/'\"\$module\"'.sh'
+      done
+      sysctl() {
+        case \"\$*\" in
+          '-n kern.memorystatus_vm_pressure_level') echo \"\$fixture_pressure\" ;;
+          '-n hw.memsize') echo 25769803776 ;;
+          *) command sysctl \"\$@\" ;;
+        esac
+      }
+      mc_snapshot_capture() {
+        MC_CAPTURE_SNAPSHOT='9001 1 12000000 /usr/local/bin/claude'
+        MC_MEASURE_FAULT=0
+        MC_MEASURE_DEGRADED=0
+      }
+      mc_free_pct() { echo 30; }
+      mc_kill_over_budget() { echo TIER2_SELECTED; }
+      mc_record_roots() { :; }
+      mc_reap_orphans() { :; }
+      mc_watch
+    "
+    [ "$status" = 0 ] || return 1
+    if [ "$pressure" = 4 ]; then
+      assert_contains "$output" TIER2_SELECTED
+    else
+      assert_not_contains "$output" TIER2_SELECTED
+    fi
+  done
+}

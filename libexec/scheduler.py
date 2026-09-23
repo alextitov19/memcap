@@ -22,6 +22,10 @@ import tempfile
 import time
 import uuid
 
+from admission import advance, decide
+from scheduler_metrics import append_event, shared_sample
+from workload_estimates import fingerprint, record as record_estimate
+
 from scheduler_policy import (
     hook_response,
     polling_loop,
@@ -132,7 +136,12 @@ class Scheduler:
         headroom_gb=3,
         poll=2,
         max_pressure="green",
+        policy="strict",
     ):
+        if policy not in ("strict", "adaptive"):
+            raise QueueError("QUEUE_POLICY must be strict or adaptive")
+        self.policy = policy
+        self.controller = {}
         self.directory = Path(directory)
         self.sampler = sampler
         self.max_jobs = max_jobs
@@ -225,10 +234,9 @@ class Scheduler:
             if os.path.exists(filename):
                 os.unlink(filename)
 
-    def measure(self, data):
-        # Called under the registry lock: one full host sample per two seconds,
-        # regardless of waiter count. Reservations are reconciled on every attempt.
-        # Injected measurement providers retain their own freshness semantics.
+    def measure(self, data=None):
+        # Never called under the admission lock. The independent nonblocking
+        # sample lock elects one probe for all supervisors, including running jobs.
         if self.sampler is not sample_host:
             return self.sampler()
         config = (
@@ -242,23 +250,117 @@ class Scheduler:
                 sorted(
                     (k, v)
                     for k, v in os.environ.items()
-                    if k.startswith(("MC_", "MEMCAP_"))
+                    if k.startswith(("MC_", "MEMCAP_", "QUEUE_"))
+                    and k != "MEMCAP_QUEUE_LEASE"
                 )
             ).encode()
         ).hexdigest()
-        cached = data.get("measurement", {})
-        now = time.monotonic()
+        try:
+            return shared_sample(self.directory, signature, self.sampler)
+        except (QueueError, OSError, ValueError, subprocess.SubprocessError):
+            return {"fault": True, "pressure": 0, "monotonic": time.monotonic()}
+
+    def observe(self, data, sample):
+        if not sample or sample.get("busy"):
+            self.controller = {**data.get("controller", {}), "now": time.monotonic()}
+            return
+        self.controller = advance(data.get("controller", {}), sample, time.monotonic())
+        data["controller"] = self.controller
+        data["policy"] = self.policy
+        for job in data["jobs"]:
+            if job["status"] != "running" or not job["members"]:
+                continue
+            stamp = sample.get("monotonic", time.monotonic())
+            if stamp <= job.get("last_observation", job.get("start_monotonic", 0)):
+                continue
+            job["last_observation"] = stamp
+            footprints = sample.get("footprints", {})
+            if sample.get("fault") or not all(p in footprints for p in job["members"]):
+                job["learning_incomplete"] = True
+                continue
+            measured = sum(footprints[p] for p in job["members"])
+            job["observed_peak_kb"] = max(job.get("observed_peak_kb", 0), measured)
+            job["sample_count"] = job.get("sample_count", 0) + 1
+
+    def allocation(self, jobs):
+        if self.policy == "strict":
+            return self.workers
+        contenders = max(1, len({self.session_bucket(j) for j in jobs}))
+        pool = max(1, (os.cpu_count() or 2) - 2)
+        occupied = sum(
+            j.get("workers", self.workers)
+            for j in jobs
+            if j["status"] == "running" and not j["resource"]
+        )
+        return max(1, min(self.workers, pool // contenders, pool - occupied))
+
+    def demand(self, argv, cwd, workers, data):
+        # Executable identity plus dependency manifests invalidate estimates on
+        # tool/dependency changes; worker count conditions the learned peak.
+        import shutil
+
+        words = argv
         if (
-            isinstance(cached, dict)
-            and cached.get("key") == signature
-            and isinstance(cached.get("at"), (int, float))
-            and 0 <= now - cached["at"] < 2
-            and isinstance(cached.get("sample"), dict)
+            len(argv) >= 3
+            and Path(argv[0]).name in {"bash", "zsh", "sh"}
+            and argv[1] in {"-c", "-lc"}
         ):
-            return cached["sample"]
-        sample = self.sampler()
-        data["measurement"] = dict(key=signature, at=time.monotonic(), sample=sample)
-        return sample
+            words = simple_words(argv[2]) or argv
+        executable = shutil.which(words[0]) or words[0]
+        try:
+            info = Path(executable).stat()
+            version = [info.st_size, info.st_mtime_ns]
+        except OSError:
+            version = []
+        manifests = {}
+        for name in (
+            "package-lock.json",
+            "pnpm-lock.yaml",
+            "yarn.lock",
+            "go.sum",
+            "Cargo.lock",
+        ):
+            path = cwd / name
+            if path.is_file():
+                manifests[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        secret = data.setdefault("estimate_secret", os.urandom(32).hex())
+        key = fingerprint(
+            dict(
+                argv=argv,
+                cwd=str(cwd),
+                executable=executable,
+                version=version,
+                workers=workers,
+                manifests=manifests,
+                cache_state={
+                    name: (cwd / name).exists()
+                    for name in ("node_modules", "target", ".build", "build")
+                },
+            ),
+            bytes.fromhex(secret),
+        )
+        # Opaque commands retain the configured prior. Recognized small tool
+        # families get a smaller startup allowance, never a zero-cost bypass.
+        tool = Path(words[0]).name
+        prior = (
+            min(self.memory_kb, GIB)
+            if tool
+            in {
+                "go",
+                "tsc",
+                "eslint",
+                "prettier",
+                "jest",
+                "vitest",
+                "python",
+                "python3",
+            }
+            else self.memory_kb
+        )
+        if tool in {"xcodebuild", "swift"}:
+            prior = max(prior, 4 * GIB)
+        row = data.get("estimates", {}).get(key, {})
+        return key, row.get("estimate_kb", prior)
 
     def refresh(self, data, table):
         live = []
@@ -299,44 +401,47 @@ class Scheduler:
             job.get("elastic") is True
             and not job.get("orphaned")
             and job["members"]
-            and all(p in sample["footprints"] for p in job["members"])
+            and all(p in sample.get("footprints", {}) for p in job["members"])
         ):
             peak = max(measured, job.get("observed_peak_kb", 0))
             job["observed_peak_kb"] = peak
             if 30 <= time.time() - job.get("started", time.time()):
-                reserve = min(reserve, max(GIB // 2, int(peak * 1.25)))
+                reserve = max(GIB // 2, int(peak * 1.25))
+            else:
+                reserve = max(reserve, int(peak * 1.25))
         return max(reserve, measured)
 
     def admissible(self, jobs, memory, resource, sample):
-        try:
-            if sample["fault"] or sample["pressure"] not in self.allowed_pressure:
-                return False, "host pressure or unreliable memory measurement"
-            if any(sample[k] < 0 for k in ("cap_kb", "tracked_kb", "available_kb")):
-                return False, "invalid memory measurement"
-            active = [j for j in jobs if j["status"] == "running"]
-            if not resource and sum(not j["resource"] for j in active) >= self.max_jobs:
-                return False, "all finite-job slots occupied"
-            accounted = sample["tracked_kb"]
-            # Unallocated portions of reservations also consume host headroom.
-            outstanding = 0
-            counted = set(map(str, sample["tracked_pids"]))
-            for job in active:
-                measured = sum(sample["footprints"].get(p, 0) for p in job["members"])
-                already = sum(
-                    sample["footprints"].get(p, 0)
-                    for p in job["members"]
-                    if p in counted
+        for job in jobs:
+            if job["status"] == "running":
+                measured = sum(
+                    sample.get("footprints", {}).get(p, 0) for p in job["members"]
                 )
-                reserve = self.reservation(job, sample, measured)
-                accounted += reserve - already
-                outstanding += max(0, reserve - measured)
-            if accounted + memory > sample["cap_kb"]:
-                return False, "combined budget reserved or in use"
-            if sample["available_kb"] - outstanding - memory < self.headroom_kb:
-                return False, "preserving host memory headroom"
-            return True, "capacity available"
-        except (KeyError, TypeError, ValueError):
-            return False, "invalid memory measurement"
+                job["reservation_kb"] = self.reservation(job, sample, measured)
+        decision = decide(
+            dict(
+                mode=self.policy,
+                max_jobs=self.max_jobs,
+                headroom_kb=self.headroom_kb,
+                allowed_pressure=self.allowed_pressure,
+            ),
+            sample,
+            self.controller,
+            jobs,
+            dict(memory_kb=memory, resource=resource),
+        )
+        reasons = {
+            "available": "capacity available",
+            "budget": "combined budget reserved or in use",
+            "headroom": "preserving host memory headroom",
+            "slots": "all finite-job slots occupied",
+            "pressure_or_measurement": "host pressure or unreliable memory measurement",
+            "measurement": "invalid memory measurement",
+            "paging": "sustained paging recovery",
+            "stabilizing": "observing pressure recovery",
+            "startup": "observing previous startup",
+        }
+        return decision["allow"], reasons[decision["reason"]]
 
     @staticmethod
     def session_bucket(job):
@@ -357,6 +462,7 @@ class Scheduler:
             age = now - job.get("enqueued", now)
             if (
                 age >= 60
+                and (self.policy == "strict" or age % 30 < 6)
                 and any(j["status"] == "running" and not j["resource"] for j in jobs)
             ) or self.admissible(jobs, job["memory_kb"], job["resource"], sample)[0]:
                 return job["id"]
@@ -415,6 +521,7 @@ class Scheduler:
         old_handlers = {}
         child = None
         registered = False
+        estimate_key = ""
         try:
             for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                 old_handlers[sig] = signal.signal(sig, self.handle_signal)
@@ -443,6 +550,9 @@ class Scheduler:
                     raise QueueError(
                         "64 jobs already waiting; batch submissions instead of adding more runners"
                     )
+                workers = self.allocation(data["jobs"])
+                if self.policy == "adaptive" and memory_gb is None:
+                    estimate_key, memory = self.demand(argv, cwd, workers, data)
                 data["jobs"].append(
                     {
                         "id": ident,
@@ -454,6 +564,9 @@ class Scheduler:
                         "resource": resource,
                         "cwd": str(cwd),
                         "memory_kb": memory,
+                        "workers": workers,
+                        "estimate_key": estimate_key,
+                        "scheduler_version": 2,
                         "elastic": memory_gb is None,
                         "enqueued": time.time(),
                         "label": Path(argv[0]).name,
@@ -475,8 +588,14 @@ class Scheduler:
                         file=sys.stderr,
                     )
                     return 75
+                sample = (
+                    self.measure()
+                    if not (self.directory.parent / "paused").exists()
+                    else {}
+                )
                 with self.locked() as data:
                     self.refresh(data, processes())
+                    self.observe(data, sample)
                     job = next(j for j in data["jobs"] if j["id"] == ident)
                     active_resource = next(
                         (
@@ -499,8 +618,7 @@ class Scheduler:
                         allowed, reason = True, "memcap is paused"
                     else:
                         try:
-                            sample = self.measure(data)
-                            if memory > sample["cap_kb"]:
+                            if sample.get("cap_kb") and memory > sample["cap_kb"]:
                                 raise QueueError(
                                     "job reservation exceeds the entire budget; split the job"
                                 )
@@ -572,6 +690,9 @@ class Scheduler:
                                 "host pressure or unreliable memory measurement": "pressure_or_measurement",
                                 "host pressure or unreliable pressure measurement": "pressure_or_measurement",
                                 "invalid memory measurement": "measurement",
+                                "sustained paging recovery": "paging",
+                                "observing pressure recovery": "stabilizing",
+                                "observing previous startup": "startup",
                                 "waiting for earlier queued work": "fairness",
                                 "waiting for another session’s turn or an aged job to fit": "fairness",
                             }.get(reason, "unknown"),
@@ -596,11 +717,43 @@ class Scheduler:
                     time.sleep(self.poll)
             while True:
                 result = child.poll()
+                sample = (
+                    self.measure()
+                    if result is None or self.policy == "adaptive"
+                    else {}
+                )
                 with self.locked() as data:
                     self.refresh(data, processes())
                     job = next(j for j in data["jobs"] if j["id"] == ident)
+                    self.observe(data, sample)
                     job["cancel"] = bool(self.cancelled)
                     members = dict(job["members"])
+                    if result is not None and not members:
+                        key = job.get("estimate_key")
+                        if (
+                            key
+                            and not self.cancelled
+                            and result == 0
+                            and not job.get("learning_incomplete")
+                            and job.get("sample_count", 0) >= 2
+                        ):
+                            history = data.setdefault("estimates", {})
+                            history[key] = record_estimate(
+                                history.get(key, {"estimate_kb": job["memory_kb"]}),
+                                job.get("observed_peak_kb", 0),
+                                complete=True,
+                            )
+                            while len(history) > 256:
+                                del history[next(iter(history))]
+                        append_event(
+                            self.directory,
+                            dict(
+                                event="completed",
+                                exit_code=abs(result),
+                                runtime_ms=int((time.time() - job["started"]) * 1000),
+                                peak_kb=job.get("observed_peak_kb", 0),
+                            ),
+                        )
                     self.save(data)
                 if self.cancelled:
                     subprocess.run(
@@ -630,8 +783,26 @@ class Scheduler:
                 signal.signal(sig, handler)
 
     def launch(self, argv, cwd, job, data):
-        argv = worker_argv(argv, cwd, self.workers)
-        env = worker_environment(dict(os.environ), self.workers)
+        workers = min(job.get("workers", self.workers), self.allocation(data["jobs"]))
+        # A smaller final allocation is safe, but do not teach a larger-worker
+        # profile using the smaller run's peak.
+        if workers != job.get("workers", workers):
+            job["estimate_key"] = ""
+        job["workers"] = workers
+        if (
+            len(argv) >= 3
+            and Path(argv[0]).name in {"bash", "zsh", "sh"}
+            and argv[1] in {"-c", "-lc"}
+        ):
+            words = simple_words(argv[2])
+            if words:
+                import shlex
+
+                argv = (
+                    argv[:2] + [shlex.join(worker_argv(words, cwd, workers))] + argv[3:]
+                )
+        argv = worker_argv(argv, cwd, workers)
+        env = worker_environment(dict(os.environ), workers)
         env["MEMCAP_QUEUE_LEASE"] = job["id"]
         read_fd, write_fd = os.pipe()
         try:
@@ -659,11 +830,22 @@ class Scheduler:
             job.update(
                 status="running",
                 started=time.time(),
+                start_monotonic=time.monotonic(),
                 group=child.pid,
                 members={str(child.pid): leader["start"]},
             )
             self.record_turn(data, job)
+            data.setdefault("controller", {})["last_start"] = time.monotonic()
             self.save(data)
+            append_event(
+                self.directory,
+                dict(
+                    event="admitted",
+                    workers=workers,
+                    request_kb=job["memory_kb"],
+                    queue_wait_ms=int((time.time() - job["enqueued"]) * 1000),
+                ),
+            )
             os.write(write_fd, b"1")
             return child
         finally:
@@ -677,10 +859,16 @@ class Scheduler:
     def status(self):
         if not self.directory.exists():
             return []
-        with self.locked() as data:
+        try:
+            data = json.loads((self.directory / "jobs.json").read_text())
             self.refresh(data, processes())
-            self.save(data)
             return data["jobs"]
+        except FileNotFoundError:
+            return []
+        except (ValueError, KeyError, TypeError) as exc:
+            raise QueueError(
+                "queue registry is damaged; refusing to discard reservations"
+            ) from exc
 
     def wait_for(self, ident, timeout):
         if (
@@ -793,6 +981,7 @@ def main():
         headroom_gb=env_number("QUEUE_HEADROOM_GB", 3),
         poll=env_number("QUEUE_POLL_SEC", 2),
         max_pressure=os.environ.get("QUEUE_MAX_PRESSURE", "green"),
+        policy=os.environ.get("QUEUE_POLICY", "strict"),
     )
     action = sys.argv[1]
     if action == "hook":
@@ -843,8 +1032,10 @@ def main():
                 j["status"] == "running" and bool(j["resource"]) for j in jobs
             )
             waiting = sum(j["status"] == "waiting" for j in jobs)
+            legacy = sum(j.get("scheduler_version", 1) < 2 for j in jobs)
             print(
-                f"{running} running / {scheduler.max_jobs} slots, {waiting} queued, {resources} resources"
+                f"{running} running / {scheduler.max_jobs} slots, {waiting} queued, {resources} resources; "
+                f"policy={scheduler.policy}, {legacy} legacy supervisors (drain existing tasks)"
             )
         elif sys.argv[2:] == ["--json"]:
             print(json.dumps(jobs))
@@ -884,16 +1075,7 @@ def main():
             raise QueueError(POLL_GUIDANCE)
         if argv:
             raise QueueError("choose a command or --shell-command, not both")
-        words = simple_words(args.shell_command)
         command = args.shell_command
-        if words:
-            import shlex
-
-            limited = worker_argv(
-                words, Path(args.cwd or os.getcwd()), scheduler.workers
-            )
-            if limited != words:
-                command = shlex.join(limited)
         argv = [args.shell, "-lc" if args.login else "-c", command]
     if not argv:
         parser.error("a command is required after --")
