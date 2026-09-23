@@ -345,7 +345,9 @@ obsolete because its result is no longer needed, cancel that specific task using
 the agent tool's native cancellation, then read its final status. Still-needed
 work must keep waiting; never cancel another session's work.
 
-Multiline read/search pipelines, literal locale/AWS environment prefixes,
+Multiline read/search pipelines, the bounded literal-file inspection loop
+(`for f in files; do [ -f $f ] && { reads; }; done`, at most 16 files),
+literal locale/AWS environment prefixes,
 `git -C` inspection, bounded `sleep` delays, and SSM send/get/list/wait control calls no longer reserve
 build slots. This classification concerns local memory only; normal command
 permissions still apply. The SSM path also accepts a literal `$(cat /tmp/id)`

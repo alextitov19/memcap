@@ -22,14 +22,15 @@ with a short propagation delay and `$(cat /tmp/id)` to read its command ID. Both
 now classify as lightweight. Regression tests use disposable names and remote
 `true` payloads; no private command text is included in the repository.
 
-The first larger inspection script also contained a shell loop. Arbitrary loops
-remain conservative; direct reads and the reported follow-up inspection pipeline
-are covered. Queued job-ID lookup pipelines are replaced by `wait --session`.
+The first larger inspection script also contained a finite file loop. Its narrow
+`for file in literal-files; test -f; read` idiom is now recognized, with at most
+16 literal filenames and independently checked read-only bodies. Arbitrary loops
+remain conservative. Queued job-ID lookup pipelines are replaced by `wait --session`.
 
 ## Changes and boundaries
 
 - Classify literal multiline inspection, safe environment prefixes, Git `-C`, and
-  specific SSM control calls without workload reservations, including a literal
+  the reported finite file-inspection loop and specific SSM control calls without workload reservations, including a literal
   command-ID file read and bounded propagation sleep in the reported workflow. Every shell stage
   must qualify; arbitrary substitutions, preprocessor execution, mixed builds, transfers
   and interactive SSM sessions retain admission.
@@ -58,9 +59,9 @@ at 0.5 seconds. No real Docker/process state or memory policy was changed.
 | Version | Classification | Median completion | Range |
 | --- | --- | --- | --- |
 | v0.14.2 | workload, default 2 GB request | 0.730 s | 0.722–0.833 s |
-| v0.15.0 | lightweight, no request | 0.106 s | 0.102–0.115 s |
+| v0.15.0 | lightweight, no request | 0.092 s | 0.089–0.209 s |
 
-This demonstrates removal of the simulated capacity wait (~6.9× in this fixture),
+This demonstrates removal of the simulated capacity wait (~7.9× in this fixture),
 not a predicted speedup for real AWS calls or builds. The six-case classification
 check improves from one to six lightweight results. Under permanently insufficient
 headroom the old classified workloads would continue waiting; the new lightweight

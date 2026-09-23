@@ -19,6 +19,7 @@ class ProductivityTests(unittest.TestCase):
     def test_light_wrappers_never_enter_workload_queue(self):
         commands = [
             "LC_ALL=C rg -n vendor server/",
+            'cat README.md; for f in .env .env.production; do [ -f $f ] && { echo "-- $f"; rg -o "^(EXAMPLE_KEY)=(.{0,12})" -r \'$1=$2\' $f; }; done',
             "env AWS_PROFILE=dev AWS_REGION=us-east-1 aws ssm get-command-invocation --command-id example --instance-id i-example",
             "aws --profile dev --region us-east-1 ssm send-command --document-name AWS-RunShellScript --parameters 'commands=[\"true\"]' --instance-ids i-example",
             "aws ssm wait command-executed --command-id example --instance-id i-example",
@@ -56,6 +57,12 @@ class ProductivityTests(unittest.TestCase):
     def test_unknown_execution_stays_managed(self):
         for command in [
             "LC_ALL=C npm test",
+            "for f in .env; do [ -f $f ] && { npm test; }; done",
+            "for f in --pre=worker; do [ -f $f ] && { rg x $f; }; done",
+            "for f in .env; do [ -f $f ] && { rg --pre $f x file; }; done",
+            "for f in .env; do [ -f $f ] && { $f; }; done",
+            'for f in .env; do [ -f $f ] && { echo "$(npm test)"; }; done',
+            'echo "prefix; for f in .env; do [ -f $f ] && { cat x; }; done',
             "BASH_ENV=/tmp/evil rg x .",
             'env -S "npm test"',
             "aws s3 sync s3://example .",

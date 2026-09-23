@@ -342,10 +342,68 @@ def normalized_lines(command: str) -> str:
     return "".join(result)
 
 
+def light_file_loop(command: str) -> bool:
+    """Recognize the reported finite 'for file; test -f; read' idiom only.
+
+    Literal filenames cannot become options or shell syntax. Checking the prefix
+    and body independently also proves the matched loop boundaries are unquoted.
+    No loop runs during classification, and arbitrary shell loops still queue.
+    """
+    match = re.fullmatch(
+        r"(?P<prefix>.*?)(?:^|;)\s*for (?P<var>[A-Za-z_][A-Za-z0-9_]*) in "
+        r"(?P<files>[A-Za-z0-9_./ -]+);\s*do\s+\[ -f \$(?P=var) \] && \{ "
+        r"(?P<body>.*);\s*\};\s*done\s*;?\s*",
+        command,
+        re.S,
+    )
+    if not match:
+        return False
+    prefix, variable, files, body = (
+        match[k] for k in ("prefix", "var", "files", "body")
+    )
+    files = files.split()
+    if not 1 <= len(files) <= 16 or any(f.startswith("-") for f in files):
+        return False
+    if prefix.strip() and not light_shell(prefix):
+        return False
+    # No nested loops; each literal filename is checked independently. Preserve
+    # single-quoted regex replacement strings such as '$1=$2'.
+    if re.search(r"\bfor\s", body):
+        return False
+    for filename in files:
+        expanded, quote, i = [], "", 0
+        while i < len(body):
+            char = body[i]
+            if char == "\\" and quote != "'" and i + 1 < len(body):
+                expanded.append(body[i : i + 2])
+                i += 2
+                continue
+            if char in "\"'":
+                if char == quote:
+                    quote = ""
+                elif not quote:
+                    quote = char
+            if quote != "'" and char == "$":
+                reference = re.match(
+                    r"\$(?:" + variable + r"\b|\{" + variable + r"\})", body[i:]
+                )
+                if reference:
+                    expanded.append(filename)
+                    i += len(reference[0])
+                    continue
+            expanded.append(char)
+            i += 1
+        if not light_shell("".join(expanded)):
+            return False
+    return True
+
+
 def light_shell(command: str) -> bool:
     # Recognize a narrow shell grammar solely for lightweight commands. Every
     # stage must qualify. Never evaluate substitutions or reconstruct the input.
     command = normalized_lines(command)
+    if light_file_loop(command):
+        return True
     # SSM workflows commonly save a command ID, wait briefly for propagation,
     # then query it with $(cat /tmp/id). Do not generalize this to arbitrary
     # substitutions or consumers capable of executing expanded arguments.

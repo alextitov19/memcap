@@ -2,7 +2,7 @@
 
 ## v0.15.0 — 2026-09-23
 
-- Fix unnecessary 2 GB reservations for multiline inspection, literal locale/AWS prefixes, Git directory options and SSM control calls. Keep unknown execution and heavy stages managed.
+- Fix unnecessary 2 GB reservations for multiline and finite file-loop inspection, literal locale/AWS prefixes, Git directory options and SSM control calls. Keep unknown execution and heavy stages managed.
 - Add read-only `memcap wait --session --timeout 60`, avoiding queued shell pipelines for job lookup. Explain cancellation of obsolete owned tasks without abandoning needed work.
 - Refresh running agents’ guidance once per installed version on their next tool call; reclassify newly launched cached automatic wrappers. Existing running supervisors retain their code.
 - Add fixed `--context` report details and include them in deduplication, retaining separate read/wait/remote/Stop-hook incidents without uploading commands or free text.
