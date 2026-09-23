@@ -123,6 +123,34 @@ class DiagnosticTests(unittest.TestCase):
         self.assertIn("TaskOutput", text)
         probe.assert_not_called()
 
+    def test_queue_feedback_requires_reporting_lightweight_latency_even_after_success(
+        self,
+    ):
+        # A formerly queued inspection can finish successfully. The delay still
+        # needs a report, including when TaskOutput lacks the original command.
+        for event in ("PostToolUse", "PostToolUseFailure"):
+            for output in (
+                "memcap: queued abcd1234: preserving host memory headroom.",
+                "memcap: admitted abcd1234; command started.\nSearch done. exit code 0",
+            ):
+                with self.subTest(event=event, output=output):
+                    payload = self.payload(output, event)
+                    payload["tool_input"] = {"command": "rg 'SECRET' /private/project"}
+                    with patch.object(self.mod, "measure", return_value=[]):
+                        text = self.mod.guidance(payload, self.root)
+                    self.assertIn("MUST report", text)
+                    self.assertIn("memcap report lightweight-queued", text)
+                    self.assertIn("even if", text)
+                    self.assertNotIn("SECRET", text)
+
+    def test_normal_success_output_does_not_trigger_a_performance_report(self):
+        with patch.object(self.mod, "measure") as probe:
+            self.assertEqual(
+                self.mod.guidance(self.payload("Search complete, exit 0"), self.root),
+                "",
+            )
+            probe.assert_not_called()
+
     def test_background_task_output_gets_the_same_diagnostic(self):
         p = self.payload("")
         p["tool_response"] = {

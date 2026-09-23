@@ -54,3 +54,17 @@ setup() { setup_common; export MC_DRY_RUN=1; }
   run "$MEMCAP_ROOT/bin/memcap" report status
   assert_contains "$output" 'disabled'
 }
+
+@test "REPORT: performance report CLI includes observed wait without queueing" {
+  run "$MEMCAP_ROOT/bin/memcap" report lightweight-queued --wait-seconds 120 --dry-run
+  [ "$status" = 0 ]
+  assert_contains "$output" 'draft'
+  [ ! -d "$MEMCAP_STATE_HOME/memcap/queue" ]
+  run cat "$MEMCAP_STATE_HOME"/memcap/reports/*.md
+  assert_contains "$output" '"agent_reported_wait_seconds": 120'
+  run "$MEMCAP_ROOT/bin/memcap" report queue-stall --wait-seconds -1
+  [ "$status" = 2 ]
+  run "$MEMCAP_ROOT/bin/memcap" report enable --wait-seconds 120
+  [ "$status" = 2 ]
+  [ ! -f "$MEMCAP_CONFIG_HOME/memcap/reporting.json" ]
+}

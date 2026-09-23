@@ -86,10 +86,31 @@ memcap report disable          # return to local drafts only
 ```
 
 Categories: `queue-lock`, `measurement`, `integration`, `queue-stall`,
-`unexpected-termination`, and `missing-task-poll`. Agents should report observed
-memcap problems once, keep the returned issue URL, and continue their work. Normal
-capacity waiting or a simulator boot timeout alone does not establish a memcap
-defect. The installed Claude/Codex guidance explains this workflow; refresh it
+`unexpected-termination`, `missing-task-poll`, `lightweight-queued`, and `polling-overhead`.
+Agents **must report each observed memcap-caused productivity incident once**, without
+waiting for a user reminder, a failed command or proof of root cause:
+
+- `lightweight-queued`: ordinary repository searches (`rg`/`grep`), file reads or
+  status checks entered the workload queue, including switching tools to avoid it.
+- `queue-stall`: excessive waits, starvation, or blocked independent work.
+- `polling-overhead`: repeated polling, output-file reads or stop-hook loops waste
+  time or agent usage.
+
+**A command that eventually succeeds can still have a reportable latency regression.**
+Do not dismiss delayed lightweight inspection as normal waiting merely because
+memcap has a capacity reason. Waiting for genuinely heavy work alone, or a simulator
+boot timeout alone, does not establish a defect. Reports describe suspected issues.
+When the elapsed wait is known, include it (whole seconds, up to seven days):
+
+```sh
+memcap report lightweight-queued --wait-seconds 120
+```
+
+Omit the duration when unknown. It is labeled agent-reported, not independently
+timed by memcap. Do not report again on every poll of the same incident; keep the
+returned URL and continue the existing task. Deduplication and rate limits still
+apply, so another invocation does not guarantee another GitHub post.
+The installed Claude/Codex guidance explains this workflow; refresh it
 with `memcap integrate` and restart sessions to reload Markdown.
 
 Without consent—or with `--dry-run`—the command saves a private Markdown draft
@@ -110,6 +131,8 @@ time and allowlisted numeric diagnostics:
   counts, distinct session counts, oldest wait/runtime and original requested memory.
 - **Blockers:** counts of last recorded budget, headroom, slot, pressure/measurement
   and fairness decisions, plus unknown decisions and their evidence age.
+- **Observed delay:** optional agent-reported wait duration, useful after a delayed
+  command has finished and its queue record has gone.
 
 No hostnames, serial numbers, project paths,
 commands, process identities, source, raw logs or tool output are uploaded.
