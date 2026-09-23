@@ -109,6 +109,9 @@ container usage, and no manual hard target applied while the user paused admissi
 sandboxed state, including a filename that expands to an execution option. The
 unsafe command must reach a recording admission fallback without running the
 helper. Safe inspection must preserve output/status and create no queue registry.
+The initial follow-up CI run failed two inspection cases because the clean runner
+lacked ripgrep; CI now installs this explicit test dependency. Both local full
+suites had passed. This environment failure is retained in the release evidence.
 A negative control removed this argv check in a temporary copy: the helper ran
 and the regression failed as intended. Production source was not changed.
 

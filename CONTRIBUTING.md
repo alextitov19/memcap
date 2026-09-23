@@ -51,6 +51,9 @@ also reformats four files is hard to review and will take longer.
 
 ## Before you open a PR
 
+Install the test tools with `brew install bats-core shellcheck ripgrep`. The
+inspection regression tests execute real ripgrep searches in temporary directories.
+
 ```bash
 shellcheck bin/memcap libexec/*.sh tests/*.bats tests/*.bash
 for f in bin/memcap libexec/*.sh tests/*.bash; do /bin/bash -n "$f" || break; done
