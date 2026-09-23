@@ -7,13 +7,18 @@ we validate that exact argv before exec, or send it through normal admission.
 import os
 import re
 import shlex
+import sys
 from pathlib import Path
 from scheduler_policy import light_shell, light_words, normalized_lines
 
 
 def inspect_argv(argv, fallback):
     if light_words(argv, glob_checked=True):
-        os.execvpe(argv[0], argv, os.environ)
+        try:
+            os.execvpe(argv[0], argv, os.environ)
+        except (FileNotFoundError, PermissionError) as exc:
+            print(f"memcap inspection: {argv[0]}: {exc}", file=sys.stderr)
+            return 127 if isinstance(exc, FileNotFoundError) else 126
     return fallback(argv)
 
 

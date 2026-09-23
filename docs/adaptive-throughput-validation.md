@@ -111,7 +111,8 @@ unsafe command must reach a recording admission fallback without running the
 helper. Safe inspection must preserve output/status and create no queue registry.
 The initial follow-up CI run failed two inspection cases because the clean runner
 lacked ripgrep; CI now installs this explicit test dependency. Both local full
-suites had passed. This environment failure is retained in the release evidence.
+suites had passed. A missing or non-executable inspection tool now retains shell
+exit status 127/126 instead of being mislabeled as queue failure 75. This environment failure is retained in the release evidence.
 A negative control removed this argv check in a temporary copy: the helper ran
 and the regression failed as intended. Production source was not changed.
 

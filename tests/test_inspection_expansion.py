@@ -149,6 +149,27 @@ class InspectionExpansionTests(unittest.TestCase):
                 if code == 0:
                     self.assertIn("hello", result.stdout)
 
+    def test_missing_or_nonexecutable_inspection_is_not_a_queue_failure(self):
+        from inspection import inspect_argv
+        from unittest.mock import patch
+        import contextlib
+        import io
+
+        for error, code in [
+            (FileNotFoundError("missing tool"), 127),
+            (PermissionError("not executable"), 126),
+        ]:
+            with (
+                patch("inspection.os.execvpe", side_effect=error),
+                patch("inspection.light_words", return_value=True),
+                contextlib.redirect_stderr(io.StringIO()) as stderr,
+            ):
+                fallback = lambda argv: self.fail("safe inspection entered queue")
+                self.assertEqual(
+                    inspect_argv(["rg", "pattern", "file"], fallback), code
+                )
+                self.assertNotIn("queue", stderr.getvalue())
+
     def test_path_lookup_then_file_read_checks_expanded_arguments(self):
         from inspection import guarded_shell
 

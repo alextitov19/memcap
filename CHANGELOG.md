@@ -6,7 +6,8 @@
   after validating the actual shell-expanded arguments. Execution options still
   enter normal admission. Newly invoked cached wrappers gain the same behavior.
 - Recognize the reported finite directory-status loop and process diagnostics as
-  lightweight inspection; preserve foreground output and exit status.
+  lightweight inspection; preserve foreground output and exit status, including
+  127/126 for missing or non-executable tools instead of queue-failure 75.
 - Teach all agent integrations that Docker’s ceiling is not reserved RAM, VM and
   container figures cannot be subtracted to promise reclaim, and accumulated swap
   is not current paging. Paused admission is not a refusal to execute.
