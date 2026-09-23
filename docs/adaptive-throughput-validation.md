@@ -45,6 +45,9 @@ and **2.19× completion throughput** in this fixture. All thirty jobs finished;
 peak concurrency was one versus four. No model polling turns were needed inside
 the benchmark. This isolates admission overhead; it does not prove that CPU-heavy
 real builds get faster or that the Mac can support a specified amount of RAM.
+An additional eight-session adaptive run completed all eight jobs in 25.328 seconds,
+with 16.721 seconds worst queue wait and four concurrent jobs.
+
 Sampler CPU, real-build throughput and per-policy real pressure duration were not
 measured in this fixture. Live enforcement remains paused by the owner.
 
@@ -75,7 +78,9 @@ under the admission lock in memory. The respective regression tests failed with
 an assertion failure and lock error; production files were not changed by the
 controls. Initial focused checks found a recovery-fixture exhaustion and a test
 using a future timestamp; these failures were corrected and are not counted as
-passes. Final full-suite and CI results are recorded with the release.
+passes. The first complete Bats run also failed an old cache-location fixture and
+the changelog version-prefix guard. Both were fixed and their targeted checks
+passed; final full-suite and CI results are recorded with the release.
 
 ## Issue coverage and remaining evidence
 

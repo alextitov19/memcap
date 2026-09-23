@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.16.0 — 2026-09-23
+## v0.16.0 — 2026-09-23
 
 - Add owner-selected adaptive admission: allow green/yellow launches above the
   footprint planning target while retaining physical headroom, staged starts,
@@ -13,7 +13,6 @@
   existing termination exclusions and explicitly configured oversized-job limits.
 - Add numeric bounded local events and sanitized policy/paging/sample-age reports.
   New setup selects adaptive; existing settings and paused state remain untouched.
-
 
 - Scope the agent protection guidance (#43): hook context and diagnostics previously forbade any change to memcap protection, which also blocked explicitly owner-authorized memcap development. Hooks and the integrated profile block now share one wording: never weaken protection to unblock unrelated work; development, testing, releases and installation of memcap itself are permitted only when the user explicitly authorizes them.
 
