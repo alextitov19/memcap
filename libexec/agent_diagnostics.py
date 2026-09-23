@@ -246,7 +246,17 @@ def guidance(payload, state, refresh=False):
     if event in {"SessionStart", "UserPromptSubmit"} or (
         refresh and event == "PreToolUse"
     ):
-        return SESSION_GUIDANCE
+        mode = (
+            "Memcap enforcement: paused by the user. New commands retain native tool "
+            "foreground/background behavior and worker settings; they are not waiting "
+            "for memcap admission. Use the native task result/completion notification. "
+            "Do not wait on an empty memcap registry for unmanaged tasks. Existing "
+            "supervisors can still own earlier work; inspect their actual state. "
+            if (state / "paused").is_file()
+            else "Memcap enforcement: active. Eligible heavy commands use admission; "
+            "ordinary supported inspection runs in the native tool. "
+        )
+        return mode + SESSION_GUIDANCE
     if event not in {"PostToolUse", "PostToolUseFailure"}:
         return ""
     text = "\n".join(

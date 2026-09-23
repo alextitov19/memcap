@@ -107,6 +107,10 @@ def light_words(words: list[str], glob_checked=False) -> bool:
                 args = args[2:]
             else:
                 return False
+        if args[:2] == ["logs", "tail"]:
+            return not any(
+                a == "--follow" or a.startswith("--follow=") for a in args[2:]
+            )
         # These are API control calls; remote script contents do not execute on
         # this host. Interactive sessions and arbitrary AWS transfers still queue.
         return (
@@ -179,6 +183,13 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             for a in words[2:]
         ):
             return True
+    if (
+        name == "rm"
+        and len(words) == 2
+        and not words[1].startswith("-")
+        and not any(c in words[1] for c in "*?[{}")
+    ):
+        return True  # one file; no recursive traversal or execution options
     if name == "cd" and len(words) == 2:
         return True
     if name == "sleep" and len(words) == 2:
@@ -268,6 +279,10 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             "version",
             "gc",
         } and all(word in {"--json", "--summary"} for word in words[2:])
+    if name == "gh" and len(words) >= 3 and words[1] == "workflow":
+        return words[2] in {"list", "view", "run", "enable", "disable"} and not any(
+            word == "-w" or word.startswith("--web") for word in words[3:]
+        )
     if name == "gh" and len(words) >= 3 and words[1] == "run":
         return words[2] in {"watch", "view", "list"} and not any(
             word == "-w" or word.startswith("--web") for word in words[3:]
@@ -304,6 +319,12 @@ def literal_shell(command: str, allow_bare_globs=False) -> bool:
             if "/" not in prefix and not allow_bare_globs:
                 return False
             prefix += c
+        elif not quote and c == "{" and allow_bare_globs and "/" in prefix:
+            brace = re.match(r"\{[A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)+\}", command[i:])
+            if not brace:
+                return False
+            prefix += brace[0]
+            i += len(brace[0]) - 1
         elif not quote and c in "{}~":
             return False
         elif not quote and (c.isspace() or c in "|&;<>()"):
@@ -408,6 +429,19 @@ def light_shell(command: str, allow_bare_globs=False) -> bool:
     # Recognize a narrow shell grammar solely for lightweight commands. Every
     # stage must qualify. Never evaluate substitutions or reconstruct the input.
     command = normalized_lines(command)
+    # A literal repo alias does not execute locally. Substitutions, arbitrary
+    # environment assignments and heavy stages remain outside this grammar.
+    repo = re.fullmatch(
+        r"(?P<name>R|REPO)=(?P<quote>['\"]?)(?P<repo>[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*)(?P=quote)\s*&&\s*(?P<body>.+)",
+        command,
+    )
+    if repo:
+        from inspection import substitute_reference
+
+        return light_shell(
+            substitute_reference(repo["body"], repo["name"], repo["repo"]),
+            allow_bare_globs,
+        )
     # The reported finite directory-status loop uses quoted path operands only.
     # Keep this exact read-only idiom narrow; substitutions or changed bodies queue.
     if re.fullmatch(

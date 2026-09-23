@@ -164,3 +164,9 @@ sample_fixture() {
   [ "$status" = 0 ]
   assert_contains "$output" 'OK'
 }
+
+@test "QUEUE: paused integration preserves native task and worker behavior" {
+  run python3 "$MEMCAP_ROOT/tests/test_pause_contract.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}

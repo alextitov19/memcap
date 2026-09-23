@@ -154,3 +154,22 @@ SCRIPT
   [ "$status" = 0 ]
   assert_contains "$output" 'memcap wait --session'
 }
+
+@test "FEEDBACK: pause and resume refresh guidance once without a version change" {
+  hook_event=PreToolUse
+  hook_input > "$BATS_TEST_TMPDIR/input"
+  run bash -c '"$MEMCAP_ROOT/bin/memcap" feedback < "$BATS_TEST_TMPDIR/input"'
+  [ "$status" = 0 ]
+  assert_contains "$output" 'enforcement: active'
+  touch "$MEMCAP_STATE_HOME/memcap/paused"
+  run bash -c '"$MEMCAP_ROOT/bin/memcap" feedback < "$BATS_TEST_TMPDIR/input"'
+  [ "$status" = 0 ]
+  assert_contains "$output" 'enforcement: paused'
+  assert_contains "$output" 'native tool'
+  run bash -c '"$MEMCAP_ROOT/bin/memcap" feedback < "$BATS_TEST_TMPDIR/input"'
+  [ "$status" = 0 ]; [ -z "$output" ]
+  rm "$MEMCAP_STATE_HOME/memcap/paused"
+  run bash -c '"$MEMCAP_ROOT/bin/memcap" feedback < "$BATS_TEST_TMPDIR/input"'
+  [ "$status" = 0 ]
+  assert_contains "$output" 'enforcement: active'
+}

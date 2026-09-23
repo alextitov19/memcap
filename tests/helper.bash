@@ -1,4 +1,8 @@
 setup_common() {
+  # Tests admitted by a live runner inherit its exported queue settings. Keep
+  # those owner-selected limits out of fixtures; each test configures its own.
+  unset QUEUE_POLICY QUEUE_MAX_JOBS QUEUE_WORKERS QUEUE_JOB_GB \
+    QUEUE_HEADROOM_GB QUEUE_POLL_SEC QUEUE_WAIT_SEC QUEUE_MAX_PRESSURE
   MEMCAP_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
   export MEMCAP_ROOT
   MEMCAP_CONFIG_HOME="$BATS_TEST_TMPDIR/config"

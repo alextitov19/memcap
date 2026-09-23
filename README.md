@@ -1387,3 +1387,27 @@ loop on it for an unmanaged native background task: use that task’s completion
 notification and read its final output and exit status. Updated hook context
 conveys this guidance to existing sessions on their next hook invocation; an
 already-running supervisor retains its loaded code.
+
+### Native execution while paused (0.16.2)
+
+An owner pause now leaves new Claude/Codex tool requests unchanged: no forced
+background mode, no queue message, and no worker cap injected by memcap. Explicit
+`memcap run` and newly invoked cached wrappers execute their original command
+before accessing the queue registry. A contended registry lock cannot delay a new
+paused command. When an owner pause releases a registered waiter, it remains
+supervised until completion but receives no new worker limits; that unrestricted
+run does not teach a limited-worker estimate. Previously launched processes keep
+the arguments/environment they already received.
+
+Session guidance refreshes once after each owner pause/resume, even without a
+version change. A native background task is not a memcap queue entry: use its
+completion notification or native blocking poll, then read its final output and
+exit status. An empty memcap registry cannot tell you that task’s result. Existing
+managed tasks still need their actual results before dependent work.
+
+While active, finite `aws logs tail` calls, GitHub workflow control (including
+`R=owner/repo && gh workflow run ... -R $R`), single-file `rm file` followed by
+inspection, and `wc -l ./pages/{A,B}.tsx` avoid heavy reservations. Pathname brace
+expansion uses the same expanded-argument validation as globs. `--follow`,
+recursive removal, unknown substitutions and stages that build/run code retain
+normal admission and permission handling.

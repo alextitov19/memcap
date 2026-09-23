@@ -42,6 +42,10 @@ physical headroom and staged starts. Yellow is allowed when configured; red stop
 new heavy launches. Strict mode keeps the absolute budget. Neither promises running
 or unmanaged work cannot reach red. Inspect actual admission reasons instead of
 inferring a blocker from Docker's ceiling or charged footprint.
+When the owner pauses memcap, new commands retain their native tool mode and
+worker settings; they are not waiting for memory admission. Use native completion
+for unmanaged background work, not repeated waits on an empty memcap registry.
+Pause/resume guidance refreshes at the next tool call without a session restart.
 Old queue supervisors keep their loaded version until their tasks finish. New
 commands use the updated installed runner; do not duplicate old pending work.
 

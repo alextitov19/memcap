@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.16.2 — 2026-09-23
+
+- Make owner pause preserve native command foreground/background behavior. Hooks
+  no longer force background tasks or issue misleading queue instructions while
+  paused; new paused runs avoid registry locks, reservations and worker limits.
+- Preserve original worker arguments/environment for queued work released by an
+  owner pause, while retaining supervision and disabling estimate learning for
+  that unrestricted run. Existing running processes retain their launch settings.
+- Refresh runtime guidance once per pause/resume transition as well as per version.
+- Recognize finite AWS log reads, GitHub workflow control with literal repository
+  aliases, single-file cleanup plus inspection, and checked pathname brace reads.
+  Persistent streams, recursive cleanup, substitutions and mixed builds stay managed.
+- Address reports #49–55 with concrete reproductions and owner-pause regressions.
+
 ## v0.16.1 — 2026-09-23
 
 - Run reported glob searches and narrow path-query/file-read commands immediately
