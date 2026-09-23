@@ -26,6 +26,16 @@ KINDS = {
     "lightweight-queued": "Lightweight inspection delayed by the workload queue",
     "polling-overhead": "Queue polling disrupted productive agent work",
 }
+CONTEXTS = {
+    "repository-search",
+    "file-read",
+    "status-check",
+    "ssm-control",
+    "remote-control",
+    "wait-command",
+    "stop-hook",
+    "heavy-work",
+}
 
 PERFORMANCE_GUIDANCE = (
     "You MUST report each observed memcap-caused productivity incident once, without a user reminder, "
@@ -34,6 +44,7 @@ PERFORMANCE_GUIDANCE = (
     "that delay. Use memcap report queue-stall for excessive waits, starvation or blocked independent work; "
     "use memcap report polling-overhead for repetitive polling, output-file reads or stop-hook loops "
     "that waste time or agent usage. Include --wait-seconds N when elapsed wait is known (whole seconds); "
+    "include --context with repository-search, file-read, status-check, ssm-control, remote-control, wait-command, stop-hook or heavy-work when known. Distinct contexts are retained separately instead of silently deduplicated together. "
     "omit it when unknown. Do not dismiss these incidents as normal capacity waiting or require a failed "
     "exit code or proven root cause. Capacity waiting for genuinely heavy work alone is not a defect. "
     "Report once per incident, not on every poll; reuse returned issue URLs and respect deduplication, "
@@ -174,26 +185,29 @@ class Reporter:
     def save(self, ledger):
         write_private(self.directory / "ledger.json", json.dumps(ledger) + "\n")
 
-    def report(self, kind, *, dry_run=False, wait_seconds=None):
+    def report(self, kind, *, dry_run=False, wait_seconds=None, context=None):
         if kind not in KINDS:
             raise ValueError("unknown report category")
+        if context is not None and context not in CONTEXTS:
+            raise ValueError(
+                "unknown report context; use a fixed context, never raw commands"
+            )
         if wait_seconds is not None and (
             type(wait_seconds) is not int or not 0 <= wait_seconds <= 604800
         ):
             raise ValueError("wait seconds must be a whole number from 0 to 604800")
         try:
             with self.locked():
-                return self._report(kind, dry_run, wait_seconds)
+                return self._report(kind, dry_run, wait_seconds, context)
         except BlockingIOError:
             return {
                 "status": "busy",
                 "message": "Another report is being handled; continue work.",
             }
 
-    def _report(self, kind, dry_run, wait_seconds=None):
-        fingerprint = hashlib.sha256(f"1:{self.version}:{kind}".encode()).hexdigest()[
-            :20
-        ]
+    def _report(self, kind, dry_run, wait_seconds=None, context=None):
+        identity = f"1:{self.version}:{kind}" + (f":{context}" if context else "")
+        fingerprint = hashlib.sha256(identity.encode()).hexdigest()[:20]
         marker = f"<!-- memcap-report:{fingerprint} -->"
         draft = self.directory / f"{fingerprint}.md"
         now = self.now()
@@ -204,6 +218,7 @@ class Reporter:
         body = (
             f"{marker}\n## Agent-reported observation\n\n{KINDS[kind]}. This is a suspected problem, not a confirmed root cause.\n\n"
             f"Memcap version: {self.version}\nCategory: {kind}\nReport identifier: {fingerprint}\nObserved at: {datetime.fromtimestamp(now, timezone.utc).isoformat()}\n\n"
+            f"Activity context: {context or 'unspecified'} (agent supplied, fixed vocabulary).\n\n"
             "Snapshot collected at report time, which may differ from failure time. Missing values are unknown. "
             "Queue counts, session counts and ages describe stored entries, not verified live jobs. "
             "Blockers describe each waiting entry's last recorded admission decision; old runners may have none. "
@@ -297,7 +312,9 @@ class Reporter:
                     "POST",
                     f"repos/{REPO}/issues",
                     {
-                        "title": f"[Agent report] {KINDS[kind]} (v{self.version})",
+                        "title": f"[Agent report] {KINDS[kind]}"
+                        + (f" — {context}" if context else "")
+                        + f" (v{self.version})",
                         "body": body,
                     },
                 )
@@ -323,11 +340,18 @@ def main():
     parser.add_argument("action", choices=["enable", "disable", "status", *KINDS])
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
+        "--context",
+        choices=sorted(CONTEXTS),
+        help="Fixed activity context; no commands or free text are uploaded",
+    )
+    parser.add_argument(
         "--wait-seconds",
         type=int,
         help="Observed wait, whole seconds (0–604800); omit if unknown",
     )
     args = parser.parse_args()
+    if args.context and args.action not in KINDS:
+        parser.error("--context requires a report category")
     if args.dry_run and args.action in ("enable", "disable"):
         parser.error("--dry-run applies to report categories, not consent changes")
     if args.wait_seconds is not None and (
@@ -362,6 +386,7 @@ def main():
                 args.action,
                 dry_run=args.dry_run or os.environ.get("MC_DRY_RUN") == "1",
                 wait_seconds=args.wait_seconds,
+                context=args.context,
             )
             print(json.dumps(result))
             if "url" not in result:

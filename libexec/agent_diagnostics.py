@@ -19,6 +19,7 @@ SESSION_GUIDANCE = (
     "memcap manages shared memory across agent sessions. Keep polling existing queued "
     "tasks with TaskOutput block=true timeout=60000 or a blocking tool-session poll of up to 60000ms. "
     "If TaskOutput/tool polling is unavailable, run memcap wait JOB_ID --timeout 60 using the existing ID from memcap queue; do not create drain ticks or Bash sleep loops. "
+    "Use memcap wait --session --timeout 60 to wait on this agent process's finite jobs without any job-ID lookup pipeline. Cancel an owned obsolete background task using native task cancellation; never cancel still-needed work or other sessions' tasks. "
     "Poll once per minute while pending; avoid repeated output-file reads and holding messages. Wait for final output and "
     "exit status; continue independent work while waiting. Do not submit duplicates "
     "or bypass/change memcap protection. Respect explicit cancellation. A simulator "
@@ -232,11 +233,13 @@ def recent_terminations(state, cwd):
         return []
 
 
-def guidance(payload, state):
+def guidance(payload, state, refresh=False):
     if not isinstance(payload, dict):
         return ""
     event = payload.get("hook_event_name")
-    if event in {"SessionStart", "UserPromptSubmit"}:
+    if event in {"SessionStart", "UserPromptSubmit"} or (
+        refresh and event == "PreToolUse"
+    ):
         return SESSION_GUIDANCE
     if event not in {"PostToolUse", "PostToolUseFailure"}:
         return ""
@@ -309,6 +312,13 @@ if __name__ == "__main__":
             Path(os.environ.get("MEMCAP_STATE_HOME", str(Path.home() / ".local/state")))
             / "memcap"
         )
-        print(guidance(json.load(sys.stdin), state), end="")
+        print(
+            guidance(
+                json.load(sys.stdin),
+                state,
+                refresh=sys.argv[1:] == ["--session-guidance"],
+            ),
+            end="",
+        )
     except (OSError, ValueError, TypeError):
         pass  # Optional context must not break normal hook permission semantics.

@@ -27,6 +27,7 @@ from scheduler_policy import (
     polling_loop,
     POLL_GUIDANCE,
     simple_words,
+    light_shell,
     worker_argv,
     worker_environment,
 )
@@ -683,7 +684,7 @@ class Scheduler:
 
     def wait_for(self, ident, timeout):
         if (
-            not re.fullmatch(r"[a-f0-9]{8,32}", ident)
+            (ident != "--session" and not re.fullmatch(r"[a-f0-9]{8,32}", ident))
             or not math.isfinite(timeout)
             or not 0 <= timeout <= 60
         ):
@@ -691,15 +692,32 @@ class Scheduler:
         deadline = time.monotonic() + timeout
         while True:
             try:
-                data = json.loads((self.directory / "jobs.json").read_text())
-                matches = [j for j in data["jobs"] if j["id"].startswith(ident)]
+                if ident == "--session":
+                    from idle_gc import Collector, process_table, owner, GCError
+
+                    try:
+                        table = process_table()
+                        if not owner(str(os.getpid()), table):
+                            raise QueueError(
+                                "cannot identify this agent; use memcap wait JOB_ID --timeout 60"
+                            )
+                        matches = Collector(self.directory.parent).pending_jobs(
+                            str(os.getpid()), table
+                        )
+                    except GCError as exc:
+                        raise QueueError(
+                            "queue state unreadable; task completion is unverified"
+                        ) from exc
+                else:
+                    data = json.loads((self.directory / "jobs.json").read_text())
+                    matches = [j for j in data["jobs"] if j["id"].startswith(ident)]
             except FileNotFoundError:
                 matches = []
             except (ValueError, KeyError, TypeError) as exc:
                 raise QueueError(
                     "queue state unreadable; task completion is unverified"
                 ) from exc
-            if len(matches) > 1:
+            if ident != "--session" and len(matches) > 1:
                 raise QueueError(
                     "ambiguous job ID; use the full ID from memcap queue --json"
                 )
@@ -798,10 +816,19 @@ def main():
         return 0
     if action == "wait":
         parser = argparse.ArgumentParser(prog="memcap wait")
-        parser.add_argument("job_id")
+        parser.add_argument("job_id", nargs="?")
+        parser.add_argument(
+            "--session",
+            action="store_true",
+            help="wait on finite jobs owned by this agent process; no lookup pipeline",
+        )
         parser.add_argument("--timeout", type=float, default=60)
         args = parser.parse_args(sys.argv[2:])
-        return scheduler.wait_for(args.job_id, args.timeout)
+        if bool(args.job_id) == args.session:
+            parser.error("choose JOB_ID or --session")
+        return scheduler.wait_for(
+            "--session" if args.session else args.job_id, args.timeout
+        )
     if action == "authorize":
         ids = scheduler.authorize_cancel(
             sys.argv[2], int(sys.argv[3]), sys.argv[4] if len(sys.argv) > 4 else None
@@ -872,6 +899,19 @@ def main():
         parser.error("a command is required after --")
     if args.memory is not None and (not math.isfinite(args.memory) or args.memory <= 0):
         parser.error("--memory must be positive and finite (GB)")
+    if (
+        args.session_key
+        and args.shell_command is not None
+        and args.memory is None
+        and not args.resource
+        and args.shell in {"/bin/bash", "/bin/zsh", "/bin/sh"}
+        and light_shell(args.shell_command)
+    ):
+        # A cached agent wrapper may have been generated before an upgrade.
+        # Recheck its original command using today's classifier before reserving.
+        # Explicit user reservations/resources retain their requested policy.
+        os.chdir(Path(args.cwd or os.getcwd()).resolve(strict=True))
+        os.execvpe(argv[0], argv, os.environ)
     return scheduler.run(
         argv,
         args.cwd,

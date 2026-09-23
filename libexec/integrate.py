@@ -41,6 +41,10 @@ Use current queue diagnostics to distinguish capacity, pressure and lock failure
 Keep polling an existing queued task with TaskOutput block=true timeout=60000 or a
 blocking tool-session poll, once per minute. If unavailable, run
 `memcap wait JOB_ID --timeout 60` using the existing ID from `memcap queue`.
+Use `memcap wait --session --timeout 60` to wait on finite jobs owned by this agent
+process without a shell pipeline to discover IDs. Cancel an owned obsolete task
+whose result is no longer needed using native task cancellation, then read its
+final status; never cancel still-needed work or other sessions' tasks.
 This creates no job or reservation. Never invent drain ticks or Bash sleep loops. Continue independent work. Read final
 output and exit status before dependent work; waiting is not a failed command.
 Do not submit duplicates, repeatedly read unchanged output, or disable/raise/bypass

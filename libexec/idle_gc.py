@@ -610,23 +610,31 @@ class Collector:
         except (ValueError, AttributeError) as e:
             raise GCError("queue registry unavailable; retaining helpers") from e
 
-    def continuation(self, caller, table, session=""):
+    def pending_jobs(self, caller, table, session=None):
         self.load_resources()
         agent = owner(caller, table)
         if not agent:
-            return {}
+            return []
         session_key = hashlib.sha256(session.encode()).hexdigest() if session else ""
         pending = [
             j
             for j in self.resources
             if not j.get("resource")
-            and (not j.get("session_key") or j["session_key"] == session_key)
+            and (
+                session is None
+                or not j.get("session_key")
+                or j["session_key"] == session_key
+            )
             and not j.get("cancel")
             and j.get("status") in {"waiting", "running"}
             and str(j.get("owner")) in table
             and table[str(j["owner"])]["start"] == j.get("owner_start")
             and owner(str(j["owner"]), table) == agent
         ]
+        return pending
+
+    def continuation(self, caller, table, session=""):
+        pending = self.pending_jobs(caller, table, session)
         if not pending:
             return {}
         ids = ", ".join(str(j.get("id", ""))[:8] for j in pending)
@@ -639,6 +647,7 @@ class Collector:
             "The local scheduler keeps checking capacity without model calls. Read its final output "
             "and exit status before finishing. Queue waiting is not a task failure. "
             "Do not resubmit duplicate jobs or disable/change memcap to get around the queue. "
+            "If an owned background task is obsolete (its result is no longer needed), cancel that specific task with the tool's native task cancellation, then read its final status. Do not cancel still-needed work or another session's tasks. "
             "Respect an explicit user cancellation.",
         }
 

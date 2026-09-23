@@ -103,8 +103,15 @@ boot timeout alone, does not establish a defect. Reports describe suspected issu
 When the elapsed wait is known, include it (whole seconds, up to seven days):
 
 ```sh
-memcap report lightweight-queued --wait-seconds 120
+memcap report lightweight-queued --context repository-search --wait-seconds 120
 ```
+
+Optional `--context` distinguishes `repository-search`, `file-read`, `status-check`,
+`ssm-control`, `remote-control`, `wait-command`, `stop-hook`, and `heavy-work`.
+Deduplication includes this context, so a queued read and a queued wait command
+can produce separate reports even in the same category/version. It accepts only
+these fixed values, never arbitrary notes or commands. Existing consent, five
+submissions/day and uncertain-submission protections still apply.
 
 Omit the duration when unknown. It is labeled agent-reported, not independently
 timed by memcap. Do not report again on every poll of the same incident; keep the
@@ -146,7 +153,7 @@ pressure trace or a measurement of completed-job throughput. Reports are observa
 not automatic root-cause findings. Do not append unreviewed raw diagnostics.
 Agents should use `queue-stall` for suspected excessive throttling or starvation.
 
-Matching category/version reports share an issue; a different installation can
+Matching category/version/context reports share an issue; a different installation can
 add one sanitized comment. Local locking prevents competing sessions from posting
 duplicates. Limit: five publication attempts per rolling day per installation,
 with a one-hour cooldown after a failed attempt. An uncertain POST is recorded
@@ -266,8 +273,13 @@ installed integration schema and memcap version. Run `integrate` after upgrading
 Upgrades and integration do not alter memory caps, job slots, worker limits or
 agent permissions, and the installer never approves its own Codex hook trust.
 
-**Activation:** reload/restart agent sessions after installing changed hooks or
-guidance. In Codex, review and trust the memcap hooks in `/hooks` when requested.
+**Activation:** existing sessions whose hooks already use the stable Homebrew
+path execute the upgraded classifier on their next command. The feedback hook
+refreshes current guidance once per session/version at the next `PreToolUse`,
+without a new prompt or Markdown reload. Newly launched cached automatic wrappers
+also recheck lightweight classification before reserving. Changed hook definitions
+still require reloading/restarting the agent; an upgrade cannot replace code
+already loaded in a running queue supervisor. In Codex, review and trust the memcap hooks in `/hooks` when requested.
 A Mac reboot is not needed. Existing runners retain their loaded scheduler code
 until they finish; keep polling those tasks rather than submitting replacements.
 
@@ -319,7 +331,30 @@ memcap run --memory 3 --wait 600 -- go test ./...
 memcap run --resource dev -- npm run dev
 memcap queue
 memcap queue --json
+memcap wait --session --timeout 60
 ```
+
+
+`wait --session` is a read-only, bounded wait on finite jobs belonging to the
+calling agent process. It does not acquire the queue lock, create a reservation,
+or run a shell pipeline to discover IDs. If several conversations share one agent
+process, use `wait JOB_ID` to select an individual task. Outside a recognized
+Claude/Codex ancestry, use an explicit ID. Waiting is not proof of task success;
+read the original task's output and exit status. If an owned background task is
+obsolete because its result is no longer needed, cancel that specific task using
+the agent tool's native cancellation, then read its final status. Still-needed
+work must keep waiting; never cancel another session's work.
+
+Multiline read/search pipelines, the bounded literal-file inspection loop
+(`for f in files; do [ -f $f ] && { reads; }; done`, at most 16 files),
+literal locale/AWS environment prefixes,
+`git -C` inspection, bounded `sleep` delays, and SSM send/get/list/wait control calls no longer reserve
+build slots. This classification concerns local memory only; normal command
+permissions still apply. The SSM path also accepts a literal `$(cat /tmp/id)`
+command-ID read; that exception does not extend to arbitrary consumers or scripts.
+Unknown shell expansion, execution helpers, mixed
+read/build scripts, AWS transfers and interactive SSM sessions remain managed.
+Explicit memory/resource reservations remain managed too.
 
 `--memory` reserves GB, not a hard memory limit. Each workload is charged the
 greater of its effective reservation and observed footprint, without double-counting
