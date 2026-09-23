@@ -254,3 +254,11 @@ aggregate queue facts. Keep raw identities/commands out of reports. Queue ages a
 blocker counts describe stored entries and last decisions, never proven liveness
 or a history of pressure. Missing probes remain unknown; simulator/browser memory
 is already in the agent subtotal. The reporting sampler must never emit PID rows.
+
+Performance incidents do not require command failure: report delayed lightweight
+inspection as `lightweight-queued`, wasted polling as `polling-overhead`, and
+excessive waits/starvation as `queue-stall`, once per incident. Do not dismiss them
+as ordinary capacity waiting. `--wait-seconds` is a bounded, agent-supplied numeric
+observation, not a measured duration; omit unknown values. Preserve consent,
+deduplication and rate limits. Both pending and successfully admitted queue output
+must carry this instruction, without publishing the original command.

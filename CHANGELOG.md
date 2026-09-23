@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.14.2 — 2026-09-23
+
+- Require agents to report memcap-caused productivity regressions even when commands succeed: queued lightweight inspection, excessive waiting/starvation, and wasteful polling.
+- Add `lightweight-queued` and `polling-overhead` report categories, plus optional bounded `--wait-seconds` observations. Keep these reporting commands outside workload admission.
+- Deliver the policy through global guidance, session/prompt hooks, queue interception and pending/completed admission feedback. Preserve consent, deduplication and publication rate limits; never report on every poll.
+
 ## v0.14.1 — 2026-09-22
 
 - Include sanitized machine capacity, macOS version, CPU load, swap/disk availability, enforcement pause state and measured memory subtotals in agent reports.

@@ -214,6 +214,22 @@ class ReportTests(unittest.TestCase):
         self.assertIn('"waiting_oldest_seconds": 900', body)
         self.assertNotIn("SECRET", body)
 
+    def test_lightweight_queue_delay_is_reportable_without_a_command_failure(self):
+        self.reporter.consent(True)
+        result = self.reporter.report("lightweight-queued", wait_seconds=120)
+        self.assertEqual(result["status"], "published")
+        body = self.github.issues[0]["body"]
+        self.assertIn('"agent_reported_wait_seconds": 120', body)
+        self.assertIn("lightweight-queued", body)
+        self.assertNotIn("SECRET", body)
+
+    def test_invalid_agent_wait_observations_never_publish(self):
+        self.reporter.consent(True)
+        for value in (-1, True, "SECRET", 1.5, 604801):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.reporter.report("queue-stall", wait_seconds=value)
+        self.assertFalse(self.github.issues)
+
     def test_new_metric_fields_reject_strings_booleans_and_invalid_enums(self):
         self.reporter.snapshot = lambda: {
             "physical_memory_kb": "SECRET",
@@ -286,7 +302,9 @@ class ReportTests(unittest.TestCase):
             )
             self.assertNotIn("updatedInput", response.get("hookSpecificOutput", {}))
 
-    def test_only_memcap_failures_suggest_reporting(self):
+    def test_memcap_faults_get_specific_reports_and_capacity_waits_get_triage_guidance(
+        self,
+    ):
         import agent_diagnostics as diag
 
         with patch.object(diag, "measure", return_value=[]):
@@ -313,7 +331,12 @@ class ReportTests(unittest.TestCase):
                 },
                 self.root,
             )
-            self.assertNotIn("memcap report queue-stall", normal)
+            self.assertNotIn("For this suspected memcap defect", normal)
+            self.assertIn(
+                "Capacity waiting for genuinely heavy work alone is not a defect",
+                normal,
+            )
+            self.assertIn("memcap report lightweight-queued", normal)
 
     def test_transport_pins_host_and_sends_json_on_stdin_without_prompting(self):
         tools_dir = self.root / "bin"

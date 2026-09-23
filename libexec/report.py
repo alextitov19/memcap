@@ -23,7 +23,22 @@ KINDS = {
     "queue-stall": "Suspected queue progress problem",
     "unexpected-termination": "Suspected unexpected process termination",
     "missing-task-poll": "Agent cannot poll its existing task",
+    "lightweight-queued": "Lightweight inspection delayed by the workload queue",
+    "polling-overhead": "Queue polling disrupted productive agent work",
 }
+
+PERFORMANCE_GUIDANCE = (
+    "You MUST report each observed memcap-caused productivity incident once, without a user reminder, "
+    "even if the command eventually succeeds. Use memcap report lightweight-queued whenever ordinary "
+    "repository searches (rg/grep), file reads or status checks get queued, or you switch tools to avoid "
+    "that delay. Use memcap report queue-stall for excessive waits, starvation or blocked independent work; "
+    "use memcap report polling-overhead for repetitive polling, output-file reads or stop-hook loops "
+    "that waste time or agent usage. Include --wait-seconds N when elapsed wait is known (whole seconds); "
+    "omit it when unknown. Do not dismiss these incidents as normal capacity waiting or require a failed "
+    "exit code or proven root cause. Capacity waiting for genuinely heavy work alone is not a defect. "
+    "Report once per incident, not on every poll; reuse returned issue URLs and respect deduplication, "
+    "rate limits and existing consent. Keep working; never retry deferred reports in a loop."
+)
 from report_metrics import capture, read_json, sanitize
 
 
@@ -159,19 +174,23 @@ class Reporter:
     def save(self, ledger):
         write_private(self.directory / "ledger.json", json.dumps(ledger) + "\n")
 
-    def report(self, kind, *, dry_run=False):
+    def report(self, kind, *, dry_run=False, wait_seconds=None):
         if kind not in KINDS:
             raise ValueError("unknown report category")
+        if wait_seconds is not None and (
+            type(wait_seconds) is not int or not 0 <= wait_seconds <= 604800
+        ):
+            raise ValueError("wait seconds must be a whole number from 0 to 604800")
         try:
             with self.locked():
-                return self._report(kind, dry_run)
+                return self._report(kind, dry_run, wait_seconds)
         except BlockingIOError:
             return {
                 "status": "busy",
                 "message": "Another report is being handled; continue work.",
             }
 
-    def _report(self, kind, dry_run):
+    def _report(self, kind, dry_run, wait_seconds=None):
         fingerprint = hashlib.sha256(f"1:{self.version}:{kind}".encode()).hexdigest()[
             :20
         ]
@@ -180,6 +199,8 @@ class Reporter:
         now = self.now()
         raw = self.snapshot()
         facts = sanitize(raw)
+        if wait_seconds is not None:
+            facts["agent_reported_wait_seconds"] = wait_seconds
         body = (
             f"{marker}\n## Agent-reported observation\n\n{KINDS[kind]}. This is a suspected problem, not a confirmed root cause.\n\n"
             f"Memcap version: {self.version}\nCategory: {kind}\nReport identifier: {fingerprint}\nObserved at: {datetime.fromtimestamp(now, timezone.utc).isoformat()}\n\n"
@@ -195,6 +216,8 @@ class Reporter:
             "`*_requested_kb` sums original job requests, not effective reservations after adjustment. "
             "`blocked_pressure_or_measurement` includes failed pressure/measurement checks. "
             "Unknown/missing decisions are counted in `blocked_unknown`.\n\n"
+            "`agent_reported_wait_seconds`, when present, is supplied by the reporting agent; "
+            "the reporter did not independently time it. A successful command can still suffer a latency regression.\n\n"
             f"```json\n{json.dumps(facts, sort_keys=True, indent=2)}\n```\n\n"
             "No source code, project paths, commands, process identities, raw logs or tool output are included. "
             "Maintainers may request a minimal reproduction after triage.\n"
@@ -299,9 +322,20 @@ def main():
     parser.add_argument("--memcap-version", required=True)
     parser.add_argument("action", choices=["enable", "disable", "status", *KINDS])
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--wait-seconds",
+        type=int,
+        help="Observed wait, whole seconds (0–604800); omit if unknown",
+    )
     args = parser.parse_args()
     if args.dry_run and args.action in ("enable", "disable"):
         parser.error("--dry-run applies to report categories, not consent changes")
+    if args.wait_seconds is not None and (
+        args.action not in KINDS or not 0 <= args.wait_seconds <= 604800
+    ):
+        parser.error(
+            "--wait-seconds requires a report category and an integer from 0 to 604800"
+        )
     config = (
         Path(os.environ.get("MEMCAP_CONFIG_HOME", str(Path.home() / ".config")))
         / "memcap"
@@ -325,7 +359,9 @@ def main():
             )
         else:
             result = reporter.report(
-                args.action, dry_run=args.dry_run or os.environ.get("MC_DRY_RUN") == "1"
+                args.action,
+                dry_run=args.dry_run or os.environ.get("MC_DRY_RUN") == "1",
+                wait_seconds=args.wait_seconds,
             )
             print(json.dumps(result))
             if "url" not in result:

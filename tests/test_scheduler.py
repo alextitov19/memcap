@@ -497,6 +497,23 @@ class SchedulerTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.policy.classify_shell(command)[0], "light")
 
+    def test_performance_reports_remain_available_while_workloads_are_queued(self):
+        for command in (
+            "memcap report lightweight-queued",
+            "memcap report polling-overhead --wait-seconds 120",
+            "memcap report queue-stall --wait-seconds 120 --dry-run",
+            "memcap report queue-stall --dry-run --wait-seconds 0",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.policy.classify_shell(command)[0], "light")
+        for command in (
+            "memcap report queue-stall --wait-seconds SECRET",
+            "memcap report queue-stall --wait-seconds 1 --wait-seconds 2",
+            "memcap report queue-stall --wait-seconds 120 && npm test",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.policy.classify_shell(command)[0], "job")
+
     def test_memory_capacity_can_admit_more_than_two_jobs(self):
         q = self.queue(max_jobs=8, headroom_gb=2, max_pressure="yellow")
         sample = healthy()

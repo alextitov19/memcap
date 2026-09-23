@@ -17,6 +17,8 @@ POLL_GUIDANCE = (
     "ID (not this refused wait), or its blocking tool-session poll. "
     "If TaskOutput is unavailable, run memcap wait JOB_ID --timeout 60 using the existing memcap job ID from memcap queue. "
     "If that task exited, read its final result; only then submit the actual work once."
+    " Report this productivity incident once with memcap report polling-overhead; "
+    "do not create a reporting loop or enable reporting yourself."
 )
 
 
@@ -135,11 +137,30 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         if words[1] == "report":
             from report import KINDS
 
-            return (
-                len(words) in (3, 4)
-                and words[2] in {"status", "enable", "disable", "--help", "-h", *KINDS}
-                and (len(words) == 3 or words[3] == "--dry-run")
-            )
+            if len(words) < 3:
+                return False
+            if words[2] in {"status", "enable", "disable", "--help", "-h"}:
+                return len(words) == 3
+            if words[2] not in KINDS:
+                return False
+            i, seen = 3, set()
+            while i < len(words):
+                option = words[i]
+                if option in seen:
+                    return False
+                seen.add(option)
+                if option == "--dry-run":
+                    i += 1
+                elif (
+                    option == "--wait-seconds"
+                    and i + 1 < len(words)
+                    and re.fullmatch(r"[0-9]{1,6}", words[i + 1])
+                    and int(words[i + 1]) <= 604800
+                ):
+                    i += 2
+                else:
+                    return False
+            return True
         if words[1] == "wait":
             return (
                 len(words) in (3, 5)
@@ -486,11 +507,15 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
     updated.pop("cmd", None)
     result = {"hookEventName": "PreToolUse", "updatedInput": updated}
     if agent == "claude":
+        from report import PERFORMANCE_GUIDANCE
+
         result["additionalContext"] = (
             "memcap keeps this task queued until memory is available, then starts it automatically. "
             "Use TaskOutput with block=true and timeout=60000 for one blocking wait of up to 60 seconds. If TaskOutput is unavailable, use memcap wait JOB_ID --timeout 60 with the existing ID from memcap queue; it creates no job or reservation. Repeat once per minute while pending; do not repeatedly read output files or emit holding messages. "
             "Do not create Bash sleep loops or drain ticks to wait. Do not submit duplicates, stop because it is queued, or bypass memcap. "
             "Read the final output and exit status before continuing dependent work."
+            + " "
+            + PERFORMANCE_GUIDANCE
         )
     if agent == "codex":
         # Codex requires allow with updatedInput. Do not silently grant broader

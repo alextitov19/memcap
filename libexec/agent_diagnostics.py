@@ -12,6 +12,8 @@ import subprocess
 import sys
 import time
 
+from report import PERFORMANCE_GUIDANCE
+
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_GUIDANCE = (
     "memcap manages shared memory across agent sessions. Keep polling existing queued "
@@ -28,12 +30,11 @@ SESSION_GUIDANCE = (
     "Inspect docker stats --no-stream and docker buildx ls, and establish ownership "
     "before cleanup; preserve other sessions' containers and deployments."
     " For suspected memcap defects, use memcap report CATEGORY once: queue-lock, measurement, "
-    "integration, queue-stall, unexpected-termination, or missing-task-poll. Reporting saves a "
+    "integration, queue-stall, unexpected-termination, missing-task-poll, lightweight-queued, or polling-overhead. Reporting saves a "
     "sanitized local draft and publishes only after the user's one-time reporting opt-in. "
     "Reports include available machine, memory/load and queue age/blocker metrics; "
-    "use queue-stall for suspected excessive throttling or starvation. "
-    "Never enable reporting on the user's behalf or upload raw logs. Normal capacity waiting "
-    "alone is not a defect; do not loop on reporting failures."
+    "Never enable reporting on the user's behalf or upload raw logs. "
+    + PERFORMANCE_GUIDANCE
 )
 BOOT = re.compile(
     r"timed out trying to boot simulator|failed to prepare device.{0,180}impending launch|"
@@ -44,7 +45,7 @@ MEMORY = re.compile(
     r"\bENOMEM\b|out of memory|cannot allocate memory|memory starvation", re.I
 )
 QUEUE = re.compile(
-    r"memcap: (?:queued |queue wait expired|queue lock unavailable|memory sampling failed|memory measurement unavailable|memory .*not admitted)",
+    r"memcap: (?:queued |admitted [a-f0-9]+; command started|queue wait expired|queue lock unavailable|memory sampling failed|memory measurement unavailable|memory .*not admitted)",
     re.I,
 )
 FIELDS = {
@@ -253,6 +254,10 @@ def guidance(payload, state):
     ]
     lines.extend(measure(state, mobile))
     lines.extend(recent_terminations(state, payload.get("cwd")))
+    if QUEUE.search(text):
+        # Do not infer workload weight from copied output or require an error:
+        # the agent knows its task, including after a background command exits 0.
+        lines.append(PERFORMANCE_GUIDANCE)
     category = None
     if "memcap: queue lock unavailable" in text.lower():
         category = "queue-lock"
