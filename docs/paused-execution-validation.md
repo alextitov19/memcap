@@ -26,7 +26,9 @@ pause. No real user jobs or Docker services are stopped. The original version
 failed five pause assertions and timed out against the held lock; two additional
 inspection cases and the pause-transition feedback test also failed before their
 fixes. A first focused invocation named a nonexistent Bats file; it ran no intended
-checks and was corrected rather than counted as a passing run.
+checks and was corrected rather than counted as a passing run. The subsequent
+focused run exposed inherited live QUEUE_POLICY in a status fixture; shared test
+setup now clears exported queue settings before applying each fixture’s config.
 
 Two temporary-copy mutation controls reintroduced worker capping and forced
 background hooks while paused. Both regression tests failed as intended; production
