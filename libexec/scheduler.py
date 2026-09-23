@@ -502,6 +502,13 @@ class Scheduler:
         self, argv, cwd=None, resource="", memory_gb=None, wait=1800, session_key=""
     ):
         cwd = Path(cwd or os.getcwd()).resolve(strict=True)
+        if (self.directory.parent / "paused").is_file():
+            # Pause restores native execution before registry locks, sampling,
+            # reservations or worker rewriting. Do not manufacture a queued task.
+            if not argv:
+                raise QueueError("a command is required")
+            os.chdir(cwd)
+            os.execvpe(argv[0], argv, dict(os.environ))
         memory = self.memory_kb if memory_gb is None else int(memory_gb * GIB)
         if (
             not argv
@@ -528,10 +535,12 @@ class Scheduler:
             with self.locked() as data:
                 table = processes()
                 self.refresh(data, table)
-                if (
-                    self.nested(data, table)
-                    or (self.directory.parent / "paused").exists()
-                ):
+                if (self.directory.parent / "paused").is_file():
+                    for sig, handler in old_handlers.items():
+                        signal.signal(sig, handler)
+                    os.chdir(cwd)
+                    os.execvpe(argv[0], argv, dict(os.environ))
+                if self.nested(data, table):
                     # No second reservation; preserve nested command semantics.
                     # exec also preserves native signal and exit status behavior.
                     for sig, handler in old_handlers.items():
@@ -783,26 +792,39 @@ class Scheduler:
                 signal.signal(sig, handler)
 
     def launch(self, argv, cwd, job, data):
-        workers = min(job.get("workers", self.workers), self.allocation(data["jobs"]))
-        # A smaller final allocation is safe, but do not teach a larger-worker
-        # profile using the smaller run's peak.
-        if workers != job.get("workers", workers):
+        if (self.directory.parent / "paused").is_file():
+            # A registered waiter may be released by an owner pause. Preserve
+            # supervision of its existing job, but impose no worker limits and
+            # never train a limited-worker estimate from this unrestricted run.
+            workers = 0  # no memcap worker limit applied
+            job["workers"] = workers
             job["estimate_key"] = ""
-        job["workers"] = workers
-        if (
-            len(argv) >= 3
-            and Path(argv[0]).name in {"bash", "zsh", "sh"}
-            and argv[1] in {"-c", "-lc"}
-        ):
-            words = simple_words(argv[2])
-            if words:
-                import shlex
+            env = dict(os.environ)
+        else:
+            workers = min(
+                job.get("workers", self.workers), self.allocation(data["jobs"])
+            )
+            # A smaller final allocation is safe, but do not teach a larger-worker
+            # profile using the smaller run's peak.
+            if workers != job.get("workers", workers):
+                job["estimate_key"] = ""
+            job["workers"] = workers
+            if (
+                len(argv) >= 3
+                and Path(argv[0]).name in {"bash", "zsh", "sh"}
+                and argv[1] in {"-c", "-lc"}
+            ):
+                words = simple_words(argv[2])
+                if words:
+                    import shlex
 
-                argv = (
-                    argv[:2] + [shlex.join(worker_argv(words, cwd, workers))] + argv[3:]
-                )
-        argv = worker_argv(argv, cwd, workers)
-        env = worker_environment(dict(os.environ), workers)
+                    argv = (
+                        argv[:2]
+                        + [shlex.join(worker_argv(words, cwd, workers))]
+                        + argv[3:]
+                    )
+            argv = worker_argv(argv, cwd, workers)
+            env = worker_environment(dict(os.environ), workers)
         env["MEMCAP_QUEUE_LEASE"] = job["id"]
         read_fd, write_fd = os.pipe()
         try:
@@ -973,6 +995,8 @@ def main():
         Path(os.environ.get("MEMCAP_STATE_HOME", str(Path.home() / ".local/state")))
         / "memcap/queue"
     )
+    if sys.argv[1] == "hook" and (directory.parent / "paused").is_file():
+        return 0
     scheduler = Scheduler(
         directory,
         max_jobs=env_number("QUEUE_MAX_JOBS", 2, True),
@@ -1085,7 +1109,9 @@ def main():
     args = parser.parse_args(sys.argv[2:])
     argv = args.command[1:] if args.command[:1] == ["--"] else args.command
     if args.shell_command is not None:
-        if polling_loop(args.shell_command):
+        if not (directory.parent / "paused").is_file() and polling_loop(
+            args.shell_command
+        ):
             raise QueueError(POLL_GUIDANCE)
         if argv:
             raise QueueError("choose a command or --shell-command, not both")
@@ -1095,6 +1121,8 @@ def main():
         parser.error("a command is required after --")
     if args.memory is not None and (not math.isfinite(args.memory) or args.memory <= 0):
         parser.error("--memory must be positive and finite (GB)")
+    if (directory.parent / "paused").is_file():
+        return scheduler.run(argv, args.cwd)
     if (
         args.session_key
         and args.shell_command is not None

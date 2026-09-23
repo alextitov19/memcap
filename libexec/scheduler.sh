@@ -27,6 +27,8 @@ mc_scheduler_run() {
 }
 
 mc_scheduler_hook() {
+  # Owner pause leaves the native tool request and permission flow untouched.
+  mc_is_paused && return 0
   local python
   if ! mc_scheduler_config || ! python=$(mc_scheduler_python); then
     printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"memcap queue configuration or Python runtime unavailable"}}'

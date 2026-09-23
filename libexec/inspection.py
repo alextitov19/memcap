@@ -49,7 +49,7 @@ def spans(text):
                     quote = ""
                 elif not quote:
                     quote = c
-            elif not quote and c in "*?[":
+            elif not quote and c in "*?[{":
                 glob = True
             i += 1
         yield start, i, text[start:i], glob
