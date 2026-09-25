@@ -268,7 +268,7 @@ class IdleGCTests(unittest.TestCase):
         response = self.gc.continuation("90", self.table)
         self.assertEqual(response["decision"], "block")
         self.assertIn("mine", response["reason"])
-        self.assertNotIn("other", response["reason"].split(". Use TaskOutput")[0])
+        self.assertNotIn("other", response["reason"].split(". ", 1)[0])
         jobs[0]["resource"] = "dev-server"
         (q / "jobs.json").write_text(json.dumps({"jobs": jobs}))
         self.assertEqual(self.gc.continuation("90", self.table), {})

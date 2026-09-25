@@ -25,6 +25,8 @@ class FeedbackReleaseTests(unittest.TestCase):
             "pgrep -af gradle",
             "memcap --version",
             "memcap -v",
+            # Missing timeout reaches immediate read-only CLI validation.
+            "memcap wait --session --timeout 60>/dev/null",
             "cat file | tr -d '\\r' | head -10",
             "memcap wait --session --timeout 60 >/dev/null 2>&1",
             "memcap wait abcdef12 --timeout 60 1>/dev/null 2>&1",
@@ -45,7 +47,6 @@ class FeedbackReleaseTests(unittest.TestCase):
             'sed -n "/a/p; e build" file',
             "cat file | node build.js",
             "pgrep node; npm test",
-            "memcap wait --session --timeout 60>/dev/null",
             'memcap wait --session --timeout "60">/dev/null; npm test',
             "cat file)",
             "(cat file)",

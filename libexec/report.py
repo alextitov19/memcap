@@ -93,7 +93,13 @@ PERFORMANCE_GUIDANCE = (
     "reproductions without publishing commands or private text. Deduplicated means the new "
     "snapshot is saved locally; it was not appended to the existing GitHub issue. "
     "Report the observed incident promptly; the installed version and snapshot describe report time, "
-    "not necessarily an older incident's runner or machine state."
+    "not necessarily an older incident's runner or machine state. "
+    "Do not refile a previously reported incident just because a version or symptom option changed. "
+    "Run each report as a direct command, separate from shell loops, edits or workloads; "
+    "mixed commands may require admission even when one stage is reporting. "
+    "Use native file-edit tools for small edits when available; arbitrary Python/Perl scripts "
+    "remain managed. A measurement symptom must describe the observed measurement problem, "
+    "not an unrelated oversized process."
 )
 from report_metrics import capture, read_json, sanitize
 

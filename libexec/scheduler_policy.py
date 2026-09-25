@@ -111,6 +111,8 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             return not any(
                 a == "--follow" or a.startswith("--follow=") for a in args[2:]
             )
+        if args[:2] == ["cloudwatch", "describe-alarms"]:
+            return True
         if args[:2] == ["sts", "get-caller-identity"]:
             return True
         # These are API control calls; remote script contents do not execute on
@@ -285,23 +287,9 @@ def light_words(words: list[str], glob_checked=False) -> bool:
                     return False
             return True
         if words[1] == "wait":
-            return (
-                len(words) in (3, 5)
-                and (
-                    words[2] == "--session"
-                    # Invalid native task IDs must reach usage validation without
-                    # consuming a queue slot. The wait CLI never launches work.
-                    or bool(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", words[2]))
-                )
-                and (
-                    len(words) == 3
-                    or (
-                        words[3] == "--timeout"
-                        and bool(re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", words[4]))
-                        and float(words[4]) <= 60
-                    )
-                )
-            )
+            # The read-only CLI validates usage and cannot launch work. Even
+            # malformed timeouts/IDs must fail immediately, outside admission.
+            return True
         if words[1] in {"doctor", "integrate"}:
             # Repair/diagnostic commands must not wait behind the queue they inspect.
             i = 2
@@ -327,6 +315,62 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             "version",
             "gc",
         } and all(word in {"--json", "--summary"} for word in words[2:])
+    if name == "jq":
+        args = words[1:]
+        while args and (
+            re.fullmatch(r"-[rceM]+", args[0])
+            or args[0]
+            in {
+                "--raw-output",
+                "--compact-output",
+                "--exit-status",
+                "--monochrome-output",
+            }
+        ):
+            args = args[1:]
+        if not args or any(w.startswith("-") for w in args[1:]):
+            return False
+        # Finite selectors/formatters only, never filter files, recursion, input
+        # generators, module loading, or arbitrary jq programs.
+        if "\\(" in args[0]:
+            return False  # jq string interpolation can hide generators/recursion.
+        expression = re.sub(r'"(?:[^"\\]|\\.)*"', '""', args[0])
+        if ".." in expression or not re.fullmatch(
+            r'[\w.\[\]()|,:/?!@<>=+\s"-]+', expression
+        ):
+            return False
+        names = re.findall(r"(?<![\w.])([A-Za-z_][A-Za-z_0-9]*)", expression)
+        return all(
+            n
+            in {
+                "keys",
+                "length",
+                "join",
+                "sort",
+                "sort_by",
+                "unique",
+                "tostring",
+                "select",
+                "has",
+                "type",
+                "null",
+                "true",
+                "false",
+                "tsv",
+                "csv",
+                "json",
+                "text",
+                "empty",
+                "not",
+                "and",
+                "or",
+            }
+            for n in names
+        )
+    if name == "gh" and len(words) >= 3 and words[1] in {"issue", "pr"}:
+        return words[2] in {"list", "view", "status", "checks"} and not any(
+            word == "-w" or word.startswith("--web") for word in words[3:]
+        )
     if name == "gh" and words[1:] == ["auth", "status"]:
         return True
     if name == "gh" and len(words) >= 3 and words[1] == "workflow":
@@ -437,6 +481,27 @@ def light_file_loop(command: str) -> bool:
     and body independently also proves the matched loop boundaries are unquoted.
     No loop runs during classification, and arbitrary shell loops still queue.
     """
+    plain = re.fullmatch(
+        r"(?P<prefix>.*?)(?:^|;)\s*for (?P<var>[A-Za-z_][A-Za-z_0-9]*) in "
+        r"(?P<files>[A-Za-z0-9_./ -]+);\s*do\s+(?P<body>.*);\s*done\s*;?\s*",
+        command,
+        re.S,
+    )
+    if plain:
+        from inspection import substitute_reference
+
+        files = plain["files"].split()
+        if (
+            1 <= len(files) <= 64
+            and not any(f.startswith("-") for f in files)
+            and not re.search(r"\b(?:for|while)\s", plain["body"])
+            and (not plain["prefix"].strip() or light_shell(plain["prefix"]))
+            and all(
+                light_shell(substitute_reference(plain["body"], plain["var"], f))
+                for f in files
+            )
+        ):
+            return True
     match = re.fullmatch(
         r"(?P<prefix>.*?)(?:^|;)\s*for (?P<var>[A-Za-z_][A-Za-z0-9_]*) in "
         r"(?P<files>[A-Za-z0-9_./ -]+);\s*do\s+\[ -f \$(?P=var) \] && \{ "
@@ -486,9 +551,30 @@ def light_file_loop(command: str) -> bool:
     return True
 
 
+def literal_note(command: str) -> bool:
+    """A bounded quoted cat heredoc is literal data, never executable shell.
+
+    Only a final append/write is accepted. Validate the complete prefix and
+    header, and reject early delimiters so trailing commands cannot hide in data.
+    """
+    if len(command) > 65536:
+        return False
+    match = re.fullmatch(
+        r"(?P<prefix>[^\n]*[;]\s*)?(?P<header>cat\s+>{1,2}\s+[^\n]+?)\s+<<(?P<quote>['\"])(?P<delimiter>[A-Za-z_][A-Za-z_0-9]*)(?P=quote)\n(?P<body>.*?)\n(?P=delimiter)\n?",
+        command,
+        re.S,
+    )
+    if not match or match["delimiter"] in match["body"].splitlines():
+        return False
+    prefix = (match["prefix"] or "").rstrip("; ")
+    return (not prefix or light_shell(prefix)) and light_shell(match["header"])
+
+
 def light_shell(command: str, allow_bare_globs=False) -> bool:
     # Recognize a narrow shell grammar solely for lightweight commands. Every
     # stage must qualify. Never evaluate substitutions or reconstruct the input.
+    if literal_note(command):
+        return True
     command = normalized_lines(command)
     # Literal aliases commonly precede log reads. Prove the surrounding stages
     # independently; never evaluate arbitrary assignments or substitutions.
@@ -499,7 +585,7 @@ def light_shell(command: str, allow_bare_globs=False) -> bool:
         if token[2] not in {";", "&&"}:
             continue
         stage = command[boundary : token[0]].strip()
-        binding = re.fullmatch(r"(SP|S|LOG|FILE|R|REPO)=([A-Za-z0-9_./-]+)", stage)
+        binding = re.fullmatch(r"(SP|S|F|D|LOG|FILE|R|REPO)=([A-Za-z0-9_./-]+)", stage)
         if binding and (binding[2].startswith("/") or binding[1] in {"R", "REPO"}):
             prefix = command[:boundary].strip().rstrip(";& ")
             body = command[token[1] :]
@@ -903,7 +989,7 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
 
         result["additionalContext"] = (
             "memcap keeps this task queued until memory is available, then starts it automatically. "
-            "Use TaskOutput with block=true and timeout=60000 for one blocking wait of up to 60 seconds. If TaskOutput is unavailable, use memcap wait JOB_ID --timeout 60 with the existing ID from memcap queue; it creates no job or reservation. Repeat once per minute while pending; do not repeatedly read output files or emit holding messages. "
+            "Await native completion notifications without polling when supported. Otherwise use TaskOutput with block=true and timeout=60000 for one blocking wait of up to 60 seconds. If TaskOutput is unavailable, use memcap wait JOB_ID --timeout 60 with the existing ID from memcap queue; it creates no job or reservation. Repeat once per minute while pending; do not repeatedly read output files or emit holding messages. "
             "Do not create Bash sleep loops or drain ticks to wait. Do not submit duplicates, stop because it is queued, or bypass memcap. "
             "Read the final output and exit status before continuing dependent work."
             + " "

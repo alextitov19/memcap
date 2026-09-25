@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.16.5 — 2026-09-25
+
+- Retain reduced adaptive allowances during sampler contention and incomplete
+  observations, instead of repeatedly restoring the original startup estimate.
+  Fresh measurement/pressure gates and explicit reservation floors still apply.
+
+- Keep GitHub issue/PR inspection, finite JSON selectors, bounded inspection loops, literal note appends and
+  guarded filename-search consumers out of unnecessary workload admission.
+- Validate every `memcap wait` usage error immediately, including invalid timeouts.
+- Prefer native completion consistently across hooks and queue output. Routine
+  queue transitions now carry concise context without redundant host probes.
+- Explain direct report submission and prevent instructions from encouraging
+  duplicate retrospective reports when versions or symptom options change.
+- Audit follow-up reports #104–122 and #124 and today’s retained logs through 11:10 PDT.
+
 ## v0.16.4 — 2026-09-25
 
 - Keep current-home reads, literal path aliases, additional device/cloud status
