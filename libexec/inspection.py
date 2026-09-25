@@ -187,6 +187,8 @@ def guard_stages(text, executable, session_key, variable=None):
             "git",
             "env",
             "ps",
+            "pgrep",
+            "tr",
             "sed",
             "aws",
             "gh",

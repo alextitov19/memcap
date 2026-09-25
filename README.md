@@ -366,12 +366,33 @@ memory already in the combined budget. Unknown measurements admit nothing.
 
 Automatic job estimates reserve the full startup allowance for 30 seconds. After
 that, complete process measurements can reduce unused reservations to the greater
-of 512 MB or 125% of the highest footprint observed at admission checks, capped
-at the original estimate. Actual usage above that estimate is always counted.
+of 512 MB or 125% of the observed peak. In adaptive mode, peaks older than a minute
+can retire after more than 60 seconds of complete, fresh observations with no gap
+above five seconds. The lifetime peak remains available for learning. Strict mode
+retains the lifetime peak. Growth increases reservations immediately; incomplete
+or stale samples retain the previous effective allowance. Actual usage above the
+estimate is always counted.
 Explicit `--memory` reservations and uncertain or orphaned groups retain their
 full allowance. This permits more concurrency without raising your configured
 memory cap or admitting at red pressure; later allocation bursts can still raise
 pressure, so this is a throughput tradeoff, not a guarantee against overload.
+
+Since v0.16.3, headroom queue notices show available memory, unused running
+reservations, the next request and the emergency margin. Docker's ceiling is never
+a reservation. Regex end anchors, read-only regex ranges in `sed`, `pgrep`, `tr`
+pipelines and redirected `memcap wait` commands use lightweight inspection.
+Legacy managed waits exclude their own verified process ancestry when observing
+pending jobs; observing completion still does not establish workload success.
+
+Local queue events now carry a random numeric job reference to correlate admission
+and completion, plus `signal` and `completion_kind` (1=application exit, 2=signal,
+3=supervisor cancellation). A signal does not identify its sender. Stalled events
+include headroom arithmetic and `reason_code`: 0 unknown, 1 budget, 2 headroom,
+3 slots, 4 pressure/measurement, 5 invalid measurement, 6 fairness, 7 startup,
+8 stabilization, 9 paging. Public reports distinguish the independent reporting
+probe from the queue sample and include effective reservation totals when known.
+See [the September 24 feedback audit](docs/feedback-2026-09-24.md) for coverage
+and the release's issue dispositions.
 
 Reservations larger than the entire budget fail immediately. Waiting defaults
 to 1,800 seconds, then exits **75** without launching. Notices go to stderr;
