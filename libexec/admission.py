@@ -102,6 +102,15 @@ def decide(
             # Headroom in adaptive mode is an emergency physical margin, not
             # another full per-job allowance. Charged footprint is a soft target.
             headroom = min(policy["headroom_kb"], GIB // 2)
+        result.update(
+            outstanding_kb=outstanding,
+            available_kb=sample["available_kb"],
+            request_kb=memory,
+            headroom_kb=headroom,
+            headroom_deficit_kb=max(
+                0, headroom + outstanding + memory - sample["available_kb"]
+            ),
+        )
         if sample["available_kb"] - outstanding - memory < headroom:
             return deny("headroom")
         return {

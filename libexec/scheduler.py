@@ -75,6 +75,26 @@ def processes() -> dict:
     return rows
 
 
+def wait_targets(jobs, caller, table):
+    """Never let a legacy managed wait await its own verified process ancestry."""
+    ancestry = {}
+    pid = str(caller)
+    for _ in range(128):
+        row = table.get(pid)
+        if not row or pid in ancestry:
+            break
+        ancestry[pid] = row.get("start")
+        pid = str(row["ppid"])
+    return [
+        j
+        for j in jobs
+        if not any(
+            start is not None and j.get("members", {}).get(pid) == start
+            for pid, start in ancestry.items()
+        )
+    ]
+
+
 def sample_host() -> dict:
     result = subprocess.run(
         [str(ROOT / "bin/memcap"), "_queue-sample"],
@@ -275,6 +295,16 @@ class Scheduler:
                 continue
             job["last_observation"] = stamp
             footprints = sample.get("footprints", {})
+            complete = not sample.get("fault") and all(
+                p in footprints for p in job["members"]
+            )
+            job["measurement_complete"] = complete
+            measured = sum(footprints.get(p, 0) for p in job["members"])
+            if complete:
+                job["measured_kb"] = measured
+            job["reservation_kb"] = self.reservation(
+                job, sample, measured, adaptive=self.policy == "adaptive"
+            )
             if sample.get("fault") or not all(p in footprints for p in job["members"]):
                 job["learning_incomplete"] = True
                 continue
@@ -393,22 +423,47 @@ class Scheduler:
         data["jobs"] = live
 
     @staticmethod
-    def reservation(job, sample, measured):
+    def reservation(job, sample, measured, adaptive=False):
         # Automatic estimates cover the startup burst, then follow observed demand.
         # Explicit requests and uncertain/departed owners keep their full allowance.
-        reserve = job["memory_kb"]
+        reserve = max(job["memory_kb"], job.get("reservation_kb", 0))
         if (
             job.get("elastic") is True
             and not job.get("orphaned")
             and job["members"]
+            and not sample.get("fault", False)
             and all(p in sample.get("footprints", {}) for p in job["members"])
         ):
             peak = max(measured, job.get("observed_peak_kb", 0))
             job["observed_peak_kb"] = peak
+            stamp = sample.get("monotonic", 0)
+            if adaptive and 0 <= time.monotonic() - stamp <= 2:
+                history = job.get("reservation_window", [])
+                if not history or not 0 <= stamp - history[-1][0] <= 5:
+                    history = [[stamp, peak]]
+                    job["reservation_window_since"] = stamp
+                elif stamp > history[-1][0]:
+                    history.append([stamp, measured])
+                else:
+                    history[-1][1] = max(history[-1][1], measured)
+                history = [row for row in history if row[0] >= stamp - 60][-128:]
+                job["reservation_window"] = history
+                if stamp - job.get("reservation_window_since", stamp) > 60:
+                    peak = max(row[1] for row in history)
+                job["reservation_source"] = 2  # complete adaptive window
+            else:
+                job.pop("reservation_window", None)
+                job["reservation_source"] = 1  # lifetime peak / strict policy
+                if adaptive:
+                    return max(reserve, measured, int(peak * 1.25))
             if 30 <= time.time() - job.get("started", time.time()):
                 reserve = max(GIB // 2, int(peak * 1.25))
             else:
                 reserve = max(reserve, int(peak * 1.25))
+        else:
+            if not sample.get("busy"):
+                job.pop("reservation_window", None)
+            job["reservation_source"] = 3  # explicit or incomplete: retain
         return max(reserve, measured)
 
     def admissible(self, jobs, memory, resource, sample):
@@ -417,7 +472,9 @@ class Scheduler:
                 measured = sum(
                     sample.get("footprints", {}).get(p, 0) for p in job["members"]
                 )
-                job["reservation_kb"] = self.reservation(job, sample, measured)
+                job["reservation_kb"] = self.reservation(
+                    job, sample, measured, adaptive=self.policy == "adaptive"
+                )
         decision = decide(
             dict(
                 mode=self.policy,
@@ -430,6 +487,7 @@ class Scheduler:
             jobs,
             dict(memory_kb=memory, resource=resource),
         )
+        self.last_decision = decision
         reasons = {
             "available": "capacity available",
             "budget": "combined budget reserved or in use",
@@ -706,6 +764,19 @@ class Scheduler:
                                 "waiting for another session’s turn or an aged job to fit": "fairness",
                             }.get(reason, "unknown"),
                         }
+                        for field in (
+                            "outstanding_kb",
+                            "available_kb",
+                            "request_kb",
+                            "headroom_kb",
+                            "headroom_deficit_kb",
+                        ):
+                            value = getattr(self, "last_decision", {}).get(field)
+                            if type(value) is int and value >= 0:
+                                job["admission"][field] = value
+                        job["admission"]["measurement_busy"] = int(
+                            bool(sample.get("busy"))
+                        )
                         self.save(data)
                         if wait is not None and time.monotonic() - began >= wait:
                             print(
@@ -715,8 +786,32 @@ class Scheduler:
                             )
                             return 75
                         if time.monotonic() - last_notice > 60:
+                            details = ""
+                            if job["admission"]["reason"] == "headroom":
+                                d = job["admission"]
+                                details = (
+                                    f" Available {d.get('available_kb', 0) / GIB:.2f} GiB; "
+                                    f"unused running reservations {d.get('outstanding_kb', 0) / GIB:.2f} GiB; "
+                                    f"request {memory / GIB:.2f} GiB; "
+                                    f"margin {d.get('headroom_kb', 0) / GIB:.2f} GiB."
+                                )
+                            append_event(
+                                self.directory,
+                                dict(
+                                    event="stalled",
+                                    job_ref=int(ident[:13], 16),
+                                    queue_wait_ms=int(
+                                        (time.monotonic() - began) * 1000
+                                    ),
+                                    **{
+                                        k: v
+                                        for k, v in job["admission"].items()
+                                        if k != "at"
+                                    },
+                                ),
+                            )
                             print(
-                                f"memcap: queued {ident[:8]}: {reason}. Command has not started; "
+                                f"memcap: queued {ident[:8]}: {reason}.{details} Command has not started; "
                                 f"keep polling this existing task once per minute (TaskOutput block=true timeout=60000 if available; otherwise memcap wait {ident[:8]} --timeout 60). "
                                 "Continue independent work; do not submit duplicates or bypass memcap.",
                                 file=sys.stderr,
@@ -754,11 +849,14 @@ class Scheduler:
                             )
                             while len(history) > 256:
                                 del history[next(iter(history))]
+                        from scheduler_metrics import completion_fields
+
                         append_event(
                             self.directory,
                             dict(
                                 event="completed",
-                                exit_code=abs(result),
+                                job_ref=int(ident[:13], 16),
+                                **completion_fields(result, self.cancelled),
                                 runtime_ms=int((time.time() - job["started"]) * 1000),
                                 peak_kb=job.get("observed_peak_kb", 0),
                             ),
@@ -863,6 +961,7 @@ class Scheduler:
                 self.directory,
                 dict(
                     event="admitted",
+                    job_ref=int(job["id"][:13], 16),
                     workers=workers,
                     request_kb=job["memory_kb"],
                     queue_wait_ms=int((time.time() - job["enqueued"]) * 1000),
@@ -921,6 +1020,9 @@ class Scheduler:
                 else:
                     data = json.loads((self.directory / "jobs.json").read_text())
                     matches = [j for j in data["jobs"] if j["id"].startswith(ident)]
+                from idle_gc import process_table
+
+                matches = wait_targets(matches, str(os.getpid()), process_table())
             except FileNotFoundError:
                 matches = []
             except (ValueError, KeyError, TypeError) as exc:

@@ -170,3 +170,9 @@ sample_fixture() {
   [ "$status" = 0 ]
   assert_contains "$output" 'OK'
 }
+
+@test "QUEUE: September feedback regression contracts" {
+  run python3 "$MEMCAP_ROOT/tests/test_feedback_release.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}

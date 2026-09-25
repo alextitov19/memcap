@@ -166,9 +166,12 @@ to arbitrary command timeouts or simulator-service termination.
 ## Queue throughput and hook compatibility
 
 Automatic reservations hold the startup estimate for 30 seconds, then may shrink
-with complete measurements to at least 512 MB or 125% of observed peak usage,
-without discarding an observed peak above the initial estimate. Always count
-actual usage above the estimate.
+with complete measurements to at least 512 MB or 125% of observed peak usage.
+Adaptive mode may retire old peaks only after more than 60 seconds of complete,
+fresh observations with no gap above five seconds. Keep the lifetime peak for
+learning; use the recent window for admission. Strict mode retains lifetime peaks.
+Actual growth increases the allowance immediately. Incomplete, stale and orphaned
+measurements retain the previous effective allowance, not merely the initial estimate.
 Explicit `--memory`, orphaned groups and incomplete measurements retain their
 allowances. Do not equate a smaller reservation with process termination or reclaim
 capacity by deleting leases. A lease remains until its managed group exits.

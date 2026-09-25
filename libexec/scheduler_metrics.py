@@ -13,6 +13,15 @@ import time
 
 EVENTS = {"sample", "queued", "admitted", "completed", "cancelled", "stalled"}
 FIELDS = {
+    "job_ref",
+    "signal",
+    "completion_kind",
+    "outstanding_kb",
+    "headroom_kb",
+    "headroom_deficit_kb",
+    "measurement_fault",
+    "measurement_busy",
+    "reason_code",
     "queue_wait_ms",
     "runtime_ms",
     "pressure",
@@ -31,6 +40,19 @@ FIELDS = {
     "sample_age_ms",
 }
 MAX_SEGMENT = 16 * 1024 * 1024
+
+
+def completion_fields(result, cancelled=0):
+    """Signal termination is distinct from an application returning the same number.
+
+    A signal alone never establishes who sent it. Kind 3 means this supervisor
+    received cancellation; it does not attribute other signals to enforcement.
+    """
+    return dict(
+        exit_code=result if result >= 0 else 128 - result,
+        signal=-result if result < 0 else 0,
+        completion_kind=3 if cancelled else (2 if result < 0 else 1),
+    )
 
 
 def number(value):
@@ -164,7 +186,14 @@ def shared_sample(directory: Path, key: str, sampler) -> dict:
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
-        append_event(directory, {"event": "sample", **sample})
+        append_event(
+            directory,
+            {
+                "event": "sample",
+                **sample,
+                "measurement_fault": int(bool(sample.get("fault"))),
+            },
+        )
         return sample
     finally:
         os.close(fd)
@@ -177,6 +206,20 @@ def append_event(directory: Path, event: dict) -> None:
     row = {
         k: v for k, v in event.items() if k in FIELDS and number(v) and v <= 2**63 - 1
     }
+    reasons = (
+        "unknown",
+        "budget",
+        "headroom",
+        "slots",
+        "pressure_or_measurement",
+        "measurement",
+        "fairness",
+        "startup",
+        "stabilizing",
+        "paging",
+    )
+    if event.get("reason") in reasons:
+        row["reason_code"] = reasons.index(event["reason"])
     row.update(event=event["event"], timestamp=time.time())
     directory = Path(directory)
     lock = None

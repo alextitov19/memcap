@@ -22,6 +22,11 @@ BLOCKERS = {
     "paging",
 }
 FACTS = {
+    "measurement_probe_status",
+    "queue_measurement_fault",
+    "running_reserved_kb",
+    "running_measured_kb",
+    "running_unused_reservations_kb",
     "queue_policy",
     "sample_age_ms",
     "swap_in_kbps",
@@ -80,6 +85,8 @@ def sanitize(raw):
         "architecture": (1, 2),
         "enforcement_paused": (0, 1),
         "measurement_fault": (0, 1),
+        "queue_measurement_fault": (0, 1),
+        "measurement_probe_status": (1, 2, 3),
     }.items():
         if facts.get(key) not in allowed:
             facts.pop(key, None)
@@ -146,6 +153,17 @@ def queue_facts(state):
             if all(isinstance(s, str) and s for s in sessions):
                 facts[status + "_sessions"] = len(set(sessions))
             if status == "running":
+                reserved = [j.get("reservation_kb") for j in selected]
+                measured = [j.get("measured_kb") for j in selected]
+                if all(type(v) is int and v >= 0 for v in reserved):
+                    facts["running_reserved_kb"] = sum(reserved)
+                    if all(
+                        j.get("measurement_complete") is True for j in selected
+                    ) and all(type(v) is int and v >= 0 for v in measured):
+                        facts["running_measured_kb"] = sum(measured)
+                        facts["running_unused_reservations_kb"] = sum(
+                            max(0, r - m) for r, m in zip(reserved, measured)
+                        )
                 if all(isinstance(j.get("resource"), str) for j in selected):
                     facts["running_resources"] = sum(
                         bool(j["resource"]) for j in selected
@@ -181,6 +199,9 @@ def capture(state):
     root = Path(__file__).resolve().parents[1]
     lines = probe([str(root / "bin/memcap"), "_report-sample"], timeout=2).splitlines()
     facts["measurement_fault"] = 1
+    # 1=valid independent probe, 2=no response (timeout/error), 3=invalid/degraded.
+    # This is NOT proof that the scheduler's own shared sample failed.
+    facts["measurement_probe_status"] = 3 if lines else 2
     try:
         cap, tracked, available, pressure, fault = map(int, lines[0].split())
         if pressure in (1, 2, 4):
@@ -191,6 +212,7 @@ def capture(state):
                 tracked_kb=tracked,
                 available_kb=available,
                 measurement_fault=0,
+                measurement_probe_status=1,
             )
             agents, docker, sims = map(int, lines[1].split())
             if (
@@ -274,6 +296,8 @@ def capture(state):
         sample = read_json(state / "queue/sample.json")["sample"]
         stamp = sample.get("monotonic")
         if type(stamp) in (int, float) and 0 <= time.monotonic() - stamp < 60:
+            if type(sample.get("fault")) is bool:
+                facts["queue_measurement_fault"] = int(sample["fault"])
             facts["sample_age_ms"] = int((time.monotonic() - stamp) * 1000)
             for key in ("swap_in_kbps", "swap_out_kbps", "compressor_kb"):
                 value = sample.get(key)

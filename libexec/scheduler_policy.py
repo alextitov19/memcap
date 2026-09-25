@@ -148,6 +148,8 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         return False
     if name in {
         "ps",
+        "pgrep",
+        "tr",
         "cat",
         "head",
         "tail",
@@ -199,9 +201,13 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         )
     if name == "sed" and len(words) >= 3 and words[1] == "-n":
         return bool(
-            re.fullmatch(r"(?:[0-9]+|/[^/\n]+/)(?:,(?:[0-9]+|\$))?p", words[2])
+            re.fullmatch(
+                r"(?:[0-9]+|/[^/\n]+/)(?:,(?:[0-9]+|\$|/[^/\n]+/))?p", words[2]
+            )
         ) and all(not word.startswith("-") for word in words[3:])
     if name == "memcap" and len(words) >= 2:
+        if words[1] in {"--version", "-v", "--help", "-h"}:
+            return len(words) == 2
         if words[1] == "_inspect":
             # This runtime guard either execs proven inspection or enters the queue.
             return True
@@ -313,8 +319,17 @@ def literal_shell(command: str, allow_bare_globs=False) -> bool:
             if c == "$" and command[i : i + 2] == "$?":
                 prefix += "0"
                 i += 1
+            elif (
+                c == "$"
+                and not re.match(r"[A-Za-z0-9_({\[*@$!#-]", command[i + 1 : i + 2])
+                and not (not quote and command[i + 1 : i + 2] in {"'", '"'})
+            ):
+                # A regex end anchor, e.g. "^\\s*$", is literal shell text.
+                prefix += c
             else:
                 return False
+        elif not quote and c in "()":
+            return False
         elif not quote and c in "*?[":
             if "/" not in prefix and not allow_bare_globs:
                 return False
@@ -465,10 +480,10 @@ def light_shell(command: str, allow_bare_globs=False) -> bool:
     if not literal_shell(command, allow_bare_globs):
         return False
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;<>()")
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        tokens = list(lexer)
+        from inspection import spans
+
+        source = list(spans(command))
+        tokens = [shlex.split(word[2])[0] for word in source]
     except ValueError:
         return False
     separators = {"|", "&&", "||", ";"}
@@ -477,7 +492,8 @@ def light_shell(command: str, allow_bare_globs=False) -> bool:
     i = 0
     while i < len(tokens):
         token = tokens[i]
-        if token in separators:
+        raw = source[i][2]
+        if raw in separators:
             if token == ";" and not words:
                 i += 1
                 continue
@@ -485,10 +501,16 @@ def light_shell(command: str, allow_bare_globs=False) -> bool:
                 return False
             words = []
         else:
-            if token.isdigit() and i + 1 < len(tokens) and tokens[i + 1] in redirects:
+            if (
+                raw.isdigit()
+                and i + 1 < len(tokens)
+                and source[i][1] == source[i + 1][0]
+                and source[i + 1][2] in redirects
+            ):
                 i += 1
                 token = tokens[i]
-            if token in redirects:
+                raw = source[i][2]
+            if raw in redirects:
                 i += 1
                 if i >= len(tokens):
                     return False
@@ -498,7 +520,7 @@ def light_shell(command: str, allow_bare_globs=False) -> bool:
                         return False
                 elif not target or any(char in target for char in "|&;<>()*?[]"):
                     return False
-            elif token and all(char in "|&;<>()" for char in token):
+            elif raw and all(char in "|&;<>()" for char in raw):
                 return False
             else:
                 words.append(token)

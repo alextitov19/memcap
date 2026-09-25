@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.16.3 — 2026-09-24
+
+- Keep redirected waits, literal regex end anchors, regex-range file reads,
+  process lookups, version aliases and `tr` inspection pipelines out of admission.
+  Preserve redirection adjacency and quoted operators; execution and mixed build
+  stages still require admission. Legacy managed waits cannot await themselves.
+- In adaptive mode, retire old reservation peaks after a complete minute of fresh
+  measurements. Retain effective allowances during incomplete samples or owner
+  loss; immediately reserve observed growth. Strict and explicit policies remain.
+- Explain headroom arithmetic in queue output and emit correlated, numeric queue
+  events. Distinguish application exits, signal exits and supervisor cancellation.
+- Separate reporting-probe failures from queue-sample failures, and report effective
+  reservations instead of making users infer them from original requests.
+- Audit the September 24 logs and reports #58–80; document reproduced fixes and
+  remaining limits of historical attribution in `docs/feedback-2026-09-24.md`.
+
 ## v0.16.2 — 2026-09-23
 
 - Make owner pause preserve native command foreground/background behavior. Hooks
