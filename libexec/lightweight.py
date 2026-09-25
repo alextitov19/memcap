@@ -105,6 +105,8 @@ def sed_command(args):
 
 def extra_family(name, args):
     """Return None for families handled by the older classifier."""
+    if name in {"gzip", "gunzip", "base64"}:
+        return True  # streaming transforms; no arbitrary child execution
     if name == "file":
         return not any(
             a.startswith("--uncompress")

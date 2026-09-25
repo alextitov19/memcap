@@ -1192,6 +1192,7 @@ def main():
         return inspect_argv(
             argv,
             lambda words: scheduler.run(words, wait=None, session_key=args.session_key),
+            args.session_key,
         )
     if action == "hook":
         try:

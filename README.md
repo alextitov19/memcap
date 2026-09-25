@@ -1498,6 +1498,15 @@ filename consumers use the same rules. An expansion that introduces `--pre`, an
 executable Git option or another workload still enters admission. No blanket
 exemption for arbitrary shell/Python/Node scripts is implied.
 
+Small Bash/sh helper files also qualify when their entire contents are supported
+lightweight operations. This includes remote SSM wrappers using local data
+assignments and streaming gzip/base64 transforms. Files are read again at runtime
+(regular files up to 32 KiB), and the checked text executes with its original
+positional arguments; expanded external arguments are validated before execution.
+Unknown commands, loops, dynamic executable names, startup settings and unreadable
+or oversized scripts retain admission. The script's filename does not establish
+whether it is lightweight.
+
 Small straight-line `python3 -c` text inspections can use imports of `re`, `html`
 and unused `sys`, literal `open(...).read()`, regex substitutions, HTML unescaping
 and printing. The runtime guard checks regular files up to 1 MiB and conservative

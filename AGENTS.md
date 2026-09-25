@@ -173,6 +173,10 @@ single execution. Unknown execution still queues. `text_probe.py` recognizes a
 bounded straight-line Python text language without evaluating code, checks files
 in the actual execution cwd and isolates standard-library imports. Test all of
 these with temporary files, fake fallback recorders and no real remote commands.
+`control_script.py` proves finite shell helpers from their contents, repeats the
+check at execution time, and executes the validated text rather than reopening
+the path. Keep startup settings, dynamic executable names and unknown syntax out
+of this path; preserve positional arguments and guard expanded external argv.
 
 Automatic reservations hold the startup estimate for 30 seconds, then may shrink
 with complete measurements to at least 512 MB or 125% of observed peak usage.

@@ -188,3 +188,9 @@ sample_fixture() {
   [ "$status" = 0 ]
   assert_contains "$output" 'OK'
 }
+
+@test "QUEUE: finite lightweight shell helpers validate their contents and expanded arguments" {
+  run python3 "$MEMCAP_ROOT/tests/test_control_script.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}

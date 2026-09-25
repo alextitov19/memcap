@@ -60,6 +60,7 @@ PROTECTION_GUIDANCE = (
     "the live queue. That authorization never extends to other tasks. "
     "Routine filesystem operations, supported remote CLI calls and verified lightweight shell "
     "combinations use native execution or argument guards without workload reservations. "
+    "Small shell helpers qualify only when their contents pass the same lightweight checks. "
     "This does not grant permission for edits, deletion, deployments or other actions. "
     "Local builds, arbitrary scripts and execution-capable arguments remain managed."
 )

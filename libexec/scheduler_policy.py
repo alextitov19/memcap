@@ -122,6 +122,8 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             return True
         if args[:2] == ["sts", "get-caller-identity"]:
             return True
+        if args[:2] == ["ec2", "describe-instances"]:
+            return True
         # These are API control calls; remote script contents do not execute on
         # this host. Interactive sessions and arbitrary AWS transfers still queue.
         return (

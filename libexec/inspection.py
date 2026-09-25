@@ -12,8 +12,15 @@ from pathlib import Path
 from scheduler_policy import light_shell, light_words, normalized_lines
 
 
-def inspect_argv(argv, fallback):
+def inspect_argv(argv, fallback, session_key=""):
     from text_probe import eligible
+    from control_script import prepared
+
+    script = prepared(
+        argv, str(Path(__file__).resolve().parents[1] / "bin/memcap"), session_key
+    )
+    if script:
+        os.execvpe(script[0], script, os.environ)
 
     probe = eligible(argv, check_files=True)
     if probe:
@@ -162,6 +169,11 @@ def guard_read_consumers(command, executable, session_key):
 
 
 def guarded_shell(command, executable, session_key=""):
+    from control_script import guard_invocation
+
+    script = guard_invocation(command, executable, session_key)
+    if script:
+        return script
     text_probe = guard_text_probe(command, executable, session_key)
     if text_probe:
         return text_probe

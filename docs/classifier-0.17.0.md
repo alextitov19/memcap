@@ -32,6 +32,12 @@ supported inspection. Execution-producing arguments reach a recording fallback.
 - #140: small Python HTML-to-text reads. The actual reported command passes
   syntax and file-size checks. Runtime validation happens in its execution cwd;
   isolated imports prevent cwd modules from substituting for the standard library.
+- #142: finite Bash/sh helpers containing supported lightweight commands, local
+  data assignments, streaming transforms and remote SSM calls. The helper is read
+  and checked again at execution time, then the validated text is executed with
+  its original positional arguments. Each external command's expanded arguments
+  go through the same runtime policy. Loops, dynamic command names, startup
+  settings, unknown commands and unavailable/oversized script files stay managed.
 - Earlier #132: recursive filesystem cleanup followed by status now qualifies.
   Its prior not-planned disposition is superseded by the owner's broader policy.
 
@@ -55,3 +61,8 @@ Full release validation and CI results are recorded in the release notes. File
 size and text-growth estimates are admission decisions, not kernel hard limits;
 an input can still change after its metadata is read. Unknown Python syntax or
 large/unavailable inputs retain normal admission.
+
+The script-file regression additionally covers output/exit status under Bash and
+zsh, a script changed between classification and execution, FIFO/oversized paths,
+expanded execution options, and shell startup variables. This is a bounded syntax
+proof, not a promise that every custom shell program is lightweight.

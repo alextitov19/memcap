@@ -9,6 +9,10 @@
   expanded arguments. Preserve quoting, output, status and single execution;
   local builds and executable arguments still use admission (#138).
 - Keep supported Benmore log, SQL, environment and probe calls native (#139).
+- Inspect finite Bash/sh helper contents so small SSM wrappers and streaming
+  transforms can run without workload reservations (#142). Validate expanded
+  arguments again at runtime and execute the checked script text. Unknown
+  commands, loops, dynamic executables and shell startup settings remain managed.
 - Recognize small straight-line Python text reads and regex/HTML cleanup (#140).
   Check actual input sizes in the command's working directory, bound intermediate
   text estimates and use isolated standard-library imports. Unknown scripts and
