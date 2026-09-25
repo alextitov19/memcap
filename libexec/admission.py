@@ -93,8 +93,12 @@ def decide(
         else:
             now = controller["now"]
             stamp = sample["monotonic"]
-            if not number(now) or not number(stamp) or not 0 <= now - stamp <= 2:
+            if not number(now) or not number(stamp) or now < stamp:
                 return deny("measurement")
+            if now - stamp > 2:
+                # A valid observation can age out while registry work runs.
+                # Wait for fresh data without claiming the measurement failed.
+                return deny("sampling")
             if now < controller.get("cooldown_until", 0):
                 return deny("paging")
             if now - controller.get("healthy_since", now) < 2:

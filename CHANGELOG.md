@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.17.1 — 2026-09-25
+
+- Describe an expired but otherwise valid adaptive observation as waiting for
+  fresh sampling, rather than an invalid memory measurement (#143). Preserve the
+  two-second freshness deadline and continue denying heavy admission until data
+  is fresh. Malformed and future timestamps still report measurement failures.
+- Resolve direct `memcap wait` calls to the hook's installed absolute executable
+  (#144). Preserve native task mode, timeout and permissions while removing
+  dependence on the caller's PATH and the global Homebrew bin symlink.
+
 ## v0.17.0 — 2026-09-25
 
 - Broaden lightweight classification by command family: routine filesystem work,

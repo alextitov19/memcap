@@ -77,6 +77,18 @@ class AdmissionTests(unittest.TestCase):
             ]
         )
 
+    def test_expired_valid_sample_is_sampling_not_measurement_failure(self):
+        decision = self.decision(sample={**self.sample(), "monotonic": 97.999})
+        self.assertFalse(decision["allow"])
+        self.assertEqual(decision["reason"], "sampling")
+        self.assertTrue(
+            self.decision(sample={**self.sample(), "monotonic": 98})["allow"]
+        )
+        for stamp in (101, float("nan"), "old", -1):
+            decision = self.decision(sample={**self.sample(), "monotonic": stamp})
+            self.assertFalse(decision["allow"])
+            self.assertEqual(decision["reason"], "measurement")
+
     def test_unobserved_growth_is_reserved_across_jobs(self):
         jobs = [
             dict(

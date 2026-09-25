@@ -41,6 +41,16 @@ class ProductivityTests(unittest.TestCase):
                     ("claude", "Bash", "command"),
                     ("codex", "exec_command", "cmd"),
                 ]:
+                    expected = {}
+                    if command == "memcap wait --session --timeout 60":
+                        expected = {
+                            "hookSpecificOutput": {
+                                "hookEventName": "PreToolUse",
+                                "updatedInput": {
+                                    "command": "/opt/homebrew/opt/memcap/bin/memcap wait --session --timeout 60"
+                                },
+                            }
+                        }
                     self.assertEqual(
                         hook_response(
                             {
@@ -51,7 +61,7 @@ class ProductivityTests(unittest.TestCase):
                             "/opt/homebrew/opt/memcap/bin/memcap",
                             agent,
                         ),
-                        {},
+                        expected,
                     )
 
     def test_unknown_execution_stays_managed(self):

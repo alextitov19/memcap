@@ -997,6 +997,23 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
         and wrapped[1] in {"run", "queue", "status", "feedback", "_inspect"}
         and shlex.join(wrapped) == command
     )
+    control = simple_words(command)
+    if (
+        kind == "light"
+        and control
+        and control[:2] == ["memcap", "wait"]
+        and Path(executable).is_absolute()
+    ):
+        # Hooks already know their installed executable. A native wait must not
+        # depend on the caller's PATH or the global Homebrew bin symlink.
+        updated = {**original, "command": shlex.join([executable, *control[1:]])}
+        updated.pop("cmd", None)
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "updatedInput": updated,
+            }
+        }
     if kind == "light" or already_wrapped:
         return {}
     default_shell = (
