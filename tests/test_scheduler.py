@@ -588,7 +588,7 @@ class SchedulerTests(unittest.TestCase):
                 ),
                 0,
             )
-        self.assertIn("keep polling", output.getvalue())
+        self.assertIn("await native completion notifications", output.getvalue())
         self.assertIn("admitted", output.getvalue())
         self.assertEqual(marker.read_text(), "once")
         self.assertGreaterEqual(len(calls), 4)

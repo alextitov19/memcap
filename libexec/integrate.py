@@ -49,7 +49,8 @@ Pause/resume guidance refreshes at the next tool call without a session restart.
 Old queue supervisors keep their loaded version until their tasks finish. New
 commands use the updated installed runner; do not duplicate old pending work.
 
-Keep polling an existing queued task with TaskOutput block=true timeout=60000 or a
+Await native completion notifications without polling when supported. Otherwise wait
+on an existing queued task with TaskOutput block=true timeout=60000 or a
 blocking tool-session poll, once per minute. If unavailable, run
 `memcap wait JOB_ID --timeout 60` using the existing ID from `memcap queue`.
 Use `memcap wait --session --timeout 60` to wait on finite jobs owned by this agent

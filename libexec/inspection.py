@@ -83,7 +83,81 @@ def substitute_reference(text, variable, value):
     return "".join(result)
 
 
+def guard_read_consumers(command, executable, session_key):
+    """Guard the argv supplied by a filename pipe, never trust filenames as options."""
+    prefix = (
+        shlex.join([executable, "_inspect", "--session-key", session_key, "--"]) + " "
+    )
+    loop = re.fullmatch(
+        r"(?P<before>.+)\|\s*while read (?P<var>[A-Za-z_][A-Za-z_0-9]*);\s*do "
+        r"(?P<body>[^;\n]+);\s*done(?P<after>(?:;.*)?)",
+        command,
+        re.S,
+    )
+    if loop:
+        body = loop["body"]
+        try:
+            words = shlex.split(body)
+        except ValueError:
+            return None
+        if (
+            not words
+            or words[0] != "rg"
+            or words[-1] != "$" + loop["var"]
+            or not body.endswith('"$' + loop["var"] + '"')
+            or not light_shell(substitute_reference(body, loop["var"], "/MEMCAP_PATH"))
+            or not light_shell(loop["before"])
+            or (
+                loop["after"].strip("; ") and not light_shell(loop["after"].strip("; "))
+            )
+        ):
+            return None
+        return command[: loop.start("body")] + prefix + command[loop.start("body") :]
+    # A single xargs -I{} rg invocation. Every surrounding stage must independently
+    # qualify; insert the existing expanded-argv guard into each child invocation.
+    tokens = list(spans(command))
+    boundaries = [0]
+    stages = []
+    for token in tokens:
+        if token[2] in {"|", ";", "&&", "||"}:
+            stages.append((boundaries[-1], token[0]))
+            boundaries.append(token[1])
+    stages.append((boundaries[-1], len(command)))
+    found = []
+    for start, end in stages:
+        stage = command[start:end].strip()
+        try:
+            words = shlex.split(stage)
+        except ValueError:
+            return None
+        if words[:3] != ["xargs", "-I{}", "rg"]:
+            continue
+        if any(t[2] in {">", ">>", "<", ">&", "<&"} for t in spans(stage)):
+            return None
+        if words[-1:] != ["{}"] or sum(w.count("{}") for w in words[2:]) != 1:
+            return None
+        if not light_shell(shlex.join(words[2:-1] + ["/MEMCAP_PATH"])):
+            return None
+        # No substitutions, globs or other syntax can be hidden by shlex quoting.
+        from scheduler_policy import literal_shell
+
+        if not literal_shell(stage.replace("{}", "/MEMCAP_PATH")):
+            return None
+        found.append(
+            (start, end, shlex.join(words[:2]) + " " + prefix + shlex.join(words[2:]))
+        )
+    if len(found) != 1:
+        return None
+    start, end, replacement = found[0]
+    if not light_shell(command[:start] + " true " + command[end:]):
+        return None
+    return command[:start] + " " + replacement + " " + command[end:]
+
+
 def guarded_shell(command, executable, session_key=""):
+    consumer = guard_read_consumers(command, executable, session_key)
+    if consumer:
+        return consumer
     # A reported path lookup: f=$(rg -l PATTERN dir); sed ... $f. The
     # substitution producer is proven inspection; consumers check expanded argv.
     match = re.fullmatch(

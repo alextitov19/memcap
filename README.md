@@ -1457,6 +1457,16 @@ native tool behavior. Compound commands are already checked stage by stage;
 every stage must qualify. General Python/awk scripts, Git commits (which can run
 hooks), opaque shell helpers and mixed build commands still require admission.
 
+As of v0.16.5, GitHub issue/PR inspection, finite jq selectors/formatters and
+literal `F=/path` and `D=/path` aliases also retain native execution. Bounded quoted `cat`
+heredoc writes/appends are accepted when the prefix and header are proven safe
+and no command follows the delimiter. Filename pipes using the supported
+`xargs -I{} rg` or quoted `while read` form validate each expanded child argv;
+filenames that become execution options still require admission. General Python,
+Perl, jq generators/modules, unquoted heredocs and mixed workloads remain managed.
+Bounded literal inspection loops and direct CloudWatch alarm listing also qualify.
+Use native editing tools for small edits when available.
+
 Literal `cd`/environment/redirection wrappers around known dev servers and
 streaming `adb logcat` retain their persistent-resource classification. They still
 need admission and memory accounting, but do not hold finite-work Stop hooks open.
@@ -1469,6 +1479,11 @@ not diagnose quoted error strings as a new workload failure; actual runner queue
 notices and failed workload diagnostics remain supported.
 
 `memcap wait` accepts memcap job IDs, not Claude task IDs. Invalid IDs return
-usage guidance immediately. Pending output distinguishes running work from queued
+usage guidance immediately, as do missing arguments and invalid timeouts. Pending output distinguishes running work from queued
 work and gives its age. Prefer native task completion notifications; the fallback
 wait remains bounded to 60 seconds. It does not capture or publish workload output.
+
+Report each incident once, even across upgrades or newly available symptom labels.
+Submit `memcap report` directly; a reporting loop or a report combined with a script
+may itself need admission. Routine queue transitions provide brief reporting and
+completion reminders without repeating the full diagnostic probe and guidance.

@@ -16,7 +16,7 @@ from report import PERFORMANCE_GUIDANCE, PROTECTION_GUIDANCE, MEMORY_GUIDANCE
 
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_GUIDANCE = (
-    "memcap manages shared memory across agent sessions. Keep polling existing queued "
+    "memcap manages shared memory across agent sessions. Await native completion notifications without polling when supported. Otherwise wait on existing queued "
     "tasks with TaskOutput block=true timeout=60000 or a blocking tool-session poll of up to 60000ms. "
     "If TaskOutput/tool polling is unavailable, run memcap wait JOB_ID --timeout 60 using the existing ID from memcap queue; do not create drain ticks or Bash sleep loops. "
     "Use memcap wait --session --timeout 60 to wait on this agent process's finite jobs without any job-ID lookup pipeline. Cancel an owned obsolete background task using native task cancellation; never cancel still-needed work or other sessions' tasks. "
@@ -294,6 +294,31 @@ def guidance(payload, state, refresh=False, brief=False):
     mobile = bool(BOOT.search(text))
     if not (mobile or MEMORY.search(text) or QUEUE.search(text)):
         return ""
+    if (
+        not mobile
+        and not MEMORY.search(text)
+        and re.search(
+            r"^memcap: (?:queued [a-f0-9]+:|admitted [a-f0-9]+; command started)",
+            text,
+            re.M,
+        )
+        and not re.search(
+            r"queue wait expired|queue lock unavailable|memory sampling failed|memory measurement unavailable",
+            text,
+            re.I,
+        )
+    ):
+        return (
+            "Memcap reported a queue transition, not a workload result. Await native completion "
+            "notifications without polling when supported; otherwise use one blocking wait up to "
+            "60 seconds on the existing task. Read final output/status before dependent work. "
+            "You MUST report a delayed inspection once with memcap report lightweight-queued, "
+            "even if it succeeded; report excessive polling once with memcap report polling-overhead. "
+            "Reuse existing incident URLs; do not duplicate reports or jobs. "
+            "Capacity waiting for genuinely heavy work alone is not a defect. "
+            "Do not use memcap off to unblock work. "
+            + PROTECTION_GUIDANCE
+        )
     lines = [
         "memcap diagnostic context at "
         + datetime.now(timezone.utc).isoformat()
@@ -337,7 +362,7 @@ def guidance(payload, state, refresh=False, brief=False):
         )
     else:
         lines.append(
-            "For an existing live queued task, use TaskOutput block=true timeout=60000 or a tool-session blocking poll of up to 60000ms once per minute; if unavailable, use memcap wait JOB_ID --timeout 60. "
+            "For an existing live queued task, await native completion notifications without polling when supported; otherwise use TaskOutput block=true timeout=60000 or a tool-session blocking poll of up to 60000ms once per minute; if unavailable, use memcap wait JOB_ID --timeout 60. "
             "do not resubmit it. Read final output and exit status before dependent work. "
             "If the command already finished, inspect its result instead of polling a dead task."
         )

@@ -157,6 +157,121 @@ class FeedbackTests(unittest.TestCase):
                 self.assertEqual(agent_diagnostics.guidance(payload, Path(temp)), "")
             probe.assert_not_called()
 
+    def test_wait_usage_errors_never_reserve_memory(self):
+        for command in [
+            "memcap wait",
+            "memcap wait --session --timeout 600",
+            "memcap wait xyz --timeout nonsense",
+            "memcap wait --help",
+        ]:
+            self.assertEqual(classify_shell(command)[0], "light", command)
+        self.assertEqual(classify_shell("memcap wait --session; npm test")[0], "job")
+
+    def test_github_and_json_status_inspection(self):
+        for command in [
+            "gh issue list -R org/repo --state open --limit 40",
+            "gh pr checks 123",
+            "gh issue view 123 --json title,state",
+            "F=/tmp/result; jq -r '.[0].text' $F | jq -r '(.issues // .)[] | [.key, .fields.status.name, (.fields.updated[:10]), (.fields.labels|join(\",\")), (.fields.parent.key // \"-\"), .fields.summary] | @tsv'",
+            "jq 'keys' /tmp/result",
+        ]:
+            self.assertEqual(classify_shell(command)[0], "light", command)
+        for command in [
+            "gh issue view --web 1",
+            "gh pr checkout 1",
+            "gh alias set x '!build'",
+            "jq -f /tmp/filter /tmp/result",
+            "jq 'recurse' file",
+            "jq '\"\\(range(100000000))\"' file",
+            "jq 'range(100000000)' file",
+            "jq 'while(true; .+1)' file",
+        ]:
+            self.assertEqual(classify_shell(command)[0], "job", command)
+
+    def test_quoted_note_append_is_native_but_executing_heredoc_is_not(self):
+        command = "cd /tmp; cat >> note.md <<'EOF'\nLiteral $(build), `build` and $HOME.\nEOF\n"
+        self.assertEqual(classify_shell(command)[0], "light")
+        with tempfile.TemporaryDirectory() as temp:
+            result = subprocess.run(
+                ["/bin/bash", "-c", command.replace("cd /tmp", "cd " + temp)],
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(
+                (Path(temp) / "note.md").read_text(),
+                "Literal $(build), `build` and $HOME.\n",
+            )
+        for bad in [
+            command + "npm test",
+            command.replace("<<'EOF'", "<<EOF"),
+            command.replace("note.md", "$(build)"),
+            command.replace("cd /tmp", "npm test"),
+            command.replace("Literal", "EOF\nnpm test\nLiteral"),
+            "python3 - <<'EOF'\nprint(1)\nEOF",
+        ]:
+            self.assertEqual(classify_shell(bad)[0], "job", bad)
+
+    def test_filename_consumers_validate_expanded_arguments(self):
+        from inspection import guarded_shell, inspect_argv
+
+        for command in [
+            "fd Package.resolved | head -2 | xargs -I{} rg -o '\"identity\"' {} ; echo done",
+            'rg --files | head -2 | while read f; do rg -o \'"identity"\' "$f"; done; echo done',
+        ]:
+            guarded = guarded_shell(command, "/memcap")
+            self.assertIsNotNone(guarded, command)
+            self.assertIn("_inspect", guarded)
+        for command in [
+            "fd file | xargs -P8 -I{} build {}",
+            "fd file | xargs -I{} sh -c '{}'",
+            "rg --files | while read f; do npm test; done",
+        ]:
+            self.assertIsNone(guarded_shell(command, "/memcap"), command)
+        with patch("inspection.os.execvpe") as execute:
+            result = inspect_argv(
+                ["rg", "-o", "identity", "--pre=evil"], lambda argv: 42
+            )
+            self.assertEqual(result, 42)
+            execute.assert_not_called()
+
+    def test_queue_transitions_do_not_repeat_host_probes(self):
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch.object(agent_diagnostics, "measure") as probe,
+        ):
+            for output in [
+                "memcap: queued abcd1234: preserving host memory headroom.",
+                "memcap: admitted abcd1234; command started.",
+            ]:
+                result = agent_diagnostics.guidance(
+                    dict(
+                        hook_event_name="PostToolUse",
+                        tool_name="Bash",
+                        tool_response=dict(stdout=output),
+                    ),
+                    Path(temp),
+                )
+                self.assertIn("MUST report", result)
+                self.assertIn("native completion", result)
+                self.assertLess(len(result), 1500)
+            probe.assert_not_called()
+
+    def test_literal_inspection_loops_and_remote_status(self):
+        for command in [
+            'memcap wait --session --timeout 60; for f in task1 task2; do rg -v "^memcap" /tmp/$f.output; done',
+            'D=/tmp/tasks; for f in task1 task2; do echo "== $f"; rg -v "^memcap" $D/$f.output; done',
+            "for p in 123 456; do gh pr view $p --json title; gh pr checks $p | head -20; done",
+            "AWS_PROFILE=example aws cloudwatch describe-alarms --region us-east-1 --query 'MetricAlarms[].StateValue' --output table",
+        ]:
+            self.assertEqual(classify_shell(command)[0], "light", command)
+        for command in [
+            "for f in --pre=evil; do rg pattern $f; done",
+            "for f in task1 task2; do npm test; done",
+            "for f in $(build); do cat $f; done",
+            "for f in task1; do echo done; done; npm test",
+        ]:
+            self.assertEqual(classify_shell(command)[0], "job", command)
+
     def test_report_symptom_is_fixed_private_vocabulary(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

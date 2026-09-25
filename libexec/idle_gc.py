@@ -641,9 +641,9 @@ class Collector:
         return {
             "decision": "block",
             "reason": f"memcap still owns pending work for this session: {ids}. "
-            "Use TaskOutput block=true timeout=60000, or a tool-session blocking poll of up to 60000ms. "
+            "Await the existing task’s native completion notification without polling when supported. Otherwise use TaskOutput block=true timeout=60000, or a tool-session blocking poll of up to 60000ms. "
             f"If those tools are unavailable, run memcap wait {pending[0]['id'][:8]} --timeout 60; this creates no new job or reservation. Never invent a drain tick or Bash sleep loop. "
-            "While pending, poll once per minute; do not repeatedly read output files, emit holding messages, or attempt to stop. "
+            "Only when notifications are unavailable, poll once per minute; do not repeatedly read output files, emit holding messages, or attempt to stop. "
             "The local scheduler keeps checking capacity without model calls. Read its final output "
             "and exit status before finishing. Queue waiting is not a task failure. "
             "Do not resubmit duplicate jobs or disable/change memcap to get around the queue. "
