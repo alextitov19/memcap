@@ -17,7 +17,7 @@
   no longer presented as proof of when an older incident occurred.
 - Distinguish shared-sampler contention from a failed memory measurement in
   admission notices, queue blockers and numeric event code 10.
-- Audit September 25 logs and reports #82–101, including retrospective incidents
+- Audit September 25 logs and reports #82–102, including retrospective incidents
   and proposed improvements, in `docs/feedback-2026-09-25.md`.
 
 ## v0.16.3 — 2026-09-24
