@@ -83,8 +83,19 @@ class PauseContractTests(unittest.TestCase):
             self.assertNotIn("cmd", updated)
             # The shell has no Homebrew bin on PATH. The resolved invocation
             # still reaches wait, creates no queued job, and returns its status.
+            fixture_wait = hook_response(
+                {
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": tool,
+                    "tool_input": {key: "memcap wait abcdef12 --timeout 0"},
+                },
+                self.exe,
+                agent,
+            )["hookSpecificOutput"]["updatedInput"]["command"]
+            # An explicit fixture ID does not need a real agent ancestor in CI.
+            self.assertEqual(fixture_wait, self.exe + " wait abcdef12 --timeout 0")
             completed = subprocess.run(
-                ["/bin/bash", "-c", updated["command"]],
+                ["/bin/bash", "-c", fixture_wait],
                 env={
                     **self.env,
                     "PATH": str(Path(sys.executable).parent)
