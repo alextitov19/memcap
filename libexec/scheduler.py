@@ -452,10 +452,17 @@ class Scheduler:
                     peak = max(row[1] for row in history)
                 job["reservation_source"] = 2  # complete adaptive window
             else:
-                job.pop("reservation_window", None)
                 job["reservation_source"] = 1  # lifetime peak / strict policy
                 if adaptive:
-                    return max(reserve, measured, int(peak * 1.25))
+                    # Multiple waiters can revisit a cached sample after its
+                    # launch freshness deadline. Retain both allowance and prior
+                    # history, without advancing or shrinking either. The next
+                    # fresh observation still resets any gap above five seconds.
+                    return max(
+                        job.get("reservation_kb", job["memory_kb"]),
+                        int(measured * 1.25),
+                    )
+                job.pop("reservation_window", None)
             if 30 <= time.time() - job.get("started", time.time()):
                 reserve = max(GIB // 2, int(peak * 1.25))
             else:
@@ -495,6 +502,7 @@ class Scheduler:
             "slots": "all finite-job slots occupied",
             "pressure_or_measurement": "host pressure or unreliable memory measurement",
             "measurement": "invalid memory measurement",
+            "sampling": "waiting for the shared memory sampler; no measurement failure established",
             "paging": "sustained paging recovery",
             "stabilizing": "observing pressure recovery",
             "startup": "observing previous startup",
@@ -757,6 +765,7 @@ class Scheduler:
                                 "host pressure or unreliable memory measurement": "pressure_or_measurement",
                                 "host pressure or unreliable pressure measurement": "pressure_or_measurement",
                                 "invalid memory measurement": "measurement",
+                                "waiting for the shared memory sampler; no measurement failure established": "sampling",
                                 "sustained paging recovery": "paging",
                                 "observing pressure recovery": "stabilizing",
                                 "observing previous startup": "startup",
@@ -997,15 +1006,19 @@ class Scheduler:
             or not math.isfinite(timeout)
             or not 0 <= timeout <= 60
         ):
-            raise QueueError("usage: memcap wait JOB_ID [--timeout SECONDS (0..60)]")
+            raise QueueError(
+                "usage: memcap wait JOB_ID [--timeout SECONDS (0..60)]; JOB_ID is a memcap hex ID from memcap queue, not a native tool task ID. Use memcap wait --session --timeout 60 or the native task's completion notification."
+            )
         deadline = time.monotonic() + timeout
         while True:
             try:
+                from idle_gc import process_table, GCError
+
+                table = process_table()
                 if ident == "--session":
-                    from idle_gc import Collector, process_table, owner, GCError
+                    from idle_gc import Collector, owner
 
                     try:
-                        table = process_table()
                         if not owner(str(os.getpid()), table):
                             raise QueueError(
                                 "cannot identify this agent; use memcap wait JOB_ID --timeout 60"
@@ -1020,12 +1033,10 @@ class Scheduler:
                 else:
                     data = json.loads((self.directory / "jobs.json").read_text())
                     matches = [j for j in data["jobs"] if j["id"].startswith(ident)]
-                from idle_gc import process_table
-
-                matches = wait_targets(matches, str(os.getpid()), process_table())
+                matches = wait_targets(matches, str(os.getpid()), table)
             except FileNotFoundError:
                 matches = []
-            except (ValueError, KeyError, TypeError) as exc:
+            except (ValueError, KeyError, TypeError, GCError) as exc:
                 raise QueueError(
                     "queue state unreadable; task completion is unverified"
                 ) from exc
@@ -1041,8 +1052,18 @@ class Scheduler:
                 )
                 return 0
             if time.monotonic() >= deadline:
+                waiting = sum(j["status"] == "waiting" for j in live["jobs"])
+                running = len(live["jobs"]) - waiting
+                oldest = max(
+                    max(
+                        0,
+                        time.time() - j.get("started", j.get("enqueued", time.time())),
+                    )
+                    for j in live["jobs"]
+                )
                 print(
-                    f"memcap: {ident} pending ({live['jobs'][0]['status']}). Repeat memcap wait {ident} --timeout 60; no job or reservation was created."
+                    f"memcap: {ident} pending ({live['jobs'][0]['status']}); {running} running, {waiting} queued; oldest current phase {int(oldest)}s. "
+                    f"Repeat memcap wait {ident} --timeout 60 only if native completion notification/blocking task polling is unavailable; no job or reservation was created. Running work has already passed admission. Read original task output for workload progress."
                 )
                 return 0
             time.sleep(min(2, max(0, deadline - time.monotonic())))

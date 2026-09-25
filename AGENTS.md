@@ -172,6 +172,10 @@ fresh observations with no gap above five seconds. Keep the lifetime peak for
 learning; use the recent window for admission. Strict mode retains lifetime peaks.
 Actual growth increases the allowance immediately. Incomplete, stale and orphaned
 measurements retain the previous effective allowance, not merely the initial estimate.
+An intervening stale cached read must not erase a previously complete window.
+It cannot advance that window or release capacity; the next fresh sample still
+checks the five-second maximum gap before using it. Keep this negative control:
+fresh samples interleaved with stale reads must eventually retire an old peak.
 Explicit `--memory`, orphaned groups and incomplete measurements retain their
 allowances. Do not equate a smaller reservation with process termination or reclaim
 capacity by deleting leases. A lease remains until its managed group exits.
@@ -267,3 +271,11 @@ observation, not a measured duration; omit unknown values. Preserve consent,
 deduplication and uncertain-submission protection. Memcap has no publication
 quota or retry cooldown. Both pending and successfully admitted queue output
 must carry this instruction, without publishing the original command.
+
+Keep reporting details in the fixed `--symptom` vocabulary. Never upload arbitrary
+notes or commands as a shortcut to reproduction. A deduplicated result must say
+that the new snapshot stayed local, rather than claiming it became a comment.
+Report timestamps/versions identify reporting time, not a retrospective incident.
+Send full hook guidance once per session/version/pause state; subsequent prompts
+get a short reminder. SessionStart must refresh full guidance after compaction or
+resume. Inspection output quoting errors is not a new failure.

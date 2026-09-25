@@ -51,6 +51,8 @@ def decide(
     try:
         mode = policy["mode"]
         memory = candidate["memory_kb"]
+        if sample.get("busy"):
+            return deny("sampling")
         if (
             mode not in ("strict", "adaptive")
             or type(memory) is not int

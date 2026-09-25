@@ -239,10 +239,15 @@ def recent_terminations(state, cwd):
         return []
 
 
-def guidance(payload, state, refresh=False):
+def guidance(payload, state, refresh=False, brief=False):
     if not isinstance(payload, dict):
         return ""
     event = payload.get("hook_event_name")
+    if brief and event in {"SessionStart", "UserPromptSubmit", "PreToolUse"}:
+        if event == "PreToolUse":
+            return ""
+        mode = "paused by the user" if (state / "paused").is_file() else "active"
+        return f"Memcap remains {mode}; existing session guidance applies. Use native completion notifications when available."
     if event in {"SessionStart", "UserPromptSubmit"} or (
         refresh and event == "PreToolUse"
     ):
@@ -262,6 +267,30 @@ def guidance(payload, state, refresh=False):
     text = "\n".join(
         output_text(payload.get(k)) for k in ("tool_response", "tool_result", "error")
     )
+    # Reading logs/source is evidence, not a new command failure. Otherwise a
+    # grep of this module recursively diagnoses its own quoted error patterns.
+    if event == "PostToolUse":
+        tool = payload.get("tool_name", "")
+        if tool in {"Read", "Grep", "Glob", "read_file"}:
+            return ""
+        from scheduler_policy import classify_shell
+
+        request = payload.get("tool_input") or {}
+        command = (
+            request.get("command", request.get("cmd", ""))
+            if isinstance(request, dict)
+            else ""
+        )
+        actual_queue_notice = any(
+            line.startswith("memcap: ") and QUEUE.search(line)
+            for line in text.splitlines()
+        )
+        if (
+            command
+            and classify_shell(command)[0] == "light"
+            and not actual_queue_notice
+        ):
+            return ""
     mobile = bool(BOOT.search(text))
     if not (mobile or MEMORY.search(text) or QUEUE.search(text)):
         return ""
@@ -337,6 +366,7 @@ if __name__ == "__main__":
                 json.load(sys.stdin),
                 state,
                 refresh=sys.argv[1:] == ["--session-guidance"],
+                brief=sys.argv[1:] == ["--brief-guidance"],
             ),
             end="",
         )

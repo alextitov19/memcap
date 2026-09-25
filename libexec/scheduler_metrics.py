@@ -217,6 +217,7 @@ def append_event(directory: Path, event: dict) -> None:
         "startup",
         "stabilizing",
         "paging",
+        "sampling",
     )
     if event.get("reason") in reasons:
         row["reason_code"] = reasons.index(event["reason"])

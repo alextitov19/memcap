@@ -7,6 +7,12 @@ setup() {
   export MC_DRY_RUN=1
 }
 
+@test "QUEUE: September 25 feedback regression suite" {
+  run python3 "$MEMCAP_ROOT/tests/test_feedback_0164.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}
+
 @test "QUEUE: scheduler behavioral suite" {
   run python3 "$MEMCAP_ROOT/tests/test_scheduler.py"
   [ "$status" = 0 ]

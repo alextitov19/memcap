@@ -155,6 +155,26 @@ SCRIPT
   assert_contains "$output" 'memcap wait --session'
 }
 
+@test "FEEDBACK: full guidance is once per version and state, including prompts" {
+  hook_event=SessionStart
+  hook_input > "$BATS_TEST_TMPDIR/input"
+  run bash -c '"$MEMCAP_ROOT/bin/memcap" feedback < "$BATS_TEST_TMPDIR/input"'
+  [ "$status" = 0 ]
+  assert_contains "$output" 'MUST report'
+  hook_event=UserPromptSubmit
+  hook_input > "$BATS_TEST_TMPDIR/input"
+  run bash -c '"$MEMCAP_ROOT/bin/memcap" feedback < "$BATS_TEST_TMPDIR/input"'
+  [ "$status" = 0 ]
+  assert_contains "$output" 'Memcap remains active'
+  assert_not_contains "$output" 'MUST report'
+  # SessionStart also covers compaction/resume, where previous context may be gone.
+  hook_event=SessionStart
+  hook_input > "$BATS_TEST_TMPDIR/input"
+  run bash -c '"$MEMCAP_ROOT/bin/memcap" feedback < "$BATS_TEST_TMPDIR/input"'
+  [ "$status" = 0 ]
+  assert_contains "$output" 'MUST report'
+}
+
 @test "FEEDBACK: pause and resume refresh guidance once without a version change" {
   hook_event=PreToolUse
   hook_input > "$BATS_TEST_TMPDIR/input"

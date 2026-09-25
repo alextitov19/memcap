@@ -36,6 +36,20 @@ CONTEXTS = {
     "stop-hook",
     "heavy-work",
 }
+SYMPTOMS = {
+    "inspection-wrapped",
+    "remote-control-wrapped",
+    "report-command-queued",
+    "wait-target-invalid",
+    "persistent-work-pending",
+    "native-wait-unavailable",
+    "repeated-guidance",
+    "diagnostic-from-inspection",
+    "short-job-overhead",
+    "slow-admission",
+    "measurement-degraded",
+    "oversized-process",
+}
 
 # Shared by hook context and the integrated profile block so the two cannot drift.
 PROTECTION_GUIDANCE = (
@@ -75,6 +89,11 @@ PERFORMANCE_GUIDANCE = (
     "and existing consent. Memcap imposes no publication quota or retry cooldown. "
     "GitHub authentication, service errors or uncertain submissions can still defer publishing. "
     "Keep working; never retry deferred reports in a loop."
+    " Add --symptom from memcap report --help when known; it preserves distinct fixed-vocabulary "
+    "reproductions without publishing commands or private text. Deduplicated means the new "
+    "snapshot is saved locally; it was not appended to the existing GitHub issue. "
+    "Report the observed incident promptly; the installed version and snapshot describe report time, "
+    "not necessarily an older incident's runner or machine state."
 )
 from report_metrics import capture, read_json, sanitize
 
@@ -211,9 +230,15 @@ class Reporter:
     def save(self, ledger):
         write_private(self.directory / "ledger.json", json.dumps(ledger) + "\n")
 
-    def report(self, kind, *, dry_run=False, wait_seconds=None, context=None):
+    def report(
+        self, kind, *, dry_run=False, wait_seconds=None, context=None, symptom=None
+    ):
         if kind not in KINDS:
             raise ValueError("unknown report category")
+        if symptom is not None and symptom not in SYMPTOMS:
+            raise ValueError(
+                "unknown report symptom; use a fixed value, never private text"
+            )
         if context is not None and context not in CONTEXTS:
             raise ValueError(
                 "unknown report context; use a fixed context, never raw commands"
@@ -224,15 +249,17 @@ class Reporter:
             raise ValueError("wait seconds must be a whole number from 0 to 604800")
         try:
             with self.locked():
-                return self._report(kind, dry_run, wait_seconds, context)
+                return self._report(kind, dry_run, wait_seconds, context, symptom)
         except BlockingIOError:
             return {
                 "status": "busy",
                 "message": "Another report is being handled; continue work.",
             }
 
-    def _report(self, kind, dry_run, wait_seconds=None, context=None):
+    def _report(self, kind, dry_run, wait_seconds=None, context=None, symptom=None):
         identity = f"1:{self.version}:{kind}" + (f":{context}" if context else "")
+        if symptom:
+            identity += f":symptom:{symptom}"
         fingerprint = hashlib.sha256(identity.encode()).hexdigest()[:20]
         marker = f"<!-- memcap-report:{fingerprint} -->"
         draft = self.directory / f"{fingerprint}.md"
@@ -243,8 +270,9 @@ class Reporter:
             facts["agent_reported_wait_seconds"] = wait_seconds
         body = (
             f"{marker}\n## Agent-reported observation\n\n{KINDS[kind]}. This is a suspected problem, not a confirmed root cause.\n\n"
-            f"Memcap version: {self.version}\nCategory: {kind}\nReport identifier: {fingerprint}\nObserved at: {datetime.fromtimestamp(now, timezone.utc).isoformat()}\n\n"
+            f"Memcap version at report time: {self.version}\nCategory: {kind}\nReport identifier: {fingerprint}\nReported at: {datetime.fromtimestamp(now, timezone.utc).isoformat()}\n\n"
             f"Activity context: {context or 'unspecified'} (agent supplied, fixed vocabulary).\n\n"
+            f"Symptom: {symptom or 'unspecified'} (agent supplied, fixed vocabulary).\n\n"
             "Snapshot collected at report time, which may differ from failure time. Missing values are unknown. "
             "Queue counts, session counts and ages describe stored entries, not verified live jobs. "
             "Blockers describe each waiting entry's last recorded admission decision; old runners may have none. "
@@ -279,6 +307,7 @@ class Reporter:
                     **result,
                     "status": "deduplicated",
                     "url": issue_url(row["url"]),
+                    "message": "Existing issue reused. New snapshot saved locally only; no GitHub comment was posted.",
                 }
             last = row.get("last_attempt", 0)
             if type(last) not in (int, float) or not math.isfinite(last):
@@ -322,7 +351,12 @@ class Reporter:
                 if url:
                     row.update(url=url, status="deduplicated")
                     self.save(ledger)
-                    return {**result, "status": "deduplicated", "url": url}
+                    return {
+                        **result,
+                        "status": "deduplicated",
+                        "url": url,
+                        "message": "Prior uncertain submission found. New snapshot saved locally only; no new GitHub comment was posted.",
+                    }
                 return {**result, "status": "submission-uncertain"}
             # Record ambiguity BEFORE POST. A timeout/crash after GitHub accepts a
             # request must not create a second issue or comment on the next call.
@@ -368,6 +402,11 @@ def main():
     parser.add_argument("action", choices=["enable", "disable", "status", *KINDS])
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
+        "--symptom",
+        choices=sorted(SYMPTOMS),
+        help="Fixed reproduction detail; no private text",
+    )
+    parser.add_argument(
         "--context",
         choices=sorted(CONTEXTS),
         help="Fixed activity context; no commands or free text are uploaded",
@@ -378,6 +417,8 @@ def main():
         help="Observed wait, whole seconds (0–604800); omit if unknown",
     )
     args = parser.parse_args()
+    if args.symptom and args.action not in KINDS:
+        parser.error("--symptom requires a report category")
     if args.context and args.action not in KINDS:
         parser.error("--context requires a report category")
     if args.dry_run and args.action in ("enable", "disable"):
@@ -418,6 +459,7 @@ def main():
                 dry_run=args.dry_run or os.environ.get("MC_DRY_RUN") == "1",
                 wait_seconds=args.wait_seconds,
                 context=args.context,
+                symptom=args.symptom,
             )
             print(json.dumps(result))
             if "url" not in result:
