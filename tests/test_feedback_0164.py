@@ -122,6 +122,7 @@ class FeedbackTests(unittest.TestCase):
         for command in [
             "cd /project && npm run dev > /tmp/server.log 2>&1",
             "cd /project; PORT=3000 npm start",
+            "PORT=3000 npm start",
             "adb -s emulator-5554 logcat > /tmp/device.log",
         ]:
             with self.subTest(command=command):

@@ -604,7 +604,9 @@ def classify_shell(command: str) -> tuple[str, str]:
         return "light", ""
     words = simple_words(command)
     persistent = (
-        persistent_shell(command) if not words or Path(words[0]).name == "adb" else ""
+        persistent_shell(command)
+        if not words or Path(words[0]).name not in {"npm", "pnpm", "yarn", "vite"}
+        else ""
     )
     if persistent:
         return "resource", persistent
