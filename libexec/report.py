@@ -57,7 +57,11 @@ PROTECTION_GUIDANCE = (
     "even in maximum/skip-permissions modes. Only the user may change memcap policy: when the user "
     "explicitly authorizes work on memcap itself, developing, testing, releasing and installing memcap "
     "is permitted, following its repository AGENTS.md sandboxing rules and running heavy work through "
-    "the live queue. That authorization never extends to other tasks."
+    "the live queue. That authorization never extends to other tasks. "
+    "Routine file operations, supported remote calls and verified shell combinations/helpers "
+    "run natively or with argument checks, without workload reservations. "
+    "This grants no action permissions. "
+    "Local builds, arbitrary scripts and execution-capable arguments remain managed."
 )
 
 MEMORY_GUIDANCE = (

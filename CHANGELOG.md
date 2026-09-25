@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.17.0 — 2026-09-25
+
+- Broaden lightweight classification by command family: routine filesystem work,
+  metadata, read-only find predicates, finite sed transformations/edits, Git
+  inspection, Benmore remote APIs, curl, GitHub API and Docker inspection.
+- Validate lightweight command-substitution producers and their consumers' actual
+  expanded arguments. Preserve quoting, output, status and single execution;
+  local builds and executable arguments still use admission (#138).
+- Keep supported Benmore log, SQL, environment and probe calls native (#139).
+- Inspect finite Bash/sh helper contents so small SSM wrappers and streaming
+  transforms can run without workload reservations (#142). Validate expanded
+  arguments again at runtime and execute the checked script text. Unknown
+  commands, loops, dynamic executables and shell startup settings remain managed.
+- Recognize small straight-line Python text reads and regex/HTML cleanup (#140).
+  Check actual input sizes in the command's working directory, bound intermediate
+  text estimates and use isolated standard-library imports. Unknown scripts and
+  large/unavailable inputs remain managed.
+- Update global agent guidance. Memory classification never grants permission
+  for filesystem changes, deletion, remote mutations or deployment.
+
 ## v0.16.7 — 2026-09-25
 
 - Keep bounded literal note appends followed by lightweight confirmation or

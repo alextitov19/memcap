@@ -7,6 +7,12 @@ setup() {
   export MC_DRY_RUN=1
 }
 
+@test "QUEUE: lightweight command families and composed expansion guards" {
+  run python3 "$MEMCAP_ROOT/tests/test_lightweight_families.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}
+
 @test "QUEUE: September 25 feedback regression suite" {
   run python3 "$MEMCAP_ROOT/tests/test_feedback_0164.py"
   [ "$status" = 0 ]
@@ -179,6 +185,12 @@ sample_fixture() {
 
 @test "QUEUE: September feedback regression contracts" {
   run python3 "$MEMCAP_ROOT/tests/test_feedback_release.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}
+
+@test "QUEUE: finite lightweight shell helpers validate their contents and expanded arguments" {
+  run python3 "$MEMCAP_ROOT/tests/test_control_script.py"
   [ "$status" = 0 ]
   assert_contains "$output" 'OK'
 }

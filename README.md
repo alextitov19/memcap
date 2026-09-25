@@ -1459,7 +1459,7 @@ While active, finite `aws logs tail` calls, GitHub workflow control (including
 `R=owner/repo && gh workflow run ... -R $R`), single-file `rm file` followed by
 inspection, and `wc -l ./pages/{A,B}.tsx` avoid heavy reservations. Pathname brace
 expansion uses the same expanded-argument validation as globs. `--follow`,
-recursive removal, unknown substitutions and stages that build/run code retain
+unknown substitutions and stages that build/run code retain
 normal admission and permission handling.
 
 As of v0.16.4, current-home paths (`~/…`), literal path aliases such as
@@ -1480,6 +1480,40 @@ filenames that become execution options still require admission. General Python,
 Perl, jq generators/modules, unquoted heredocs and mixed workloads remain managed.
 Bounded literal inspection loops and direct CloudWatch alarm listing also qualify.
 Use native editing tools for small edits when available.
+
+**v0.17.0 broadens this by command family.** Routine copy/move/remove (including
+recursive removal), directory/link operations and metadata checks no longer
+reserve workload memory. Normal tool permissions still apply, including deletion
+approval. Read-only `find` predicates compose; execution actions remain managed.
+Finite sed print/delete/quit and substitution scripts support multiple expressions,
+alternate delimiters, extended regex and in-place edits; executing scripts do not.
+Supported Benmore log/SQL/env/probe/restart calls, curl requests, GitHub API calls
+and Docker inspection/finite logs stay native. Local builds/deploy helpers and
+streaming follow modes retain admission.
+
+Shell combinations such as `rg pattern $(rg -l needle src | head -3)` now prove
+the producer lightweight and validate the consumer's expanded arguments before
+execution. Nested supported substitutions, literal local aliases and additional
+filename consumers use the same rules. An expansion that introduces `--pre`, an
+executable Git option or another workload still enters admission. No blanket
+exemption for arbitrary shell/Python/Node scripts is implied.
+
+Small Bash/sh helper files also qualify when their entire contents are supported
+lightweight operations. This includes remote SSM wrappers using local data
+assignments and streaming gzip/base64 transforms. Files are read again at runtime
+(regular files up to 32 KiB), and the checked text executes with its original
+positional arguments; expanded external arguments are validated before execution.
+Unknown commands, loops, dynamic executable names, startup settings and unreadable
+or oversized scripts retain admission. The script's filename does not establish
+whether it is lightweight.
+
+Small straight-line `python3 -c` text inspections can use imports of `re`, `html`
+and unused `sys`, literal `open(...).read()`, regex substitutions, HTML unescaping
+and printing. The runtime guard checks regular files up to 1 MiB and conservative
+intermediate/output estimates up to 32 MiB in the actual cwd; this is a planning
+check, not a kernel memory limit or an immutable filesystem snapshot. Standard
+library imports run in Python isolated mode. Loops, unknown calls/imports,
+unavailable/large files and unbounded expressions remain managed.
 
 Direct `gh pr checks --watch --interval 60` keeps native execution too. Combining
 it with `git push`, a rebase, or a build makes the entire shell command managed:

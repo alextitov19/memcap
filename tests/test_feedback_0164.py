@@ -90,7 +90,7 @@ class FeedbackTests(unittest.TestCase):
             self.assertNotEqual(
                 classify_shell("sed '" + script + "' note.md")[0], "light"
             )
-        self.assertNotEqual(classify_shell("sed -i '' 's/a/b/' note.md")[0], "light")
+        self.assertEqual(classify_shell("sed -i '' 's/a/b/' note.md")[0], "light")
         self.assertNotEqual(classify_shell("sed 's/a/b/' -f script.sed")[0], "light")
         result = subprocess.run(
             ["sed", r"s/(\.\.\/\.\.[^)]*)//"],
