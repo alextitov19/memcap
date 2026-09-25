@@ -51,6 +51,65 @@ class PauseContractTests(unittest.TestCase):
     def pause(self):
         (self.state / "paused").touch()
 
+    def test_native_wait_resolves_installed_path_without_changing_task_mode(self):
+        from scheduler_policy import hook_response
+
+        for agent, key, tool in (
+            ("claude", "command", "Bash"),
+            ("codex", "cmd", "exec_command"),
+        ):
+            original = {
+                key: "memcap wait --session --timeout 0",
+                "timeout": 60000,
+                "run_in_background": False,
+            }
+            response = hook_response(
+                {
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": tool,
+                    "tool_input": original,
+                },
+                self.exe,
+                agent,
+            )
+            result = response["hookSpecificOutput"]
+            updated = result["updatedInput"]
+            self.assertEqual(
+                updated["command"], self.exe + " wait --session --timeout 0"
+            )
+            self.assertEqual(updated["timeout"], 60000)
+            self.assertFalse(updated["run_in_background"])
+            self.assertNotIn("permissionDecision", result)
+            self.assertNotIn("cmd", updated)
+            # The shell has no Homebrew bin on PATH. The resolved invocation
+            # still reaches wait, creates no queued job, and returns its status.
+            completed = subprocess.run(
+                ["/bin/bash", "-c", updated["command"]],
+                env={
+                    **self.env,
+                    "PATH": str(Path(sys.executable).parent)
+                    + ":/usr/bin:/bin:/usr/sbin:/sbin",
+                },
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("no longer pending", completed.stdout)
+
+        self.assertEqual(
+            hook_response(
+                {
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": self.exe + " wait --session --timeout 0"},
+                },
+                self.exe,
+                "claude",
+            ),
+            {},
+        )
+
     def test_paused_hook_leaves_reported_commands_in_native_tool_mode(self):
         self.pause()
         commands = [

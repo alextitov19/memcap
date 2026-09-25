@@ -81,7 +81,9 @@ class AdmissionTests(unittest.TestCase):
         decision = self.decision(sample={**self.sample(), "monotonic": 97.999})
         self.assertFalse(decision["allow"])
         self.assertEqual(decision["reason"], "sampling")
-        self.assertTrue(self.decision(sample={**self.sample(), "monotonic": 98})["allow"])
+        self.assertTrue(
+            self.decision(sample={**self.sample(), "monotonic": 98})["allow"]
+        )
         for stamp in (101, float("nan"), "old", -1):
             decision = self.decision(sample={**self.sample(), "monotonic": stamp})
             self.assertFalse(decision["allow"])
