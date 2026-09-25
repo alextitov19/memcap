@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.16.7 — 2026-09-25
+
+- Keep bounded literal note appends followed by lightweight confirmation or
+  inspection native (#135). Validate the entire suffix; executable substitutions,
+  scripts, nested heredocs and mixed workloads still require admission.
+- Document the difference between native CI status watching and a compound
+  command that also pushes Git changes (#136).
+
 ## v0.16.6 — 2026-09-25
 
 - Keep filename searches piped into sequential `xargs wc -l` native (#133).

@@ -594,20 +594,26 @@ def literal_excerpt_helper(command: str) -> bool:
 def literal_note(command: str) -> bool:
     """A bounded quoted cat heredoc is literal data, never executable shell.
 
-    Only a final append/write is accepted. Validate the complete prefix and
-    header, and reject early delimiters so trailing commands cannot hide in data.
+    Validate the complete prefix, header and optional lightweight suffix. Reject
+    early delimiters so executable commands cannot hide in the literal body.
     """
     if len(command) > 65536:
         return False
     match = re.fullmatch(
-        r"(?P<prefix>[^\n]*[;]\s*)?(?P<header>cat\s+>{1,2}\s+[^\n]+?)\s+<<(?P<quote>['\"])(?P<delimiter>[A-Za-z_][A-Za-z_0-9]*)(?P=quote)\n(?P<body>.*?)\n(?P=delimiter)\n?",
+        r"(?P<prefix>[^\n]*[;]\s*)?(?P<header>cat\s+>{1,2}\s+[^\n]+?)\s+<<(?P<quote>['\"])(?P<delimiter>[A-Za-z_][A-Za-z_0-9]*)(?P=quote)\n(?P<body>.*?)\n(?P=delimiter)(?:\n(?P<suffix>.*))?",
         command,
         re.S,
     )
     if not match or match["delimiter"] in match["body"].splitlines():
         return False
     prefix = (match["prefix"] or "").rstrip("; ")
-    return (not prefix or light_shell(prefix)) and light_shell(match["header"])
+    suffix = (match["suffix"] or "").strip()
+    return (
+        (not prefix or light_shell(prefix))
+        and light_shell(match["header"])
+        # Do not recursively accept chains of heredocs through this fast path.
+        and (not suffix or ("<<" not in suffix and light_shell(suffix)))
+    )
 
 
 def light_shell(command: str, allow_bare_globs=False) -> bool:

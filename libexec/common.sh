@@ -13,7 +13,7 @@ set -uo pipefail
 # log analysis had no way to tell which build wrote which line. A test ties this
 # string to CHANGELOG.md's top heading so a release cannot bump one alone.
 # shellcheck disable=SC2034  # read by bin/memcap, status.sh and enforce.sh
-MEMCAP_VERSION="0.16.6"
+MEMCAP_VERSION="0.16.7"
 
 mc_config_dir() { printf '%s/memcap\n' "${MEMCAP_CONFIG_HOME:-$HOME/.config}"; }
 mc_config_file() { printf '%s/memcap.conf\n' "$(mc_config_dir)"; }
