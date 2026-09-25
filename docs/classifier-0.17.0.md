@@ -9,7 +9,8 @@ lightweight producers with runtime validation of their consumers.
 
 The committed corpus in `tests/test_lightweight_families.py` covers 25 direct
 combinations and nine guarded combinations. Comparing v0.16.7's source commit
-`e1470dc` with this change on the same Mac, without executing any remote command:
+`e1470dc` with the initial broader classifier (`ca3b74e`) on the same Mac,
+without executing any remote command:
 
 | Corpus result | v0.16.7 | v0.17.0 |
 | --- | ---: | ---: |
@@ -18,7 +19,9 @@ combinations and nine guarded combinations. Comparing v0.16.7's source commit
 | Median classification time, ten whole-corpus runs | 4.81 ms | 2.85 ms |
 
 This corpus deliberately represents missing support; it is not a percentage of
-all user commands or a measured end-to-end latency claim. The practical change
+all user commands or a measured end-to-end latency claim. The timing predates the
+additional script-helper recognition; the final regression still verifies all
+34 shapes avoid admission. The practical change
 is removal of workload admission for these shapes. Real Bash/zsh tests verify
 single producer execution, matching output/status, and no queue directory for
 supported inspection. Execution-producing arguments reach a recording fallback.
@@ -66,3 +69,9 @@ The script-file regression additionally covers output/exit status under Bash and
 zsh, a script changed between classification and execution, FIFO/oversized paths,
 expanded execution options, and shell startup variables. This is a bounded syntax
 proof, not a promise that every custom shell program is lightweight.
+
+The first full run after adding helper guidance had one failure: repeated hook
+context grew to 1,565 characters against its existing 1,500-character limit.
+Guidance was shortened; the limit was preserved. The helper entry-path negative
+control fails when recognition is disabled, and the actual reported helper passes
+content validation without executing its remote commands.
