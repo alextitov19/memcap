@@ -146,6 +146,17 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         return True
     if name in {"cut", "uniq"}:
         return True
+    if name == "find":
+        return (
+            len(words) == 4
+            and not words[1].startswith("-")
+            and words[1] not in {"!", "(", ")"}
+            and words[2] in {"-name", "-iname"}
+        )
+    if name == "xargs" and words[1:] == ["wc", "-l"]:
+        # wc streams counts and has no command-execution option. No arbitrary
+        # child program or xargs option (including parallelism) is accepted.
+        return True
     if name == "sort":
         return not any(w.startswith("--co") for w in words[1:])
     if name in {"fd", "fdfind"}:

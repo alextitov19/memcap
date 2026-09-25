@@ -17,6 +17,30 @@ from admission import decide
 
 
 class FeedbackTests(unittest.TestCase):
+    def test_find_name_pipeline_with_word_count_stays_native(self):
+        command = 'find src -name "*.swift" | xargs wc -l | sort -n | tail -120'
+        self.assertEqual(classify_shell(command)[0], "light")
+        for altered in (
+            command.replace("xargs wc", "xargs -P 8 wc"),
+            command.replace("xargs wc -l", "xargs sh -c build"),
+            command.replace('-name "*.swift"', "-delete"),
+            command.replace('-name "*.swift"', '-name "*.swift" -exec build {} +'),
+        ):
+            self.assertNotEqual(classify_shell(altered)[0], "light")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "src/a.swift").write_text("one\ntwo\n")
+            result = subprocess.run(
+                ["/bin/bash", "-c", command],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.split(), ["2", "src/a.swift"])
+
     def test_literal_file_excerpt_helper_does_not_reserve_workload_memory(self):
         definition = (
             'show(){ echo "=== $1:$2"; sed -n "$(( $2-2 )),$(( $2+2 ))p" "$1"; }; '

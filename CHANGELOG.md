@@ -2,6 +2,8 @@
 
 ## v0.16.6 — 2026-09-25
 
+- Keep filename searches piped into sequential `xargs wc -l` native (#133).
+  Other find actions, xargs programs and parallel execution remain managed.
 - Retain running-job supervision through transient process-identity failures and
   retry guarded cancellation failures (#131). Identity checks remain fresh and
   locked; retry waits release the lock and keep uncertain reservations.
