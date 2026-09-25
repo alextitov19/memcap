@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.16.6 — 2026-09-25
+
+- Keep filename searches piped into sequential `xargs wc -l` native (#133).
+  Other find actions, xargs programs and parallel execution remain managed.
+- Retain running-job supervision through transient process-identity failures and
+  retry guarded cancellation failures (#131). Identity checks remain fresh and
+  locked; retry waits release the lock and keep uncertain reservations.
+- Recognize the fixed file/line excerpt helper with a bounded literal call list
+  (#130). Unknown function bodies and dynamic calls remain managed.
+- Keep single read-only sed substitutions with escaped slash delimiters native
+  (#129). Execution/write flags, additional scripts and in-place edits remain
+  managed; expanded support does not evaluate shell expressions.
+- Correct the Stop-hook notification contradiction reported after v0.16.5:
+  once Stop has blocked ending the turn, use the existing task's blocking wait
+  instead of trying to end the turn to receive a native notification.
+- Explain this boundary in installed and runtime guidance. Native completion
+  notifications remain preferred when the client can suspend without a blocked
+  Stop. Admission, pending-work ownership and cancellation rules are unchanged.
+
 ## v0.16.5 — 2026-09-25
 
 - Retain reduced adaptive allowances during sampler contention and incomplete

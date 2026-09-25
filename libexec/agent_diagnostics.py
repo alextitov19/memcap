@@ -17,6 +17,7 @@ from report import PERFORMANCE_GUIDANCE, PROTECTION_GUIDANCE, MEMORY_GUIDANCE
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_GUIDANCE = (
     "memcap manages shared memory across agent sessions. Await native completion notifications without polling when supported. Otherwise wait on existing queued "
+    "tasks; if a Stop hook has blocked ending the turn, notification waiting cannot suspend that turn: use a blocking wait instead. Wait on existing "
     "tasks with TaskOutput block=true timeout=60000 or a blocking tool-session poll of up to 60000ms. "
     "If TaskOutput/tool polling is unavailable, run memcap wait JOB_ID --timeout 60 using the existing ID from memcap queue; do not create drain ticks or Bash sleep loops. "
     "Use memcap wait --session --timeout 60 to wait on this agent process's finite jobs without any job-ID lookup pipeline. Cancel an owned obsolete background task using native task cancellation; never cancel still-needed work or other sessions' tasks. "
@@ -247,7 +248,7 @@ def guidance(payload, state, refresh=False, brief=False):
         if event == "PreToolUse":
             return ""
         mode = "paused by the user" if (state / "paused").is_file() else "active"
-        return f"Memcap remains {mode}; existing session guidance applies. Use native completion notifications when available."
+        return f"Memcap remains {mode}; existing session guidance applies. Use native completion notifications when available; if Stop blocks ending the turn, use the existing task's blocking wait instead."
     if event in {"SessionStart", "UserPromptSubmit"} or (
         refresh and event == "PreToolUse"
     ):
@@ -312,12 +313,12 @@ def guidance(payload, state, refresh=False, brief=False):
             "Memcap reported a queue transition, not a workload result. Await native completion "
             "notifications without polling when supported; otherwise use one blocking wait up to "
             "60 seconds on the existing task. Read final output/status before dependent work. "
+            "If Stop has blocked ending the turn, use that blocking wait instead of trying to finish for a notification. "
             "You MUST report a delayed inspection once with memcap report lightweight-queued, "
             "even if it succeeded; report excessive polling once with memcap report polling-overhead. "
             "Reuse existing incident URLs; do not duplicate reports or jobs. "
             "Capacity waiting for genuinely heavy work alone is not a defect. "
-            "Do not use memcap off to unblock work. "
-            + PROTECTION_GUIDANCE
+            "Do not use memcap off to unblock work. " + PROTECTION_GUIDANCE
         )
     lines = [
         "memcap diagnostic context at "
@@ -363,6 +364,7 @@ def guidance(payload, state, refresh=False, brief=False):
     else:
         lines.append(
             "For an existing live queued task, await native completion notifications without polling when supported; otherwise use TaskOutput block=true timeout=60000 or a tool-session blocking poll of up to 60000ms once per minute; if unavailable, use memcap wait JOB_ID --timeout 60. "
+            "If Stop has blocked ending the turn, use the existing blocking wait instead of trying to end the turn for a notification; "
             "do not resubmit it. Read final output and exit status before dependent work. "
             "If the command already finished, inspect its result instead of polling a dead task."
         )

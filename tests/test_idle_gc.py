@@ -269,6 +269,12 @@ class IdleGCTests(unittest.TestCase):
         self.assertEqual(response["decision"], "block")
         self.assertIn("mine", response["reason"])
         self.assertNotIn("other", response["reason"].split(". ", 1)[0])
+        self.assertIn("This Stop hook has blocked ending the turn", response["reason"])
+        self.assertIn("Use a blocking wait now", response["reason"])
+        self.assertIn("memcap wait mine --timeout 60", response["reason"])
+        self.assertIn("once per minute", response["reason"])
+        self.assertNotIn("Await the existing task", response["reason"])
+        self.assertNotIn("Only when notifications are unavailable", response["reason"])
         jobs[0]["resource"] = "dev-server"
         (q / "jobs.json").write_text(json.dumps({"jobs": jobs}))
         self.assertEqual(self.gc.continuation("90", self.table), {})

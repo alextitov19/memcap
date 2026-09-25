@@ -53,6 +53,8 @@ Await native completion notifications without polling when supported. Otherwise 
 on an existing queued task with TaskOutput block=true timeout=60000 or a
 blocking tool-session poll, once per minute. If unavailable, run
 `memcap wait JOB_ID --timeout 60` using the existing ID from `memcap queue`.
+If a Stop hook has blocked ending the turn, use that blocking wait instead of
+trying to finish for a notification: this hook cannot suspend and resume the agent.
 Use `memcap wait --session --timeout 60` to wait on finite jobs owned by this agent
 process without a shell pipeline to discover IDs. Cancel an owned obsolete task
 whose result is no longer needed using native task cancellation, then read its

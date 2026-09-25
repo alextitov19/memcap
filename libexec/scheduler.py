@@ -58,7 +58,7 @@ def processes() -> dict:
         env={**os.environ, "LC_ALL": "C"},
     )
     if result.returncode or not result.stdout.strip():
-        raise QueueError("process identities unavailable; no work admitted")
+        raise QueueError("process identities unavailable")
     rows = {}
     for line in result.stdout.splitlines():
         parts = line.split()
@@ -828,12 +828,14 @@ class Scheduler:
                             print(
                                 f"memcap: queued {ident[:8]}: {reason}.{details} Command has not started; "
                                 f"await native completion notifications without polling when supported; otherwise poll this existing task once per minute (TaskOutput block=true timeout=60000 if available; otherwise memcap wait {ident[:8]} --timeout 60). "
+                                "If Stop has blocked ending the turn, use the blocking wait instead of finishing for a notification. "
                                 "Continue independent work; do not submit duplicates or bypass memcap.",
                                 file=sys.stderr,
                             )
                             last_notice = time.monotonic()
                 if child is None:
                     time.sleep(self.poll)
+            last_cancel_notice = 0.0
             while True:
                 result = child.poll()
                 sample = (
@@ -841,8 +843,8 @@ class Scheduler:
                     if result is None or self.policy == "adaptive"
                     else {}
                 )
-                with self.locked() as data:
-                    self.refresh(data, processes())
+                with self.observed_registry(retry=True) as (data, table):
+                    self.refresh(data, table)
                     job = next(j for j in data["jobs"] if j["id"] == ident)
                     self.observe(data, sample)
                     job["cancel"] = bool(self.cancelled)
@@ -878,11 +880,28 @@ class Scheduler:
                         )
                     self.save(data)
                 if self.cancelled:
-                    subprocess.run(
-                        [str(ROOT / "bin/memcap"), "_queue-cancel", ident],
-                        check=False,
-                        timeout=30,
-                    )
+                    if not members:
+                        return 128 + self.cancelled
+                    try:
+                        cancelled = (
+                            subprocess.run(
+                                [str(ROOT / "bin/memcap"), "_queue-cancel", ident],
+                                check=False,
+                                timeout=30,
+                            ).returncode
+                            == 0
+                        )
+                    except (OSError, subprocess.SubprocessError):
+                        cancelled = False
+                    if not cancelled:
+                        if time.monotonic() - last_cancel_notice >= 60:
+                            print(
+                                "memcap: guarded cancellation unavailable; retaining supervision and reservations, retrying with fresh identities.",
+                                file=sys.stderr,
+                            )
+                            last_cancel_notice = time.monotonic()
+                        time.sleep(self.poll)
+                        continue
                     return 128 + self.cancelled
                 if result is not None and not members:
                     return result if result >= 0 else 128 - result
@@ -891,8 +910,7 @@ class Scheduler:
             if registered:
                 # Keep running groups when interrupted or the supervisor fails;
                 # another admission must not mistake lost supervision for free RAM.
-                with self.locked() as data:
-                    table = processes()
+                with self.observed_registry(retry=child is not None) as (data, table):
                     self.refresh(data, table)
                     data["jobs"] = [
                         j
@@ -903,6 +921,30 @@ class Scheduler:
                     self.save(data)
             for sig, handler in old_handlers.items():
                 signal.signal(sig, handler)
+
+    @contextmanager
+    def observed_registry(self, retry=False):
+        """Pair a locked registry with fresh identities; release the lock to retry."""
+        last_notice = 0.0
+        while True:
+            with self.locked() as data:
+                try:
+                    table = processes()
+                except (QueueError, OSError, ValueError, subprocess.SubprocessError):
+                    if not retry:
+                        raise
+                else:
+                    yield data, table
+                    return
+            if time.monotonic() - last_notice >= 60:
+                print(
+                    "memcap: running job identities unavailable; retaining supervision and reservations until a fresh query succeeds.",
+                    file=sys.stderr,
+                )
+                last_notice = time.monotonic()
+            # Never hold the registry lock or authorize termination from a
+            # failed sample. The ordinary cancellation path rechecks each PID.
+            time.sleep(self.poll)
 
     def launch(self, argv, cwd, job, data):
         if (self.directory.parent / "paused").is_file():

@@ -146,6 +146,17 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         return True
     if name in {"cut", "uniq"}:
         return True
+    if name == "find":
+        return (
+            len(words) == 4
+            and not words[1].startswith("-")
+            and words[1] not in {"!", "(", ")"}
+            and words[2] in {"-name", "-iname"}
+        )
+    if name == "xargs" and words[1:] == ["wc", "-l"]:
+        # wc streams counts and has no command-execution option. No arbitrary
+        # child program or xargs option (including parallelism) is accepted.
+        return True
     if name == "sort":
         return not any(w.startswith("--co") for w in words[1:])
     if name in {"fd", "fdfind"}:
@@ -238,9 +249,11 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         ) and all(not word.startswith("-") for word in words[3:])
     if name == "sed" and len(words) >= 2:
         # Single substitution only; no e/w commands, extra scripts or filenames.
-        return bool(re.fullmatch(r"s/[^/\n]+/[^/\n]*/g?", words[1])) and all(
-            not w.startswith("-") for w in words[2:]
-        )
+        # Consume escaped characters as pairs so an escaped delimiter cannot
+        # end a field, while an escaped backslash before / still can.
+        return bool(
+            re.fullmatch(r"s/(?:\\[^\n]|[^/\\\n])+/(?:\\[^\n]|[^/\\\n])*/g?", words[1])
+        ) and all(not w.startswith("-") for w in words[2:])
     if name == "memcap" and len(words) >= 2:
         if words[1] in {"--version", "-v", "--help", "-h"}:
             return len(words) == 2
@@ -551,6 +564,33 @@ def light_file_loop(command: str) -> bool:
     return True
 
 
+def literal_excerpt_helper(command: str) -> bool:
+    """One fixed read-only helper and a bounded literal list of file/line calls."""
+    match = re.fullmatch(
+        r"(?P<prefix>.*?)(?:^|;|&&)\s*(?P<name>[A-Za-z_][A-Za-z_0-9]*)\(\)\s*\{\s*"
+        r'echo "=== \$1:\$2";\s*sed -n "\$\(\(\s*\$2-2\s*\)\),'
+        r'\$\(\(\s*\$2\+2\s*\)\)p" "\$1";\s*\};\s*(?P<calls>[^\n]+)',
+        command,
+        re.S,
+    )
+    if not match or match["name"] in {"echo", "sed"}:
+        return False  # Those names would recurse inside the otherwise fixed body.
+    prefix = match["prefix"].strip()
+    if prefix and not light_shell(prefix):
+        return False
+    calls = match["calls"].rstrip("; ").split(";")
+    if not 1 <= len(calls) <= 64:
+        return False
+    for call in calls:
+        invocation = re.fullmatch(
+            re.escape(match["name"]) + r" ([A-Za-z0-9_./-]+) ([0-9]{1,7})",
+            call.strip(),
+        )
+        if not invocation or invocation[1].startswith("-") or int(invocation[2]) < 3:
+            return False
+    return True
+
+
 def literal_note(command: str) -> bool:
     """A bounded quoted cat heredoc is literal data, never executable shell.
 
@@ -573,7 +613,7 @@ def literal_note(command: str) -> bool:
 def light_shell(command: str, allow_bare_globs=False) -> bool:
     # Recognize a narrow shell grammar solely for lightweight commands. Every
     # stage must qualify. Never evaluate substitutions or reconstruct the input.
-    if literal_note(command):
+    if literal_excerpt_helper(command) or literal_note(command):
         return True
     command = normalized_lines(command)
     # Literal aliases commonly precede log reads. Prove the surrounding stages
@@ -990,6 +1030,7 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
         result["additionalContext"] = (
             "memcap keeps this task queued until memory is available, then starts it automatically. "
             "Await native completion notifications without polling when supported. Otherwise use TaskOutput with block=true and timeout=60000 for one blocking wait of up to 60 seconds. If TaskOutput is unavailable, use memcap wait JOB_ID --timeout 60 with the existing ID from memcap queue; it creates no job or reservation. Repeat once per minute while pending; do not repeatedly read output files or emit holding messages. "
+            "If Stop has blocked ending the turn, use that blocking wait instead of trying to finish for a notification. "
             "Do not create Bash sleep loops or drain ticks to wait. Do not submit duplicates, stop because it is queued, or bypass memcap. "
             "Read the final output and exit status before continuing dependent work."
             + " "
