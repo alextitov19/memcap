@@ -20,6 +20,7 @@ BLOCKERS = {
     "startup",
     "stabilizing",
     "paging",
+    "sampling",
 }
 FACTS = {
     "measurement_probe_status",

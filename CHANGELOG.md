@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.16.4 — 2026-09-25
+
+- Keep current-home reads, literal path aliases, additional device/cloud status
+  calls and bounded log excerpts native. Invalid wait IDs reach usage validation
+  immediately; Git hooks, opaque scripts and arbitrary execution remain managed.
+- Recognize wrapped dev servers and streaming device logs as persistent resources
+  so finite-work Stop hooks do not wait for them to exit. Admission still applies.
+- Preserve valid reservation history across intervening stale cache reads without
+  releasing capacity from stale evidence. The next fresh sample must still pass
+  the continuity gate before an old peak can retire.
+- Send full operational guidance once per session/version/state, suppress false
+  diagnostics from successful inspection, and distinguish running/queued work in
+  fallback wait output. Native completion notifications remain preferred.
+- Add fixed report symptoms and explicit deduplication outcomes. Reporting time is
+  no longer presented as proof of when an older incident occurred.
+- Distinguish shared-sampler contention from a failed memory measurement in
+  admission notices, queue blockers and numeric event code 10.
+- Audit September 25 logs and reports #82–102, including retrospective incidents
+  and proposed improvements, in `docs/feedback-2026-09-25.md`.
+
 ## v0.16.3 — 2026-09-24
 
 - Keep redirected waits, literal regex end anchors, regex-range file reads,

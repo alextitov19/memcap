@@ -108,6 +108,23 @@ memcap report lightweight-queued --context repository-search --wait-seconds 120
 
 Optional `--context` distinguishes `repository-search`, `file-read`, `status-check`,
 `ssm-control`, `remote-control`, `wait-command`, `stop-hook`, and `heavy-work`.
+Use `--symptom` for a more precise fixed description, for example:
+
+```sh
+memcap report integration --context stop-hook --symptom persistent-work-pending
+memcap report lightweight-queued --context file-read --symptom inspection-wrapped
+```
+
+`memcap report --help` lists the allowed symptoms. These distinguish inspection
+wrappers, remote calls, invalid wait targets, persistent jobs, missing native waits,
+repeated guidance, copied diagnostics, short-job overhead, slow admission,
+degraded measurement and oversized processes without sending private text.
+Different symptoms get distinct report identities. A `deduplicated` result with
+an issue URL means the new snapshot was retained locally; it was **not appended**
+to that issue. `commented` means a comment was posted, and `published` means a new
+issue was created. Version and timestamp describe reporting time, which may be
+later than the incident; report promptly rather than attributing old incidents
+to a newly installed runner.
 Deduplication includes this context, so a queued read and a queued wait command
 can produce separate reports even in the same category/version. It accepts only
 these fixed values, never arbitrary notes or commands. Existing consent and
@@ -1432,3 +1449,26 @@ inspection, and `wc -l ./pages/{A,B}.tsx` avoid heavy reservations. Pathname bra
 expansion uses the same expanded-argument validation as globs. `--follow`,
 recursive removal, unknown substitutions and stages that build/run code retain
 normal admission and permission handling.
+
+As of v0.16.4, current-home paths (`~/…`), literal path aliases such as
+`SP=/tmp/logs; cat $SP/test.log`, bounded file-search/log-excerpt forms, AWS identity,
+ADB device lists, simulator device lists and GitHub run cancellation also keep
+native tool behavior. Compound commands are already checked stage by stage;
+every stage must qualify. General Python/awk scripts, Git commits (which can run
+hooks), opaque shell helpers and mixed build commands still require admission.
+
+Literal `cd`/environment/redirection wrappers around known dev servers and
+streaming `adb logcat` retain their persistent-resource classification. They still
+need admission and memory accounting, but do not hold finite-work Stop hooks open.
+Existing runners retain their original classification until they finish.
+
+Full operational hook guidance is sent once per session/version/pause state.
+SessionStart refreshes it after compaction or resume as well. Later prompts get a
+short reminder. Successful inspection of source or logs does
+not diagnose quoted error strings as a new workload failure; actual runner queue
+notices and failed workload diagnostics remain supported.
+
+`memcap wait` accepts memcap job IDs, not Claude task IDs. Invalid IDs return
+usage guidance immediately. Pending output distinguishes running work from queued
+work and gives its age. Prefer native task completion notifications; the fallback
+wait remains bounded to 60 seconds. It does not capture or publish workload output.

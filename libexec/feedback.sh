@@ -62,12 +62,17 @@ mc_feedback_hook() {
   receipt="$(mc_state_dir)/job-feedback/guidance-$key.receipt"
   guidance_token="$MEMCAP_VERSION:active"
   mc_is_paused && guidance_token="$MEMCAP_VERSION:paused"
-  if [ "$event" = PreToolUse ] && [ "$(cat "$receipt" 2>/dev/null)" != "$guidance_token" ]; then
-    refresh=--session-guidance
-  fi
+  case "$event" in
+    PreToolUse|SessionStart|UserPromptSubmit)
+      if [ "$event" = SessionStart ] || [ "$(cat "$receipt" 2>/dev/null)" != "$guidance_token" ]; then
+        refresh=--session-guidance
+      else
+        refresh=--brief-guidance
+      fi ;;
+  esac
   if python=$(command -v python3); then
     messages=$(printf '%s' "$payload" | "$python" "$LIB/agent_diagnostics.py" "$refresh") || messages=""
-    if [ -n "$refresh" ] && [ -n "$messages" ]; then
+    if [ "$refresh" = --session-guidance ] && [ -n "$messages" ]; then
       mc_state_write "$receipt" "$guidance_token" || :
     fi
     [ -z "$messages" ] || messages="${messages}

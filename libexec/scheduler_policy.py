@@ -111,6 +111,8 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             return not any(
                 a == "--follow" or a.startswith("--follow=") for a in args[2:]
             )
+        if args[:2] == ["sts", "get-caller-identity"]:
+            return True
         # These are API control calls; remote script contents do not execute on
         # this host. Interactive sessions and arbitrary AWS transfers still queue.
         return (
@@ -132,8 +134,35 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             words = [words[0]] + words[3:]
     # The diagnostic next steps must remain usable while build capacity is full.
     # Exact read-only forms only: no streaming stats, bootstrap or device changes.
-    if name == "xcrun" and words[1:] == ["simctl", "list", "devices", "--json"]:
+    if (
+        name == "xcrun"
+        and words[1:4] == ["simctl", "list", "devices"]
+        and all(word in {"available", "--json", "-j"} for word in words[4:])
+    ):
         return True
+    if name == "adb" and words[1:] in (["devices"], ["devices", "-l"]):
+        return True
+    if name in {"cut", "uniq"}:
+        return True
+    if name == "sort":
+        return not any(w.startswith("--co") for w in words[1:])
+    if name in {"fd", "fdfind"}:
+        return not any(
+            w.startswith(("--exec", "-x", "-X"))
+            or (
+                w.startswith("-")
+                and not w.startswith("--")
+                and any(c in w[1:] for c in "xX")
+            )
+            for w in words[1:]
+        )
+    if name == "awk" and len(words) >= 3:
+        # One reported log excerpt idiom, not general awk (system/getline execute).
+        return bool(
+            re.fullmatch(
+                r"/[^/\n]+/\{p=1\} p\{print\} /[^/\n]+/\{if\(p\) exit\}", words[1]
+            )
+        ) and all(not w.startswith("-") and "=" not in w for w in words[2:])
     if name == "docker" and words[1:] in (
         ["stats", "--no-stream"],
         ["ps"],
@@ -205,6 +234,11 @@ def light_words(words: list[str], glob_checked=False) -> bool:
                 r"(?:[0-9]+|/[^/\n]+/)(?:,(?:[0-9]+|\$|/[^/\n]+/))?p", words[2]
             )
         ) and all(not word.startswith("-") for word in words[3:])
+    if name == "sed" and len(words) >= 2:
+        # Single substitution only; no e/w commands, extra scripts or filenames.
+        return bool(re.fullmatch(r"s/[^/\n]+/[^/\n]*/g?", words[1])) and all(
+            not w.startswith("-") for w in words[2:]
+        )
     if name == "memcap" and len(words) >= 2:
         if words[1] in {"--version", "-v", "--help", "-h"}:
             return len(words) == 2
@@ -212,7 +246,7 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             # This runtime guard either execs proven inspection or enters the queue.
             return True
         if words[1] == "report":
-            from report import KINDS, CONTEXTS
+            from report import KINDS, CONTEXTS, SYMPTOMS
 
             if len(words) < 3:
                 return False
@@ -228,6 +262,12 @@ def light_words(words: list[str], glob_checked=False) -> bool:
                 seen.add(option)
                 if option == "--dry-run":
                     i += 1
+                elif (
+                    option == "--symptom"
+                    and i + 1 < len(words)
+                    and words[i + 1] in SYMPTOMS
+                ):
+                    i += 2
                 elif (
                     option == "--context"
                     and i + 1 < len(words)
@@ -249,7 +289,9 @@ def light_words(words: list[str], glob_checked=False) -> bool:
                 len(words) in (3, 5)
                 and (
                     words[2] == "--session"
-                    or bool(re.fullmatch(r"[a-f0-9]{8,32}", words[2]))
+                    # Invalid native task IDs must reach usage validation without
+                    # consuming a queue slot. The wait CLI never launches work.
+                    or bool(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", words[2]))
                 )
                 and (
                     len(words) == 3
@@ -285,12 +327,14 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             "version",
             "gc",
         } and all(word in {"--json", "--summary"} for word in words[2:])
+    if name == "gh" and words[1:] == ["auth", "status"]:
+        return True
     if name == "gh" and len(words) >= 3 and words[1] == "workflow":
         return words[2] in {"list", "view", "run", "enable", "disable"} and not any(
             word == "-w" or word.startswith("--web") for word in words[3:]
         )
     if name == "gh" and len(words) >= 3 and words[1] == "run":
-        return words[2] in {"watch", "view", "list"} and not any(
+        return words[2] in {"watch", "view", "list", "cancel"} and not any(
             word == "-w" or word.startswith("--web") for word in words[3:]
         )
     return False
@@ -340,6 +384,8 @@ def literal_shell(command: str, allow_bare_globs=False) -> bool:
                 return False
             prefix += brace[0]
             i += len(brace[0]) - 1
+        elif not quote and c == "~" and not prefix and command[i + 1 : i + 2] == "/":
+            prefix = "/"  # Only current-home pathname expansion, never ~user.
         elif not quote and c in "{}~":
             return False
         elif not quote and (c.isspace() or c in "|&;<>()"):
@@ -444,6 +490,27 @@ def light_shell(command: str, allow_bare_globs=False) -> bool:
     # Recognize a narrow shell grammar solely for lightweight commands. Every
     # stage must qualify. Never evaluate substitutions or reconstruct the input.
     command = normalized_lines(command)
+    # Literal aliases commonly precede log reads. Prove the surrounding stages
+    # independently; never evaluate arbitrary assignments or substitutions.
+    from inspection import spans, substitute_reference
+
+    boundary = 0
+    for token in list(spans(command)) + [(len(command), len(command), ";", False)]:
+        if token[2] not in {";", "&&"}:
+            continue
+        stage = command[boundary : token[0]].strip()
+        binding = re.fullmatch(r"(SP|S|LOG|FILE|R|REPO)=([A-Za-z0-9_./-]+)", stage)
+        if binding and (binding[2].startswith("/") or binding[1] in {"R", "REPO"}):
+            prefix = command[:boundary].strip().rstrip(";& ")
+            body = command[token[1] :]
+            if not body.strip():
+                return False
+            return (
+                not prefix or light_shell(prefix, allow_bare_globs)
+            ) and light_shell(
+                substitute_reference(body, binding[1], binding[2]), allow_bare_globs
+            )
+        boundary = token[1]
     # A literal repo alias does not execute locally. Substitutions, arbitrary
     # environment assignments and heavy stages remain outside this grammar.
     repo = re.fullmatch(
@@ -536,6 +603,13 @@ def classify_shell(command: str) -> tuple[str, str]:
     if light_shell(command):
         return "light", ""
     words = simple_words(command)
+    persistent = (
+        persistent_shell(command)
+        if not words or Path(words[0]).name not in {"npm", "pnpm", "yarn", "vite"}
+        else ""
+    )
+    if persistent:
+        return "resource", persistent
     if not words:
         return "job", ""
     name = Path(words[0]).name
@@ -549,6 +623,73 @@ def classify_shell(command: str) -> tuple[str, str]:
     if name == "vite" and (len(words) == 1 or words[1].startswith("-")):
         return "resource", shlex.join(words)
     return "job", ""
+
+
+def persistent_shell(command):
+    """One known persistent command with literal cd/env/redirection wrappers.
+
+    It still goes through admission; only finite-job completion waits exclude it.
+    A subsequent test/build or unknown shell expansion must remain a finite job.
+    """
+    text = normalized_lines(command).strip()
+    if not literal_shell(text):
+        return ""
+    from inspection import spans
+
+    tokens = list(spans(text))
+    segments, words = [], []
+    i = 0
+    while i < len(tokens):
+        raw = tokens[i][2]
+        if raw in {";", "&&"}:
+            segments.append(words)
+            words = []
+        elif raw in {">", ">>", "<", ">&", "<&"}:
+            if (
+                words
+                and tokens[i - 1][2].isdigit()
+                and tokens[i - 1][1] == tokens[i][0]
+            ):
+                words.pop()
+            i += 1
+            if i >= len(tokens):
+                return ""
+        elif raw in {"|", "||", "&"} or not raw:
+            return ""
+        else:
+            try:
+                words.append(shlex.split(raw)[0])
+            except (ValueError, IndexError):
+                return ""
+        i += 1
+    segments.append(words)
+    if not all(len(s) == 2 and s[0] == "cd" for s in segments[:-1]):
+        return ""
+    words = segments[-1]
+    while words and re.fullmatch(r"(?:PORT|HOST|NODE_ENV)=[A-Za-z0-9_.:-]+", words[0]):
+        words = words[1:]
+    if not words:
+        return ""
+    name = Path(words[0]).name
+    args = words[1:]
+    if name in {"npm", "pnpm", "yarn"}:
+        if args[:1] in (["run"], ["run-script"]):
+            args = args[1:]
+        if args and args[0] in {"dev", "start"}:
+            return "shell:" + text
+    if name == "vite" and (not args or args[0].startswith("-")):
+        return "shell:" + text
+    if name == "adb":
+        if args[:1] == ["-s"] and len(args) > 2:
+            args = args[2:]
+        if args[:1] == ["logcat"] and all(
+            not a.startswith("-")
+            or a in {"-v", "-b", "--pid", "--uid", "-s", "-T"}
+            or a.startswith(("--pid=", "--uid="))
+            for a in args[1:]
+        ):
+            return "shell:" + text
+    return ""
 
 
 def bounded(value: str, maximum: int) -> int:
