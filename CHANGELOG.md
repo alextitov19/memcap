@@ -2,6 +2,9 @@
 
 ## v0.16.6 — 2026-09-25
 
+- Keep single read-only sed substitutions with escaped slash delimiters native
+  (#129). Execution/write flags, additional scripts and in-place edits remain
+  managed; expanded support does not evaluate shell expressions.
 - Correct the Stop-hook notification contradiction reported after v0.16.5:
   once Stop has blocked ending the turn, use the existing task's blocking wait
   instead of trying to end the turn to receive a native notification.

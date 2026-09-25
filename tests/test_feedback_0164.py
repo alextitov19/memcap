@@ -17,6 +17,37 @@ from admission import decide
 
 
 class FeedbackTests(unittest.TestCase):
+    def test_escaped_delimiters_in_read_only_sed_substitution(self):
+        command = r"rg -n pattern note.md | sed 's/(\.\.\/\.\.[^)]*)//' | head -80"
+        self.assertEqual(classify_shell(command)[0], "light")
+        for script in (
+            r"s/old\/path/new\/path/g",
+            r"s/old\/path//",
+            r"s/old/new\/path/",
+        ):
+            self.assertEqual(classify_shell("sed '" + script + "' note.md")[0], "light")
+        for script in (
+            r"s/a\/b/x/e",
+            r"s/a\/b/x/w out",
+            r"s/a\/b/x/;e command",
+            "s/a/b/\ne command",
+            r"s/a/b\\/e",
+        ):
+            self.assertNotEqual(
+                classify_shell("sed '" + script + "' note.md")[0], "light"
+            )
+        self.assertNotEqual(classify_shell("sed -i '' 's/a/b/' note.md")[0], "light")
+        self.assertNotEqual(classify_shell("sed 's/a/b/' -f script.sed")[0], "light")
+        result = subprocess.run(
+            ["sed", r"s/(\.\.\/\.\.[^)]*)//"],
+            input="label (../../src/file) end\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "label  end\n")
+
     def test_sampler_contention_is_not_reported_as_a_failed_measurement(self):
         result = decide(
             dict(mode="adaptive"),

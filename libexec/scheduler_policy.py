@@ -238,9 +238,11 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         ) and all(not word.startswith("-") for word in words[3:])
     if name == "sed" and len(words) >= 2:
         # Single substitution only; no e/w commands, extra scripts or filenames.
-        return bool(re.fullmatch(r"s/[^/\n]+/[^/\n]*/g?", words[1])) and all(
-            not w.startswith("-") for w in words[2:]
-        )
+        # Consume escaped characters as pairs so an escaped delimiter cannot
+        # end a field, while an escaped backslash before / still can.
+        return bool(
+            re.fullmatch(r"s/(?:\\[^\n]|[^/\\\n])+/(?:\\[^\n]|[^/\\\n])*/g?", words[1])
+        ) and all(not w.startswith("-") for w in words[2:])
     if name == "memcap" and len(words) >= 2:
         if words[1] in {"--version", "-v", "--help", "-h"}:
             return len(words) == 2
