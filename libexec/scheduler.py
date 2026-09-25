@@ -828,6 +828,7 @@ class Scheduler:
                             print(
                                 f"memcap: queued {ident[:8]}: {reason}.{details} Command has not started; "
                                 f"await native completion notifications without polling when supported; otherwise poll this existing task once per minute (TaskOutput block=true timeout=60000 if available; otherwise memcap wait {ident[:8]} --timeout 60). "
+                                "If Stop has blocked ending the turn, use the blocking wait instead of finishing for a notification. "
                                 "Continue independent work; do not submit duplicates or bypass memcap.",
                                 file=sys.stderr,
                             )

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.16.6 — 2026-09-25
+
+- Correct the Stop-hook notification contradiction reported after v0.16.5:
+  once Stop has blocked ending the turn, use the existing task's blocking wait
+  instead of trying to end the turn to receive a native notification.
+- Explain this boundary in installed and runtime guidance. Native completion
+  notifications remain preferred when the client can suspend without a blocked
+  Stop. Admission, pending-work ownership and cancellation rules are unchanged.
+
 ## v0.16.5 — 2026-09-25
 
 - Retain reduced adaptive allowances during sampler contention and incomplete

@@ -1420,6 +1420,13 @@ state using fresh pressure, available memory and device readiness as evidence.
 Neither a target overage nor accumulated swap alone proves a simulator cannot
 boot; green/yellow pressure does not guarantee future growth will remain safe.
 
+If a memcap Stop hook has already blocked ending the turn, use the existing
+task's blocking poll or `memcap wait JOB_ID --timeout 60`, once per minute.
+Do not try to end that turn merely to receive a completion notification: this
+hook cannot suspend and resume the agent. Native notifications are preferred
+when the client can await them without entering a blocked Stop. Read the final
+output and status before dependent work; never submit a duplicate job.
+
 `memcap wait` observes managed jobs only. If it reports no pending work, do not
 loop on it for an unmanaged native background task: use that task’s completion
 notification and read its final output and exit status. Updated hook context
