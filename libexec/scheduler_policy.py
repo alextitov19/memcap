@@ -998,7 +998,12 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
         and shlex.join(wrapped) == command
     )
     control = simple_words(command)
-    if kind == "light" and control and control[:2] == ["memcap", "wait"]:
+    if (
+        kind == "light"
+        and control
+        and control[:2] == ["memcap", "wait"]
+        and Path(executable).is_absolute()
+    ):
         # Hooks already know their installed executable. A native wait must not
         # depend on the caller's PATH or the global Homebrew bin symlink.
         updated = {**original, "command": shlex.join([executable, *control[1:]])}
