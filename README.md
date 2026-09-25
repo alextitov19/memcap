@@ -1491,6 +1491,10 @@ Supported Benmore log/SQL/env/probe/restart calls, curl requests, GitHub API cal
 and Docker inspection/finite logs stay native. Local builds/deploy helpers and
 streaming follow modes retain admission.
 
+v0.17.1 distinguishes an expired valid observation from a failed measurement.
+Heavy commands still wait for a fresh sample; an age deadline alone reports
+sampling in progress, not an invalid memory measurement.
+
 Shell combinations such as `rg pattern $(rg -l needle src | head -3)` now prove
 the producer lightweight and validate the consumer's expanded arguments before
 execution. Nested supported substitutions, literal local aliases and additional
