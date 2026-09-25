@@ -83,12 +83,12 @@ class PauseContractTests(unittest.TestCase):
             "aws logs tail /aws/service --since 5m | tail -30",
             "R=owner/repo && gh workflow list --all -R $R && gh workflow enable deploy -R $R && gh workflow run deploy -R $R --ref main && gh run list -R $R",
             "rm tests/scratch.test.ts && sed -n 88,100p shared/scenarios.ts",
+            "rm -rf tree",
+            "rm ./temp/*",
         ]:
             self.assertEqual(classify_shell(command)[0], "light", command)
         for command in [
             "aws logs tail /aws/service --follow",
-            "rm -rf tree",
-            "rm ./temp/*",
             "R=$(python helper.py) && gh workflow run deploy -R $R",
             "R=owner/repo && gh workflow run deploy -R $R; npm test",
         ]:

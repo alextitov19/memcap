@@ -13,7 +13,14 @@ from scheduler_policy import light_shell, light_words, normalized_lines
 
 
 def inspect_argv(argv, fallback):
-    if light_words(argv, glob_checked=True):
+    from text_probe import eligible
+
+    probe = eligible(argv, check_files=True)
+    if probe:
+        # The recognized language uses only standard-library modules; isolate it
+        # from PYTHONPATH and cwd modules that could run unrelated local code.
+        argv = [argv[0], "-I", *argv[1:]]
+    if probe or light_words(argv, glob_checked=True):
         try:
             os.execvpe(argv[0], argv, os.environ)
         except (FileNotFoundError, PermissionError) as exc:
@@ -155,17 +162,27 @@ def guard_read_consumers(command, executable, session_key):
 
 
 def guarded_shell(command, executable, session_key=""):
+    text_probe = guard_text_probe(command, executable, session_key)
+    if text_probe:
+        return text_probe
     consumer = guard_read_consumers(command, executable, session_key)
     if consumer:
         return consumer
+    substitutions = guard_substitutions(command, executable, session_key)
+    if substitutions:
+        return substitutions
     # A reported path lookup: f=$(rg -l PATTERN dir); sed ... $f. The
     # substitution producer is proven inspection; consumers check expanded argv.
     match = re.fullmatch(
-        r"(?P<var>f|file|files|F)=\$\((?P<source>[^$`()\n]+)\);\s*(?P<body>.+)",
+        r"(?P<var>[A-Za-z_][A-Za-z_0-9]*)=\$\((?P<source>[^$`()\n]+)\);\s*(?P<body>.+)",
         command,
         re.S,
     )
     if match:
+        from lightweight import local_variable
+
+        if not local_variable(match["var"]):
+            return None
         source = match["source"]
         body = match["body"]
         variable = match["var"]
@@ -195,6 +212,42 @@ def guarded_shell(command, executable, session_key=""):
     return guard_literal(command, executable, session_key)
 
 
+def guard_text_probe(command, executable, session_key):
+    from text_probe import eligible
+    from scheduler_policy import literal_shell
+
+    text = normalized_lines(command)
+    if not literal_shell(text):
+        return None
+    tokens = list(spans(text))
+    starts, pieces = [0], []
+    for token in tokens:
+        if token[2] in {";", "&&", "||", "|"}:
+            pieces.append((starts[-1], token[0]))
+            starts.append(token[1])
+    pieces.append((starts[-1], len(text)))
+    probes = []
+    for start, end in pieces:
+        stage = text[start:end].strip()
+        try:
+            words = shlex.split(stage)
+        except ValueError:
+            return None
+        if eligible(words):
+            probes.append((start, end, stage))
+    if not probes:
+        return None
+    masked = text
+    for start, end, _ in reversed(probes):
+        masked = masked[:start] + " true " + masked[end:]
+    if not light_shell(masked):
+        return None
+    prefix = shlex.join([executable, "_inspect", "--session-key", session_key, "--"])
+    for start, end, stage in reversed(probes):
+        text = text[:start] + " " + prefix + " " + stage + " " + text[end:]
+    return text
+
+
 def guard_literal(command, executable, session_key):
     # Only the already-proven narrow inspection grammar gains relaxed glob
     # classification. Every expanded external stage is checked again at runtime.
@@ -203,7 +256,7 @@ def guard_literal(command, executable, session_key):
     return guard_stages(normalized_lines(command), executable, session_key)
 
 
-def guard_stages(text, executable, session_key, variable=None):
+def guard_stages(text, executable, session_key, variable=None, force=False):
     stages = []
     stage = []
     for word in spans(text):
@@ -217,7 +270,7 @@ def guard_stages(text, executable, session_key, variable=None):
         stages.append(stage)
     inserts = []
     for stage in stages:
-        if not any(
+        if not force and not any(
             word[3]
             or (
                 variable
@@ -234,6 +287,8 @@ def guard_stages(text, executable, session_key, variable=None):
         ):
             index += 1
         if index == len(stage):
+            if force:
+                continue  # full light_shell proof already validated the binding
             return None
         try:
             words = shlex.split(stage[index][2])
@@ -248,33 +303,100 @@ def guard_stages(text, executable, session_key, variable=None):
             # These builtins cannot spawn an expansion-supplied command. Keeping
             # cd in the original shell preserves directory changes across stages.
             continue
-        if name not in {
-            "rg",
-            "grep",
-            "egrep",
-            "fgrep",
-            "cat",
-            "head",
-            "tail",
-            "ls",
-            "wc",
-            "git",
-            "env",
-            "ps",
-            "pgrep",
-            "tr",
-            "sed",
-            "aws",
-            "gh",
-        }:
-            return None
+        # The complete shell was already proven lightweight. Reuse that same
+        # family policy at runtime rather than maintaining a second name list.
         prefix = (
             shlex.join([executable, "_inspect", "--session-key", session_key, "--"])
             + " "
         )
         inserts.append((stage[index][0], prefix))
-    if not inserts:
+    if not inserts and not force:
         return None
     for offset, prefix in reversed(inserts):
         text = text[:offset] + prefix + text[offset:]
     return text
+
+
+def substitution_end(text, start, depth):
+    """Locate a $() boundary without evaluating it or confusing quoted ')'."""
+    if depth > 8 or text.startswith("$((", start):
+        return None
+    quote, i = "", start + 2
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and quote != "'":
+            i += 2
+            continue
+        if c in "\"'":
+            if quote == c:
+                quote = ""
+            elif not quote:
+                quote = c
+        elif quote != "'" and text.startswith("$(", i):
+            end = substitution_end(text, i, depth + 1)
+            if end is None:
+                return None
+            i = end + 1
+            continue
+        elif not quote and c == ")":
+            return i
+        elif not quote and c in "(#":
+            return None  # groups/arithmetic/comments need a fuller shell parser
+        i += 1
+    return None
+
+
+def guard_substitutions(command, executable, session_key, depth=0):
+    """Prove producers, then validate each consumer's actual expanded argv.
+
+    Replacements are analysis markers only. Execution retains the original
+    quoting, word splitting, glob expansion, redirections and producer count.
+    """
+    marker = "/__MEMCAP_EXPANSION_"
+    if depth > 8 or len(command) > 65536 or marker in command:
+        return None
+    parts, replacements, quote, i = [], [], "", 0
+    while i < len(command):
+        c = command[i]
+        if c == "\\" and quote != "'":
+            parts.append(command[i : i + 2])
+            i += 2
+            continue
+        if c in "\"'":
+            if quote == c:
+                quote = ""
+            elif not quote:
+                quote = c
+        if quote != "'" and command.startswith("$(", i):
+            end = substitution_end(command, i, depth)
+            if end is None or len(replacements) >= 64:
+                return None
+            source = command[i + 2 : end]
+            if light_shell(source):
+                producer = source
+            else:
+                producer = guard_substitutions(
+                    source, executable, session_key, depth + 1
+                ) or guard_literal(source, executable, session_key)
+            if producer is None:
+                return None
+            token = marker + str(len(replacements)) + "__"
+            replacements.append((token, "$(" + producer + ")"))
+            parts.append(token)
+            i = end + 1
+            continue
+        parts.append(c)
+        i += 1
+    if not replacements:
+        return None
+    masked = "".join(parts)
+    if not light_shell(masked, allow_bare_globs=True):
+        return None
+    rewritten = guard_stages(
+        normalized_lines(masked), executable, session_key, force=True
+    )
+    if rewritten is None:
+        return None
+    for token, source in replacements:
+        rewritten = rewritten.replace(token, source)
+    return rewritten

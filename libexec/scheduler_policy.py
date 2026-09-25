@@ -79,6 +79,8 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         words.pop(0)
     if not words:
         return False
+    if re.match(r"[A-Za-z_][A-Za-z_0-9]*=", words[0]):
+        return False  # never mistake an unapproved env assignment for argv[0]
     # A bare glob can expand to execution options such as rg's --pre. Require
     # a literal directory prefix for pathname globs; uncertain patterns queue.
     for word in words:
@@ -95,6 +97,11 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         # Unquoted substitution can turn an rg argument into --pre, for example.
         # Only the fixed SSM API operations below may receive these values.
         return False
+    from lightweight import extra_family
+
+    family = extra_family(name, words[1:])
+    if family is not None:
+        return family
     if name == "aws":
         args = words[1:]
         while args and args[0].startswith("--"):
@@ -146,13 +153,6 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         return True
     if name in {"cut", "uniq"}:
         return True
-    if name == "find":
-        return (
-            len(words) == 4
-            and not words[1].startswith("-")
-            and words[1] not in {"!", "(", ")"}
-            and words[2] in {"-name", "-iname"}
-        )
     if name == "xargs" and words[1:] == ["wc", "-l"]:
         # wc streams counts and has no command-execution option. No arbitrary
         # child program or xargs option (including parallelism) is accepted.
@@ -220,20 +220,28 @@ def light_words(words: list[str], glob_checked=False) -> bool:
     if (
         name == "git"
         and len(words) > 1
-        and words[1] in {"status", "diff", "log", "show", "rev-parse", "ls-files"}
+        and words[1]
+        in {
+            "status",
+            "diff",
+            "log",
+            "show",
+            "rev-parse",
+            "ls-files",
+            "ls-tree",
+            "rev-list",
+            "check-ignore",
+            "check-attr",
+            "for-each-ref",
+            "describe",
+            "show-ref",
+        }
     ):
         if not any(
             a.startswith(("--ext-diff", "--textconv", "--output", "--exec"))
             for a in words[2:]
         ):
             return True
-    if (
-        name == "rm"
-        and len(words) == 2
-        and not words[1].startswith("-")
-        and not any(c in words[1] for c in "*?[{}")
-    ):
-        return True  # one file; no recursive traversal or execution options
     if name == "cd" and len(words) == 2:
         return True
     if name == "sleep" and len(words) == 2:
@@ -241,19 +249,6 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             bool(re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", words[1]))
             and float(words[1]) <= 60
         )
-    if name == "sed" and len(words) >= 3 and words[1] == "-n":
-        return bool(
-            re.fullmatch(
-                r"(?:[0-9]+|/[^/\n]+/)(?:,(?:[0-9]+|\$|/[^/\n]+/))?p", words[2]
-            )
-        ) and all(not word.startswith("-") for word in words[3:])
-    if name == "sed" and len(words) >= 2:
-        # Single substitution only; no e/w commands, extra scripts or filenames.
-        # Consume escaped characters as pairs so an escaped delimiter cannot
-        # end a field, while an escaped backslash before / still can.
-        return bool(
-            re.fullmatch(r"s/(?:\\[^\n]|[^/\\\n])+/(?:\\[^\n]|[^/\\\n])*/g?", words[1])
-        ) and all(not w.startswith("-") for w in words[2:])
     if name == "memcap" and len(words) >= 2:
         if words[1] in {"--version", "-v", "--help", "-h"}:
             return len(words) == 2
@@ -380,6 +375,8 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             }
             for n in names
         )
+    if name == "gh" and len(words) >= 3 and words[1] == "api":
+        return not any(a == "--slurp" for a in words[2:])
     if name == "gh" and len(words) >= 3 and words[1] in {"issue", "pr"}:
         return words[2] in {"list", "view", "status", "checks"} and not any(
             word == "-w" or word.startswith("--web") for word in words[3:]
@@ -631,8 +628,10 @@ def light_shell(command: str, allow_bare_globs=False) -> bool:
         if token[2] not in {";", "&&"}:
             continue
         stage = command[boundary : token[0]].strip()
-        binding = re.fullmatch(r"(SP|S|F|D|LOG|FILE|R|REPO)=([A-Za-z0-9_./-]+)", stage)
-        if binding and (binding[2].startswith("/") or binding[1] in {"R", "REPO"}):
+        from lightweight import local_variable
+
+        binding = re.fullmatch(r"([A-Za-z_][A-Za-z_0-9]*)=([A-Za-z0-9_./-]+)", stage)
+        if binding and local_variable(binding[1]):
             prefix = command[:boundary].strip().rstrip(";& ")
             body = command[token[1] :]
             if not body.strip():
