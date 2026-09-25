@@ -17,6 +17,36 @@ from admission import decide
 
 
 class FeedbackTests(unittest.TestCase):
+    def test_literal_file_excerpt_helper_does_not_reserve_workload_memory(self):
+        definition = (
+            'show(){ echo "=== $1:$2"; sed -n "$(( $2-2 )),$(( $2+2 ))p" "$1"; }; '
+        )
+        command = "cd /tmp && " + definition + "show src/a.ts 20; show src/b.ts 40"
+        self.assertEqual(classify_shell(command)[0], "light")
+        for altered in (
+            command.replace("sed -n", "python -c"),
+            command + "; npm test",
+            command.replace("src/a.ts", "$(run-build)"),
+            command.replace("src/a.ts", "-f"),
+            command.replace("show", "sed"),
+            command.replace("20;", "$LINE;"),
+            definition + "; ".join("show src/a.ts 20" for _ in range(65)),
+        ):
+            self.assertNotEqual(classify_shell(altered)[0], "light")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "excerpt.txt"
+            path.write_text("one\ntwo\nthree\nfour\nfive\nsix\n")
+            result = subprocess.run(
+                ["/bin/bash", "-c", definition + "show " + str(path) + " 3"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                result.stdout, "=== " + str(path) + ":3\none\ntwo\nthree\nfour\nfive\n"
+            )
+
     def test_escaped_delimiters_in_read_only_sed_substitution(self):
         command = r"rg -n pattern note.md | sed 's/(\.\.\/\.\.[^)]*)//' | head -80"
         self.assertEqual(classify_shell(command)[0], "light")

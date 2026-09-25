@@ -10,7 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "libexec"))
@@ -403,6 +403,78 @@ class SchedulerTests(unittest.TestCase):
             with self.assertRaises(self.mod.QueueError):
                 q.status()
         self.assertEqual((q.directory / "jobs.json").read_bytes(), original)
+
+    def test_interrupted_running_identity_query_retains_supervision_for_cancel(self):
+        q = self.queue()
+        table = {
+            str(os.getpid()): dict(
+                ppid=1, group=os.getpgrp(), uid=os.getuid(), start="owner"
+            )
+        }
+        count = 0
+
+        def identities():
+            nonlocal count
+            count += 1
+            # A process table captured before locking can erase a job registered
+            # in between. Every identity sample must be taken under this lock.
+            with (q.directory / "lock").open("r+") as lock:
+                with self.assertRaises(BlockingIOError):
+                    self.mod.fcntl.flock(
+                        lock, self.mod.fcntl.LOCK_EX | self.mod.fcntl.LOCK_NB
+                    )
+            if count == 3:
+                raise self.mod.QueueError("identity query interrupted")
+            if count == 4:
+                raise subprocess.TimeoutExpired("ps", 10)
+            return table
+
+        def retry_wait(_duration):
+            with (q.directory / "lock").open("r+") as lock:
+                self.mod.fcntl.flock(
+                    lock, self.mod.fcntl.LOCK_EX | self.mod.fcntl.LOCK_NB
+                )
+
+        def launch(_argv, _cwd, job, data):
+            job.update(
+                status="running",
+                group=99999,
+                members={"99999": "child"},
+                started=time.time(),
+            )
+            q.save(data)
+            q.handle_signal(2, None)
+            return Mock(poll=Mock(return_value=None))
+
+        def cancel(*args, **kwargs):
+            self.assertEqual(args[0][1], "_queue-cancel")
+            job = json.loads((q.directory / "jobs.json").read_text())["jobs"][0]
+            self.assertTrue(job["cancel"])
+            self.assertEqual(job["members"], {"99999": "child"})
+            if cancellation.call_count == 1:
+                raise subprocess.TimeoutExpired("guarded cancellation", 30)
+            return Mock(returncode=1 if cancellation.call_count == 2 else 0)
+
+        with (
+            patch.object(self.mod, "processes", side_effect=identities),
+            patch.object(q, "launch", side_effect=launch) as launched,
+            patch.object(q, "refresh"),
+            patch.object(
+                self.mod.subprocess, "run", side_effect=cancel
+            ) as cancellation,
+            patch.object(self.mod.time, "sleep", side_effect=retry_wait),
+            redirect_stderr(io.StringIO()) as notices,
+        ):
+            self.assertEqual(q.run(["fixture"], wait=2), 130)
+        self.assertEqual(launched.call_count, 1)
+        self.assertEqual(cancellation.call_count, 3)
+        self.assertIn("retaining supervision", notices.getvalue())
+        self.assertGreaterEqual(count, 5)
+        # A cancellation subprocess must not free unverified surviving members.
+        self.assertEqual(
+            json.loads((q.directory / "jobs.json").read_text())["jobs"][0]["members"],
+            {"99999": "child"},
+        )
 
     def test_ordinary_background_child_keeps_slot_after_parent_exit(self):
         code = "import subprocess,sys;subprocess.Popen([sys.executable,'-c','import time;time.sleep(.6)'])"

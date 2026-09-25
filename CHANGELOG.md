@@ -2,6 +2,11 @@
 
 ## v0.16.6 — 2026-09-25
 
+- Retain running-job supervision through transient process-identity failures and
+  retry guarded cancellation failures (#131). Identity checks remain fresh and
+  locked; retry waits release the lock and keep uncertain reservations.
+- Recognize the fixed file/line excerpt helper with a bounded literal call list
+  (#130). Unknown function bodies and dynamic calls remain managed.
 - Keep single read-only sed substitutions with escaped slash delimiters native
   (#129). Execution/write flags, additional scripts and in-place edits remain
   managed; expanded support does not evaluate shell expressions.

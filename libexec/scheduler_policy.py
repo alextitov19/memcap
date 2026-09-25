@@ -553,6 +553,33 @@ def light_file_loop(command: str) -> bool:
     return True
 
 
+def literal_excerpt_helper(command: str) -> bool:
+    """One fixed read-only helper and a bounded literal list of file/line calls."""
+    match = re.fullmatch(
+        r"(?P<prefix>.*?)(?:^|;|&&)\s*(?P<name>[A-Za-z_][A-Za-z_0-9]*)\(\)\s*\{\s*"
+        r'echo "=== \$1:\$2";\s*sed -n "\$\(\(\s*\$2-2\s*\)\),'
+        r'\$\(\(\s*\$2\+2\s*\)\)p" "\$1";\s*\};\s*(?P<calls>[^\n]+)',
+        command,
+        re.S,
+    )
+    if not match or match["name"] in {"echo", "sed"}:
+        return False  # Those names would recurse inside the otherwise fixed body.
+    prefix = match["prefix"].strip()
+    if prefix and not light_shell(prefix):
+        return False
+    calls = match["calls"].rstrip("; ").split(";")
+    if not 1 <= len(calls) <= 64:
+        return False
+    for call in calls:
+        invocation = re.fullmatch(
+            re.escape(match["name"]) + r" ([A-Za-z0-9_./-]+) ([0-9]{1,7})",
+            call.strip(),
+        )
+        if not invocation or invocation[1].startswith("-") or int(invocation[2]) < 3:
+            return False
+    return True
+
+
 def literal_note(command: str) -> bool:
     """A bounded quoted cat heredoc is literal data, never executable shell.
 
@@ -575,7 +602,7 @@ def literal_note(command: str) -> bool:
 def light_shell(command: str, allow_bare_globs=False) -> bool:
     # Recognize a narrow shell grammar solely for lightweight commands. Every
     # stage must qualify. Never evaluate substitutions or reconstruct the input.
-    if literal_note(command):
+    if literal_excerpt_helper(command) or literal_note(command):
         return True
     command = normalized_lines(command)
     # Literal aliases commonly precede log reads. Prove the surrounding stages

@@ -1427,6 +1427,11 @@ hook cannot suspend and resume the agent. Native notifications are preferred
 when the client can await them without entering a blocked Stop. Read the final
 output and status before dependent work; never submit a duplicate job.
 
+Running supervisors retain their job and reservation if a process-identity query
+is temporarily unavailable. They retry fresh observation, and retry failed guarded
+cancellation instead of silently leaving the workload behind. These retries release
+the registry lock; unavailable identities never authorize a signal or free capacity.
+
 `memcap wait` observes managed jobs only. If it reports no pending work, do not
 loop on it for an unmanaged native background task: use that task’s completion
 notification and read its final output and exit status. Updated hook context
