@@ -256,6 +256,7 @@ class FeedbackTests(unittest.TestCase):
         for command in [
             "gh issue list -R org/repo --state open --limit 40",
             "gh pr checks 123",
+            "gh pr checks 123 --watch --interval 60 --fail-fast 2>&1 | tail -5",
             "gh issue view 123 --json title,state",
             "F=/tmp/result; jq -r '.[0].text' $F | jq -r '(.issues // .)[] | [.key, .fields.status.name, (.fields.updated[:10]), (.fields.labels|join(\",\")), (.fields.parent.key // \"-\"), .fields.summary] | @tsv'",
             "jq 'keys' /tmp/result",
@@ -264,6 +265,7 @@ class FeedbackTests(unittest.TestCase):
         for command in [
             "gh issue view --web 1",
             "gh pr checkout 1",
+            "git push; sleep 20; gh pr checks 123 --watch --interval 60",
             "gh alias set x '!build'",
             "jq -f /tmp/filter /tmp/result",
             "jq 'recurse' file",
@@ -293,6 +295,29 @@ class FeedbackTests(unittest.TestCase):
             command.replace("cd /tmp", "npm test"),
             command.replace("Literal", "EOF\nnpm test\nLiteral"),
             "python3 - <<'EOF'\nprint(1)\nEOF",
+        ]:
+            self.assertEqual(classify_shell(bad)[0], "job", bad)
+
+    def test_literal_note_with_light_suffix_stays_native(self):
+        command = "cat >> note.md <<'EOF'\nLiteral $(build) and `build`.\nEOF\necho ok"
+        self.assertEqual(classify_shell(command)[0], "light")
+        self.assertEqual(classify_shell(command + "; cat note.md")[0], "light")
+        with tempfile.TemporaryDirectory() as temp:
+            result = subprocess.run(
+                ["/bin/bash", "-c", command], cwd=temp, capture_output=True, text=True
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "ok\n")
+            self.assertEqual(
+                (Path(temp) / "note.md").read_text(), "Literal $(build) and `build`.\n"
+            )
+        for bad in [
+            command + "; npm test",
+            command.replace("echo ok", "echo $(build)"),
+            command.replace("<<'EOF'", "<<EOF"),
+            command.replace("Literal", "EOF\nnpm test\nLiteral"),
+            command.replace("echo ok", "sh note.md"),
+            command + "\ncat >> note.md <<'END'\nmore\nEND",
         ]:
             self.assertEqual(classify_shell(bad)[0], "job", bad)
 

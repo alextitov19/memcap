@@ -1471,13 +1471,20 @@ hooks), opaque shell helpers and mixed build commands still require admission.
 
 As of v0.16.5, GitHub issue/PR inspection, finite jq selectors/formatters and
 literal `F=/path` and `D=/path` aliases also retain native execution. Bounded quoted `cat`
-heredoc writes/appends are accepted when the prefix and header are proven safe
-and no command follows the delimiter. Filename pipes using the supported
+heredoc writes/appends are accepted when the prefix and header are proven safe.
+v0.16.7 also accepts a lightweight suffix such as `echo ok` or `cat note.md`,
+after checking every suffix stage. Additional heredocs and executable suffixes
+remain managed. Filename pipes using the supported
 `xargs -I{} rg` or quoted `while read` form validate each expanded child argv;
 filenames that become execution options still require admission. General Python,
 Perl, jq generators/modules, unquoted heredocs and mixed workloads remain managed.
 Bounded literal inspection loops and direct CloudWatch alarm listing also qualify.
 Use native editing tools for small edits when available.
+
+Direct `gh pr checks --watch --interval 60` keeps native execution too. Combining
+it with `git push`, a rebase, or a build makes the entire shell command managed:
+Git mutations can execute local hooks. Run independent status inspection as its
+own command; this does not exempt the mutation or its hooks from admission.
 
 Literal `cd`/environment/redirection wrappers around known dev servers and
 streaming `adb logcat` retain their persistent-resource classification. They still
