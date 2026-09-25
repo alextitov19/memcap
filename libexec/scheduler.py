@@ -426,7 +426,13 @@ class Scheduler:
     def reservation(job, sample, measured, adaptive=False):
         # Automatic estimates cover the startup burst, then follow observed demand.
         # Explicit requests and uncertain/departed owners keep their full allowance.
-        reserve = max(job["memory_kb"], job.get("reservation_kb", 0))
+        reserve = job.get("reservation_kb", job["memory_kb"])
+        if not adaptive or job.get("elastic") is not True or job.get("orphaned"):
+            reserve = max(job["memory_kb"], reserve)
+        # Automatic adaptive allowances may already have shrunk from the startup
+        # estimate. A busy/faulty/incomplete observation retains that established
+        # allowance; it must not silently reinstate the original request. Fresh
+        # complete observations alone can shrink, and known growth still raises it.
         if (
             job.get("elastic") is True
             and not job.get("orphaned")

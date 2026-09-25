@@ -1482,6 +1482,9 @@ notices and failed workload diagnostics remain supported.
 usage guidance immediately, as do missing arguments and invalid timeouts. Pending output distinguishes running work from queued
 work and gives its age. Prefer native task completion notifications; the fallback
 wait remains bounded to 60 seconds. It does not capture or publish workload output.
+Reduced automatic adaptive allowances survive sampler contention and incomplete
+observations without returning to the original startup estimate. Fresh complete
+measurements are still required to shrink; explicit/strict/orphaned floors remain.
 
 Report each incident once, even across upgrades or newly available symptom labels.
 Submit `memcap report` directly; a reporting loop or a report combined with a script

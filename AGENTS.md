@@ -173,6 +173,9 @@ learning; use the recent window for admission. Strict mode retains lifetime peak
 Actual growth increases the allowance immediately. Incomplete, stale and orphaned
 measurements retain the previous effective allowance, not merely the initial estimate.
 An intervening stale cached read must not erase a previously complete window.
+Busy/faulty/incomplete samples retain a reduced automatic adaptive allowance too;
+never inflate it back to the original startup request without observed growth.
+Explicit requests, strict policy and orphaned groups keep their existing floors.
 It cannot advance that window or release capacity; the next fresh sample still
 checks the five-second maximum gap before using it. Keep this negative control:
 fresh samples interleaved with stale reads must eventually retire an old peak.

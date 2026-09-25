@@ -272,6 +272,90 @@ class FeedbackTests(unittest.TestCase):
         ]:
             self.assertEqual(classify_shell(command)[0], "job", command)
 
+    def test_unavailable_observation_retains_reduced_allowance(self):
+        import copy
+
+        gib = 1048576
+        original = dict(
+            memory_kb=gib,
+            reservation_kb=gib // 2,
+            elastic=True,
+            orphaned=False,
+            members={"42": "start", "43": "start"},
+            reservation_window=[[100, 100000]],
+            reservation_window_since=1,
+        )
+        for sample in [
+            dict(busy=True, fault=True, footprints={}),
+            dict(fault=True, footprints={}),
+            dict(fault=False, footprints={"42": gib // 8}),
+        ]:
+            job = copy.deepcopy(original)
+            self.assertEqual(
+                Scheduler.reservation(job, sample, gib // 8, adaptive=True), gib // 2
+            )
+            if sample.get("busy"):
+                self.assertEqual(
+                    job["reservation_window"], original["reservation_window"]
+                )
+            else:
+                self.assertNotIn("reservation_window", job)
+        for overrides, adaptive in [
+            (dict(elastic=False), True),
+            (dict(orphaned=True), True),
+            ({}, False),
+        ]:
+            self.assertEqual(
+                Scheduler.reservation(
+                    {**original, **overrides},
+                    dict(busy=True, fault=True),
+                    0,
+                    adaptive=adaptive,
+                ),
+                gib,
+            )
+        self.assertEqual(
+            Scheduler.reservation(
+                dict(original), dict(fault=True), 3 * gib, adaptive=True
+            ),
+            3 * gib,
+        )
+
+    def test_contention_does_not_create_a_later_headroom_refusal(self):
+        gib = 1048576
+        scheduler = Scheduler.__new__(Scheduler)
+        scheduler.policy = "adaptive"
+        scheduler.max_jobs = 12
+        scheduler.headroom_kb = 2 * gib
+        scheduler.allowed_pressure = {1, 2}
+        scheduler.controller = dict(now=100, healthy_since=1, last_start=1)
+        job = dict(
+            status="running",
+            resource="",
+            memory_kb=gib,
+            reservation_kb=gib // 2,
+            elastic=True,
+            orphaned=False,
+            members={"42": "start", "43": "start"},
+        )
+        busy = dict(busy=True, fault=True, footprints={})
+        self.assertFalse(scheduler.admissible([job], gib, "", busy)[0])
+        self.assertEqual(scheduler.last_decision["reason"], "sampling")
+        # The host observation is valid/fresh but one changing group member is
+        # absent. Retain the previous allowance; do not invent another 512 MiB.
+        fresh = dict(
+            fault=False,
+            pressure=1,
+            tracked_kb=8 * gib,
+            cap_kb=20 * gib,
+            available_kb=2 * gib,
+            footprints={"42": gib // 8},
+            tracked_pids=[42],
+            monotonic=100,
+        )
+        self.assertTrue(scheduler.admissible([job], gib, "", fresh)[0])
+        self.assertEqual(job["reservation_kb"], gib // 2)
+
     def test_report_symptom_is_fixed_private_vocabulary(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
