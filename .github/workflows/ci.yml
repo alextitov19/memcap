@@ -38,3 +38,7 @@ jobs:
           done
       - name: Tests
         run: bats --print-output-on-failure tests/
+      - name: Isolated HOME without Docker
+        run: |
+          mc_ci_home=$(mktemp -d)
+          env HOME="$mc_ci_home" MC_DOCKER_RUNTIME=none MC_DRY_RUN=1 bats --print-output-on-failure tests/

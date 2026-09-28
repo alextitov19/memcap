@@ -223,6 +223,12 @@ must remain numeric/fixed-vocabulary; blocker elapsed intervals are observations
 not causal attribution. Early shared-sample refresh does not extend the two-second
 admission freshness deadline.
 
+Memory attribution in `workload_members.py` may include identity-checked owned
+descendants outside the supervised process group. Never use `footprint_members`
+to authorize signals, waits or cancellation: `members` retains that narrower scope.
+Preserve per-job deduplication, PID-reuse and foreign-UID exclusions. An old cached
+sample must not roll the shared paging controller back after a newer observation.
+
 `integrate` is an explicit user-facing mutation of agent profiles, not an enforcement
 operation. Preserve unrelated hooks, permissions, Markdown and symlinks. Validate
 all selected profiles before writing, keep private original-byte backups, and

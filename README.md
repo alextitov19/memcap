@@ -1497,6 +1497,11 @@ sampling in progress, not an invalid memory measurement.
 Hooks also resolve direct `memcap wait` calls to the installed absolute executable,
 preserving native task settings when the caller cannot find memcap on PATH.
 
+v0.18.1 corrects job memory attribution for verified descendants that change
+process groups and prevents older cached samples from rolling back paging
+evidence. It preserves lightweight execution, yellow admission and existing
+cancellation permissions. See [evidence and limits](docs/pressure-accounting-0.18.1.md).
+
 v0.18.0 adds finite jq formatting (including checked interpolation), Git branch
 inspection, document-to-text reads and GitHub comments. Environment arguments and
 inline remote helper assignments receive expanded-argument checks. Mixed commands
