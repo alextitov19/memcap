@@ -53,7 +53,7 @@ class ControlScriptTests(unittest.TestCase):
             "export BASH_ENV=helper",
             "while true; do cat note; done",
             'F="$1"; printf "$F" hi',
-            'cat "${HOME}/note"',
+            'cat "${HOME:-$(npm test)}/note"',
             "cat `npm test`",
             "cat <(npm test)",
             "A=$((1+2)); echo $A",

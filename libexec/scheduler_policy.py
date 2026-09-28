@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import os
 import re
 from pathlib import Path
@@ -143,6 +142,12 @@ def light_words(words: list[str], glob_checked=False) -> bool:
     if name == "git":
         while len(words) > 2 and words[1] == "-C":
             words = [words[0]] + words[3:]
+        if len(words) > 1 and words[1] == "branch":
+            return all(
+                a in {"-a", "-r", "-v", "-vv", "--all", "--remotes", "--list", "--show-current", "--no-color"}
+                or a.startswith(("--sort=", "--format="))
+                for a in words[2:]
+            )
     # The diagnostic next steps must remain usable while build capacity is full.
     # Exact read-only forms only: no streaming stats, bootstrap or device changes.
     if (
@@ -326,57 +331,12 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             "gc",
         } and all(word in {"--json", "--summary"} for word in words[2:])
     if name == "jq":
-        args = words[1:]
-        while args and (
-            re.fullmatch(r"-[rceM]+", args[0])
-            or args[0]
-            in {
-                "--raw-output",
-                "--compact-output",
-                "--exit-status",
-                "--monochrome-output",
-            }
-        ):
-            args = args[1:]
-        if not args or any(w.startswith("-") for w in args[1:]):
-            return False
-        # Finite selectors/formatters only, never filter files, recursion, input
-        # generators, module loading, or arbitrary jq programs.
-        if "\\(" in args[0]:
-            return False  # jq string interpolation can hide generators/recursion.
-        expression = re.sub(r'"(?:[^"\\]|\\.)*"', '""', args[0])
-        if ".." in expression or not re.fullmatch(
-            r'[\w.\[\]()|,:/?!@<>=+\s"-]+', expression
-        ):
-            return False
-        names = re.findall(r"(?<![\w.])([A-Za-z_][A-Za-z_0-9]*)", expression)
-        return all(
-            n
-            in {
-                "keys",
-                "length",
-                "join",
-                "sort",
-                "sort_by",
-                "unique",
-                "tostring",
-                "select",
-                "has",
-                "type",
-                "null",
-                "true",
-                "false",
-                "tsv",
-                "csv",
-                "json",
-                "text",
-                "empty",
-                "not",
-                "and",
-                "or",
-            }
-            for n in names
-        )
+        from json_filter import command_safe
+
+        return command_safe(words[1:])
+    if name == "gh" and len(words) >= 3 and words[1] in {"issue", "pr"} and words[2] == "comment":
+        # A finite remote API write; permission remains the agent tool's job.
+        return not any(a in {"--editor", "-e", "--web", "-w"} for a in words[3:])
     if name == "gh" and len(words) >= 3 and words[1] == "api":
         return not any(a == "--slurp" for a in words[2:])
     if name == "gh" and len(words) >= 3 and words[1] in {"issue", "pr"}:
@@ -758,6 +718,21 @@ def classify_shell(command: str) -> tuple[str, str]:
     return "job", ""
 
 
+def classification_code(command):
+    """Fixed diagnostics only; never record source text or argument values."""
+    words = simple_words(command)
+    if not words:
+        return 3  # unproven compound shell/expansion
+    name = Path(words[0]).name
+    if name in {"bash", "sh", "zsh", "python", "python3", "node", "ruby", "perl"}:
+        return 4  # arbitrary script/interpreter
+    if name in {"go", "npm", "pnpm", "yarn", "xcodebuild", "swift", "cargo", "make", "tsc", "pytest"}:
+        return 1  # recognized workload family
+    if name == "jq":
+        return 5  # filter outside the finite formatting language
+    return 2  # other unsupported command/options
+
+
 def persistent_shell(command):
     """One known persistent command with literal cd/env/redirection wrappers.
 
@@ -979,11 +954,9 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
     kind, resource = classify_shell(command)
     from inspection import guarded_shell
 
-    session_key = (
-        hashlib.sha256(payload.get("session_id", "").encode()).hexdigest()
-        if isinstance(payload.get("session_id"), str)
-        else ""
-    )
+    from session_identity import key
+
+    session_key = key(payload)
     guarded = guarded_shell(command, executable, session_key) if kind == "job" else None
     try:
         wrapped = shlex.split(command)
@@ -1006,7 +979,10 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
     ):
         # Hooks already know their installed executable. A native wait must not
         # depend on the caller's PATH or the global Homebrew bin symlink.
-        updated = {**original, "command": shlex.join([executable, *control[1:]])}
+        wait_args = [executable, *control[1:]]
+        if "--session" in control and session_key and "--session-key" not in control:
+            wait_args += ["--session-key", session_key]
+        updated = {**original, "command": shlex.join(wait_args)}
         updated.pop("cmd", None)
         return {
             "hookSpecificOutput": {
@@ -1023,6 +999,7 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
     if not isinstance(shell, str) or not Path(shell).is_absolute():
         shell = "/bin/bash"
     args = [executable, "run", "--shell", shell]
+    args += ["--classification-code", str(classification_code(command))]
     if original.get("login", agent == "codex"):
         args.append("--login")
     if resource:
@@ -1038,7 +1015,7 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
     if isinstance(payload.get("session_id"), str) and payload["session_id"]:
         args += [
             "--session-key",
-            hashlib.sha256(payload["session_id"].encode()).hexdigest(),
+            session_key,
         ]
     args += ["--shell-command", command]
     updated = dict(original)

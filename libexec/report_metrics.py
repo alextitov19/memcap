@@ -23,6 +23,7 @@ BLOCKERS = {
     "sampling",
 }
 FACTS = {
+    "sample_duration_ms",
     "measurement_probe_status",
     "queue_measurement_fault",
     "running_reserved_kb",
@@ -71,7 +72,7 @@ FACTS = {
     "running_resources",
     "admission_oldest_seconds",
     "admission_observed_waiters",
-} | {"blocked_" + reason for reason in BLOCKERS}
+} | {"blocked_" + reason for reason in BLOCKERS} | {"blocked_" + reason + "_ms" for reason in BLOCKERS} | {"waiting_classification_" + str(code) for code in range(6)}
 
 
 def sanitize(raw):
@@ -150,7 +151,10 @@ def queue_facts(state):
             sizes = [j.get("memory_kb") for j in selected]
             if all(type(s) is int and 0 < s <= 2**63 - 1 for s in sizes):
                 facts[status + "_requested_kb"] = sum(sizes)
-            sessions = [j.get("session_key") or j.get("cwd") for j in selected]
+            sessions = [
+                (j["session_key"].split("/", 1)[0] if isinstance(j.get("session_key"), str) and j["session_key"] else j.get("cwd"))
+                for j in selected
+            ]
             if all(isinstance(s, str) and s for s in sessions):
                 facts[status + "_sessions"] = len(set(sessions))
             if status == "running":
@@ -173,6 +177,17 @@ def queue_facts(state):
             facts.update({"blocked_" + reason: 0 for reason in BLOCKERS})
             decision_ages = []
             for job in selected:
+                code = job.get("classification_code", 0)
+                if type(code) is int and code in range(6):
+                    field = "waiting_classification_" + str(code)
+                    facts[field] = facts.get(field, 0) + 1
+                intervals = job.get("blocked_ms", {})
+                if not isinstance(intervals, dict):
+                    intervals = {}
+                for blocker, elapsed in intervals.items():
+                    if blocker in BLOCKERS and type(elapsed) is int and elapsed >= 0:
+                        field = "blocked_" + blocker + "_ms"
+                        facts[field] = facts.get(field, 0) + elapsed
                 decision = job.get("admission")
                 reason, decision_age = "unknown", None
                 if isinstance(decision, dict):
@@ -300,7 +315,7 @@ def capture(state):
             if type(sample.get("fault")) is bool:
                 facts["queue_measurement_fault"] = int(sample["fault"])
             facts["sample_age_ms"] = int((time.monotonic() - stamp) * 1000)
-            for key in ("swap_in_kbps", "swap_out_kbps", "compressor_kb"):
+            for key in ("swap_in_kbps", "swap_out_kbps", "compressor_kb", "sample_duration_ms"):
                 value = sample.get(key)
                 if type(value) in (int, float) and math.isfinite(value) and value >= 0:
                     facts[key] = int(value)

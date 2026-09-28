@@ -1497,6 +1497,25 @@ sampling in progress, not an invalid memory measurement.
 Hooks also resolve direct `memcap wait` calls to the installed absolute executable,
 preserving native task settings when the caller cannot find memcap on PATH.
 
+v0.18.0 adds finite jq formatting (including checked interpolation), Git branch
+inspection, document-to-text reads and GitHub comments. Environment arguments and
+inline remote helper assignments receive expanded-argument checks. Mixed commands
+containing an arbitrary script still require admission; recognition grants no
+permission to mutate local or remote data.
+
+Subagent IDs, when supplied by the agent host, now scope admission, Stop hooks and
+hook-generated session waits together. Standalone `memcap wait --session` still
+observes the calling agent process. Existing supervisors keep their old scope
+until finished; missing agent IDs cannot distinguish siblings. Do not resubmit
+pending work to adopt the update.
+
+The sampler refreshes early without extending its two-second validity. Incomplete
+measurements may increase a learned estimate from an observed peak but never
+decrease it; reduced-worker runs train their actual worker profile. Diagnostic
+events expose numeric classification, estimate provenance, reservation changes
+and elapsed blocker intervals. See [the investigation](docs/queue-productivity-0.18.md)
+for the baseline, field meanings and unresolved report limitations.
+
 Shell combinations such as `rg pattern $(rg -l needle src | head -3)` now prove
 the producer lightweight and validate the consumer's expanded arguments before
 execution. Nested supported substitutions, literal local aliases and additional

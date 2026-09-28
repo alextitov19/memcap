@@ -211,6 +211,18 @@ a daemon upgrade is not evidence that every old session has adopted new behavior
 
 ## Agent configuration installation
 
+Hook admission and completion must share `session_identity.py`: supplied subagent
+IDs distinguish siblings, and bare session waits rewritten by the hook carry that
+same private key. Hosts without subagent IDs retain process/session-wide behavior.
+Never release or cancel another scope's leases to make completion appear finished.
+
+Incomplete peak measurements may raise learned estimates, never lower them or
+increment complete-run counts. When workers change at launch, train the actual
+worker fingerprint rather than silently losing the observation. Public telemetry
+must remain numeric/fixed-vocabulary; blocker elapsed intervals are observations,
+not causal attribution. Early shared-sample refresh does not extend the two-second
+admission freshness deadline.
+
 `integrate` is an explicit user-facing mutation of agent profiles, not an enforcement
 operation. Preserve unrelated hooks, permissions, Markdown and symlinks. Validate
 all selected profiles before writing, keep private original-byte backups, and

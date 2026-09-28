@@ -80,6 +80,8 @@ class MetricsTests(unittest.TestCase):
                 "session_key": "SECRET_A",
                 "cwd": "/SECRET/project",
                 "admission": {"reason": "budget", "at": 990},
+                "blocked_ms": {"headroom": 3000, "SECRET": 42},
+                "classification_code": 3,
             },
             {
                 "status": "waiting",
@@ -114,6 +116,8 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(facts["blocked_budget"], 1)
         self.assertEqual(facts["blocked_headroom"], 1)
         self.assertEqual(facts.get("blocked_unknown"), 1)
+        self.assertEqual(facts["blocked_headroom_ms"], 3000)
+        self.assertEqual(facts["waiting_classification_3"], 1)
         self.assertEqual(facts["admission_oldest_seconds"], 10)
         self.assertEqual(facts["registry_age_seconds"], 50)
         self.assertNotIn("SECRET", json.dumps(facts))

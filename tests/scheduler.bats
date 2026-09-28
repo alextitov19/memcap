@@ -194,3 +194,9 @@ sample_fixture() {
   [ "$status" = 0 ]
   assert_contains "$output" 'OK'
 }
+
+@test "QUEUE: September 28 productivity and scheduling regressions" {
+  run python3 "$MEMCAP_ROOT/tests/test_productivity_018.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}

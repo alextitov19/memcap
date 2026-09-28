@@ -610,18 +610,22 @@ class Collector:
         except (ValueError, AttributeError) as e:
             raise GCError("queue registry unavailable; retaining helpers") from e
 
-    def pending_jobs(self, caller, table, session=None):
+    def pending_jobs(self, caller, table, session=None, session_key=None):
         self.load_resources()
         agent = owner(caller, table)
         if not agent:
             return []
-        session_key = hashlib.sha256(session.encode()).hexdigest() if session else ""
+        scoped = session is not None or session_key is not None
+        if session_key is None:
+            from session_identity import identity_key
+
+            session_key = identity_key(session)
         pending = [
             j
             for j in self.resources
             if not j.get("resource")
             and (
-                session is None
+                not scoped
                 or not j.get("session_key")
                 or j["session_key"] == session_key
             )
@@ -684,6 +688,7 @@ def wait_for_pending(
 
 
 def main():
+    from session_identity import identity
     root = (
         Path(os.environ.get("MEMCAP_STATE_HOME", str(Path.home() / ".local/state")))
         / "memcap"
@@ -696,7 +701,7 @@ def main():
         gc.event(payload, str(os.getpid()), table, time.time())
         if payload.get("hook_event_name") == "Stop":
             response = gc.continuation(
-                str(os.getpid()), table, payload.get("session_id", "")
+                str(os.getpid()), table, identity(payload)
             )
             if response:
                 print(json.dumps(response))
@@ -707,7 +712,7 @@ def main():
             # The shell invokes wait only after event observed pending work.
             # It may have completed between interpreters; still request its result.
             response = wait_for_pending(
-                gc, str(os.getpid()), payload.get("session_id", "")
+                gc, str(os.getpid()), identity(payload)
             ) or dict(COMPLETED_GUIDANCE)
             if response:
                 print(json.dumps(response))

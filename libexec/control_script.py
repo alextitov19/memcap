@@ -63,7 +63,9 @@ def rewrite(text, executable, session_key, names=None, depth=0):
                 r"\$(?:\{([A-Za-z_][A-Za-z_0-9]*|[0-9])\}|([A-Za-z_][A-Za-z_0-9]*|[0-9]))",
                 text[i:],
             )
-            if match and (match[1] or match[2]) in names | set("0123456789"):
+            if match:
+                # Parameter values are data. Dynamic executable names and
+                # execution-capable expanded arguments are still checked below.
                 value, consumed = match[0], len(match[0])
             else:
                 return None
@@ -186,3 +188,11 @@ def guard_invocation(command, executable, session_key):
     for offset in reversed(scripts):
         text = text[:offset] + prefix + text[offset:]
     return text
+
+
+def guard_inline(command, executable, session_key):
+    # Preserve assignment scope and quote handling for remote API helpers
+    # pasted directly into Bash, rather than requiring a separate script file.
+    if not re.search(r"(?:^|[;\s])[A-Za-z_][A-Za-z_0-9]*=", command):
+        return None
+    return rewrite(command, executable, session_key)
