@@ -5,6 +5,7 @@ The supervisor atomically commits startup credit after rechecking live pressure.
 """
 
 from scheduler_metrics import number
+from workload_members import footprint_members
 
 GIB = 1048576
 
@@ -12,7 +13,11 @@ GIB = 1048576
 def advance(controller: dict, sample: dict, now: float) -> dict:
     state = {**controller, "now": now}
     stamp = sample.get("monotonic", now)
-    if stamp == state.get("last_sample"):
+    previous = state.get("last_sample")
+    if (sample.get("boot_id") == state.get("boot_id")
+            and number(stamp) and number(previous) and stamp <= previous):
+        # A waiter may have read the old cache while another sampler published
+        # a newer observation. Never roll back paging/recovery state under lock.
         return state
     if sample.get("boot_id") != state.get("boot_id"):
         state = {"now": now, "healthy_since": now, "boot_id": sample.get("boot_id")}
@@ -73,7 +78,7 @@ def decide(
         outstanding = 0
         counted = set(map(str, sample["tracked_pids"]))
         for job in active:
-            values = [sample["footprints"].get(p, 0) for p in job["members"]]
+            values = [sample["footprints"].get(p, 0) for p in footprint_members(job)]
             if not all(number(v) for v in values):
                 return deny("measurement")
             measured = sum(values)
@@ -82,7 +87,7 @@ def decide(
                 return deny("measurement")
             reserve = max(reserve, measured)
             already = sum(
-                sample["footprints"].get(p, 0) for p in job["members"] if p in counted
+                sample["footprints"].get(p, 0) for p in footprint_members(job) if p in counted
             )
             accounted += reserve - already
             outstanding += max(0, reserve - measured)

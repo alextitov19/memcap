@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.18.1 — 2026-09-28
+
+- Include verified owned descendants that change process groups in job memory
+  observations, reservations and learned peaks. Retain observed detached identities
+  while the job is supervised; reject PID reuse and foreign ownership, and avoid
+  counting nested managed groups twice. This does not expand cancellation targets
+  or make detached services hold foreground completion open.
+- Do not let an older cached observation erase newer paging/recovery evidence.
+  Concurrent readers of the early-refresh cache must advance controller state in
+  observation order, not lock-acquisition order.
+- Preserve lightweight command handling and the existing memory policy. These are
+  accounting/protection fixes, not a guarantee that macOS can never enter red.
+
+See [incident evidence and limits](docs/pressure-accounting-0.18.1.md).
+
 ## v0.18.0 — 2026-09-28
 
 - Keep Git branch inspection, finite jq formatting/interpolation, document text

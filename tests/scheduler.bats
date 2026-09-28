@@ -200,3 +200,9 @@ sample_fixture() {
   [ "$status" = 0 ]
   assert_contains "$output" 'OK'
 }
+
+@test "QUEUE: escaped descendants and stale pressure observations retain accounting" {
+  run python3 "$MEMCAP_ROOT/tests/test_pressure_accounting.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}

@@ -25,6 +25,7 @@ import uuid
 from admission import advance, decide
 from scheduler_metrics import append_event, shared_sample, blocker_fields
 from workload_estimates import fingerprint, record as record_estimate
+from workload_members import footprint_members, refresh_footprint_members
 
 from scheduler_policy import (
     hook_response,
@@ -222,6 +223,7 @@ class Scheduler:
                         not isinstance(job, dict)
                         or job.get("status") not in {"waiting", "running"}
                         or not isinstance(job.get("members"), dict)
+                        or not isinstance(job.get("footprint_members", {}), dict)
                         or not isinstance(job.get("owner"), int)
                         or not isinstance(job.get("group"), int)
                         or not isinstance(job.get("memory_kb"), int)
@@ -288,7 +290,7 @@ class Scheduler:
         data["controller"] = self.controller
         data["policy"] = self.policy
         for job in data["jobs"]:
-            if job["status"] != "running" or not job["members"]:
+            if job["status"] != "running" or not footprint_members(job):
                 continue
             stamp = sample.get("monotonic", time.monotonic())
             if stamp <= job.get("last_observation", job.get("start_monotonic", 0)):
@@ -296,10 +298,10 @@ class Scheduler:
             job["last_observation"] = stamp
             footprints = sample.get("footprints", {})
             complete = not sample.get("fault") and all(
-                p in footprints for p in job["members"]
+                p in footprints for p in footprint_members(job)
             )
             job["measurement_complete"] = complete
-            measured = sum(footprints.get(p, 0) for p in job["members"])
+            measured = sum(footprints.get(p, 0) for p in footprint_members(job))
             if complete:
                 job["measured_kb"] = measured
             previous_reservation = job.get("reservation_kb", job["memory_kb"])
@@ -313,10 +315,14 @@ class Scheduler:
                     measurement_complete=int(complete),
                     reservation_source=job.get("reservation_source", 0),
                 ))
-            if sample.get("fault") or not all(p in footprints for p in job["members"]):
+            if not job["members"]:
+                # The foreground group finished while attributed work remains.
+                # Its future peak is unknown; never train a lower estimate.
+                job["learning_incomplete"] = True
+            if sample.get("fault") or not all(p in footprints for p in footprint_members(job)):
                 job["learning_incomplete"] = True
                 continue
-            measured = sum(footprints[p] for p in job["members"])
+            measured = sum(footprints[p] for p in footprint_members(job))
             job["observed_peak_kb"] = max(job.get("observed_peak_kb", 0), measured)
             job["sample_count"] = job.get("sample_count", 0) + 1
 
@@ -421,6 +427,7 @@ class Scheduler:
                     # With a dead supervisor retain uncertain groups rather than
                     # reuse capacity or authorize signalling a recycled PID.
                     if owner_alive:
+                        job.setdefault("footprint_members", dict(job["members"]))
                         job["members"] = members
                     job["orphaned"] = not owner_alive
                     live.append(job)
@@ -429,6 +436,7 @@ class Scheduler:
                     "invalid job record; refusing to discard reservations"
                 ) from exc
         data["jobs"] = live
+        refresh_footprint_members(live, table, os.getuid())
 
     @staticmethod
     def reservation(job, sample, measured, adaptive=False):
@@ -444,9 +452,9 @@ class Scheduler:
         if (
             job.get("elastic") is True
             and not job.get("orphaned")
-            and job["members"]
+            and footprint_members(job)
             and not sample.get("fault", False)
-            and all(p in sample.get("footprints", {}) for p in job["members"])
+            and all(p in sample.get("footprints", {}) for p in footprint_members(job))
         ):
             peak = max(measured, job.get("observed_peak_kb", 0))
             job["observed_peak_kb"] = peak
@@ -491,7 +499,7 @@ class Scheduler:
         for job in jobs:
             if job["status"] == "running":
                 measured = sum(
-                    sample.get("footprints", {}).get(p, 0) for p in job["members"]
+                    sample.get("footprints", {}).get(p, 0) for p in footprint_members(job)
                 )
                 job["reservation_kb"] = self.reservation(
                     job, sample, measured, adaptive=self.policy == "adaptive"
