@@ -21,8 +21,12 @@ Implementation scope:
 Unchanged: user policy, pressure checks, fresh launch validation, ownership and
 cancellation rules. No unrelated workload or Docker process is terminated.
 
-Validation results and remaining issue-specific limitations will be added after
-the regression checks and normal/isolated suites run.
+Validation on the implementation in commit `80ad792`: 613/613 normal Bats tests,
+613/613 with isolated HOME and no Docker, shellcheck and 24 individual Bash parse
+checks passed. Both GitHub CI runs passed (36458567198 and 36458589740).
+The new eight-test regression suite against immutable v0.17.1 produced eight
+failure assertions and two missing-feature import errors, as expected. No test
+signals a real process or changes the live memory policy.
 
 ## Diagnosis and evidence
 
