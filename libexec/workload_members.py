@@ -8,11 +8,13 @@ def footprint_members(job):
 
 def refresh_footprint_members(jobs, table, uid):
     active = [job for job in jobs if job["status"] == "running"]
+    if not active:
+        return
     owners = {str(job["owner"]) for job in active}
     assigned = {}
     children = {}
     for pid, row in table.items():
-        if row["uid"] == uid and pid not in owners and row.get("ppid") is not None:
+        if row.get("uid") == uid and pid not in owners and row.get("ppid") is not None:
             children.setdefault(str(row["ppid"]), []).append(pid)
 
     # Registered groups take precedence over inherited/remembered attribution.
@@ -20,7 +22,7 @@ def refresh_footprint_members(jobs, table, uid):
     for index, job in enumerate(active):
         for pid, start in job["members"].items():
             row = table.get(pid)
-            if row and row["uid"] == uid and row["start"] == start and pid not in owners:
+            if row and row.get("uid") == uid and row.get("start") == start and pid not in owners:
                 assigned[pid] = index
 
     def descendants():
@@ -38,7 +40,7 @@ def refresh_footprint_members(jobs, table, uid):
     for index, job in enumerate(active):
         for pid, start in footprint_members(job).items():
             row = table.get(pid)
-            if row and row["uid"] == uid and row["start"] == start and pid not in owners:
+            if row and row.get("uid") == uid and row.get("start") == start and pid not in owners:
                 assigned.setdefault(pid, index)
     descendants()
     for job in active:
