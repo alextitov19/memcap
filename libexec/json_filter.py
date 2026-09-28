@@ -14,7 +14,7 @@ FUNCTIONS = {
 }
 
 
-def expression_safe(source):
+def expression_safe(source, variables=()):
     if len(source) > 16384:
         return False
     # Strings are inert except for \(...), which must undergo the same proof.
@@ -58,7 +58,35 @@ def expression_safe(source):
         code, _ = scan(0)
     except ValueError:
         return False
-    if ".." in code or not re.fullmatch(r'[\w.\[\]()|,:/?!@<>=+\s"-]+', code):
+    # Object labels and shorthand fields are data names, not function calls.
+    # Preserve every value expression so {jobs: [recurse]} still fails closed.
+    parts, stack, i = [], [], 0
+    while i < len(code):
+        char = code[i]
+        if stack and stack[-1] == ["{", True]:
+            label = re.match(r'[A-Za-z_][A-Za-z_0-9]*(?=\s*[:,}])', code[i:])
+            if label:
+                i += len(label[0])
+                stack[-1][1] = False
+                continue
+        if char in "{[(":
+            stack.append([char, char == "{"])
+        elif char in "}])":
+            if not stack or stack[-1][0] != {"}": "{", "]": "[", ")": "("}[char]:
+                return False
+            stack.pop()
+        elif stack and stack[-1][0] == "{" and char in ",:":
+            stack[-1][1] = char == ","
+        elif stack and stack[-1][0] == "{" and not char.isspace():
+            stack[-1][1] = False
+        parts.append(char)
+        i += 1
+    if stack:
+        return False
+    code = "".join(parts)
+    for variable in variables:
+        code = re.sub(r'\$' + re.escape(variable) + r'\b', 'null', code)
+    if ".." in code or not re.fullmatch(r'[\w.\[\]{}()|,:/?!@<>=+\s"-]+', code):
         return False
     names = re.findall(r"(?<![\w.])([A-Za-z_][A-Za-z_0-9]*)", code)
     return len(names) <= 128 and all(name in FUNCTIONS for name in names)
@@ -66,9 +94,16 @@ def expression_safe(source):
 
 def command_safe(args):
     args = list(args)
-    while args and (
-        re.fullmatch(r"-[rceMC]+", args[0])
-        or args[0] in {"--raw-output", "--compact-output", "--exit-status", "--monochrome-output"}
-    ):
-        args.pop(0)
-    return bool(args) and all(not a.startswith("-") for a in args[1:]) and expression_safe(args[0])
+    variables = []
+    while args:
+        if (re.fullmatch(r"-[rceMC]+", args[0]) or args[0] in {
+            "--raw-output", "--compact-output", "--exit-status", "--monochrome-output"
+        }):
+            args.pop(0)
+        elif (args[0] == "--arg" and len(args) >= 3
+              and re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", args[1])):
+            variables.append(args[1])
+            args = args[3:]
+        else:
+            break
+    return bool(args) and all(not a.startswith("-") for a in args[1:]) and expression_safe(args[0], variables)

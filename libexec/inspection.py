@@ -168,10 +168,10 @@ def guard_read_consumers(command, executable, session_key):
     return command[:start] + " " + replacement + " " + command[end:]
 
 
-def guarded_shell(command, executable, session_key=""):
+def guarded_shell(command, executable, session_key="", cwd=None):
     from control_script import guard_invocation, guard_inline
 
-    script = guard_invocation(command, executable, session_key)
+    script = guard_invocation(command, executable, session_key, cwd)
     if script:
         return script
     text_probe = guard_text_probe(command, executable, session_key)
@@ -401,7 +401,9 @@ def guard_substitutions(command, executable, session_key, depth=0):
             i = end + 1
             continue
         if quote != "'" and c == "$":
-            variable = re.match(r"\$(?:[A-Za-z_][A-Za-z_0-9]*|\{[A-Za-z_][A-Za-z_0-9]*\})", command[i:])
+            from lightweight import parameter_value
+
+            variable = parameter_value(command[i:])
             if variable:
                 # Expansion is data, not shell source. Mask only for proof;
                 # the runtime guard validates execution-capable argv options.

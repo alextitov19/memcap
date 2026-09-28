@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.18.2 — 2026-09-28
+
+- Fix cross-conversation Stop blocking on shared agent daemons. Explicit and
+  cached runners now receive the calling hook's session/subagent identity.
+  Scoped completion no longer claims legacy unkeyed jobs from other projects;
+  their reservations, supervision and enforcement remain intact.
+- Scope absolute-path, redirected and composed session waits consistently, and
+  preserve the Codex permission contract when rewriting native tool input.
+- Keep Git remote/ref inspection and finite jq object projections/string arguments
+  out of admission. Unknown jq programs and executable options remain managed.
+- Check relative shell helpers in the requested tool working directory and
+  guard data-only shell fallback parameters in remote API arguments. Executable
+  fallbacks still queue; native output, exit status and single execution remain.
+- Isolate Docker settings in the test harness so dry-run watchdog tests never
+  read the developer's real Docker settings or wait on macOS file consent.
+
+See [issue audit and activation details](docs/completion-0.18.2.md).
+
 ## v0.18.1 — 2026-09-28
 
 - Include verified owned descendants that change process groups in job memory

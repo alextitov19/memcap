@@ -51,10 +51,13 @@ class ProductivityTests(unittest.TestCase):
                                 },
                             }
                         }
+                        if agent == "codex":
+                            expected["hookSpecificOutput"]["permissionDecision"] = "allow"
                     self.assertEqual(
                         hook_response(
                             {
                                 "hook_event_name": "PreToolUse",
+                                "permission_mode": "bypassPermissions",
                                 "tool_name": name,
                                 "tool_input": {field: command},
                             },
@@ -162,6 +165,8 @@ class ProductivityTests(unittest.TestCase):
                 "30": {"ppid": 10, "command": "python runner", "start": "s"},
                 "40": {"ppid": 20, "command": "python runner", "start": "s"},
             }
+            for process in table.values():
+                process["uid"] = os.getuid()
             jobs = [
                 dict(
                     id="abcdef123456",

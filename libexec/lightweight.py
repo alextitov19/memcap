@@ -4,6 +4,17 @@ import os
 import re
 
 
+def parameter_value(text):
+    """Data-only parameters, including an empty/literal/variable default.
+
+    No assignment, nested expansion, quoting, arithmetic or executable fallback.
+    Actual expanded argv is still checked by the runtime inspection guard.
+    """
+    name = r"(?:[A-Za-z_][A-Za-z_0-9]*|[0-9])"
+    default = r"(?:\$" + name + r"|\$\{" + name + r"\}|[A-Za-z_0-9./:@-]*)"
+    return re.match(r"\$(?:\{" + name + r"(?::?-" + default + r")?\}|" + name + r")", text)
+
+
 def local_variable(name):
     # Local aliases must not change command lookup, shell startup or an already
     # exported program setting. No special execution environment is rewritten.

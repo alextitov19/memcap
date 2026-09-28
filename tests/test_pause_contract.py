@@ -66,6 +66,7 @@ class PauseContractTests(unittest.TestCase):
             response = hook_response(
                 {
                     "hook_event_name": "PreToolUse",
+                    "permission_mode": "bypassPermissions",
                     "tool_name": tool,
                     "tool_input": original,
                 },
@@ -79,13 +80,17 @@ class PauseContractTests(unittest.TestCase):
             )
             self.assertEqual(updated["timeout"], 60000)
             self.assertFalse(updated["run_in_background"])
-            self.assertNotIn("permissionDecision", result)
+            if agent == "codex":
+                self.assertEqual(result["permissionDecision"], "allow")
+            else:
+                self.assertNotIn("permissionDecision", result)
             self.assertNotIn("cmd", updated)
             # The shell has no Homebrew bin on PATH. The resolved invocation
             # still reaches wait, creates no queued job, and returns its status.
             fixture_wait = hook_response(
                 {
                     "hook_event_name": "PreToolUse",
+                    "permission_mode": "bypassPermissions",
                     "tool_name": tool,
                     "tool_input": {key: "memcap wait abcdef12 --timeout 0"},
                 },
