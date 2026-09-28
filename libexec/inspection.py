@@ -169,7 +169,7 @@ def guard_read_consumers(command, executable, session_key):
 
 
 def guarded_shell(command, executable, session_key=""):
-    from control_script import guard_invocation
+    from control_script import guard_invocation, guard_inline
 
     script = guard_invocation(command, executable, session_key)
     if script:
@@ -183,6 +183,9 @@ def guarded_shell(command, executable, session_key=""):
     substitutions = guard_substitutions(command, executable, session_key)
     if substitutions:
         return substitutions
+    inline = guard_inline(command, executable, session_key)
+    if inline:
+        return inline
     # A reported path lookup: f=$(rg -l PATTERN dir); sed ... $f. The
     # substitution producer is proven inspection; consumers check expanded argv.
     match = re.fullmatch(
@@ -397,6 +400,16 @@ def guard_substitutions(command, executable, session_key, depth=0):
             parts.append(token)
             i = end + 1
             continue
+        if quote != "'" and c == "$":
+            variable = re.match(r"\$(?:[A-Za-z_][A-Za-z_0-9]*|\{[A-Za-z_][A-Za-z_0-9]*\})", command[i:])
+            if variable:
+                # Expansion is data, not shell source. Mask only for proof;
+                # the runtime guard validates execution-capable argv options.
+                token = marker + str(len(replacements)) + "__"
+                replacements.append((token, variable[0]))
+                parts.append(token)
+                i += len(variable[0])
+                continue
         parts.append(c)
         i += 1
     if not replacements:

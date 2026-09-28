@@ -22,8 +22,13 @@ def estimate(prior_kb: int, peaks_kb: list, complete_runs: int) -> int:
 
 
 def record(row: dict, peak_kb: int, *, complete: bool) -> dict:
-    if not complete or type(peak_kb) is not int or peak_kb < 0:
+    if type(peak_kb) is not int or peak_kb < 0:
         return dict(row)
+    if not complete:
+        # A missed sample cannot justify lowering a prediction, but it also
+        # cannot erase a large peak we actually observed. Keep complete-run
+        # counts/distributions untouched and retain the new high-water floor.
+        return {**row, "estimate_kb": max(row.get("estimate_kb", GIB), math.ceil(peak_kb * 1.25))}
     peaks = (row.get("peaks_kb", []) + [peak_kb])[-50:]
     count = min(1000000, row.get("complete_runs", 0) + 1)
     prior = row.get("estimate_kb", GIB)

@@ -23,7 +23,7 @@ import time
 import uuid
 
 from admission import advance, decide
-from scheduler_metrics import append_event, shared_sample
+from scheduler_metrics import append_event, shared_sample, blocker_fields
 from workload_estimates import fingerprint, record as record_estimate
 
 from scheduler_policy import (
@@ -302,9 +302,17 @@ class Scheduler:
             measured = sum(footprints.get(p, 0) for p in job["members"])
             if complete:
                 job["measured_kb"] = measured
+            previous_reservation = job.get("reservation_kb", job["memory_kb"])
             job["reservation_kb"] = self.reservation(
                 job, sample, measured, adaptive=self.policy == "adaptive"
             )
+            if job["reservation_kb"] != previous_reservation and re.fullmatch(r"[a-f0-9]{32}", str(job.get("id", ""))):
+                append_event(self.directory, dict(
+                    event="reservation", job_ref=int(job["id"][:13], 16),
+                    reservation_kb=job["reservation_kb"], measured_kb=measured,
+                    measurement_complete=int(complete),
+                    reservation_source=job.get("reservation_source", 0),
+                ))
             if sample.get("fault") or not all(p in footprints for p in job["members"]):
                 job["learning_incomplete"] = True
                 continue
@@ -518,7 +526,9 @@ class Scheduler:
     @staticmethod
     def session_bucket(job):
         # Older runners have no session key; keep their project's work together.
-        return job.get("session_key") or "project:" + job.get("cwd", "")
+        # Completion scopes distinguish siblings without granting their parent
+        # extra turns or extra worker shares by spawning more subagents.
+        return job.get("session_key", "").split("/", 1)[0] or "project:" + job.get("cwd", "")
 
     def next_waiter(self, jobs, resource, sample, turns=None, now=None):
         # One rotation across finite jobs and resources, shared under the queue lock.
@@ -634,6 +644,7 @@ class Scheduler:
                 workers = self.allocation(data["jobs"])
                 if self.policy == "adaptive" and memory_gb is None:
                     estimate_key, memory = self.demand(argv, cwd, workers, data)
+                estimate_row = data.get("estimates", {}).get(estimate_key, {})
                 data["jobs"].append(
                     {
                         "id": ident,
@@ -647,6 +658,9 @@ class Scheduler:
                         "memory_kb": memory,
                         "workers": workers,
                         "estimate_key": estimate_key,
+                        "estimate_source": 1 if memory_gb is not None else (3 if estimate_row else 2),
+                        "estimate_complete_runs": estimate_row.get("complete_runs", 0),
+                        "classification_code": getattr(self, "classification_code", 0),
                         "scheduler_version": 2,
                         "elastic": memory_gb is None,
                         "enqueued": time.time(),
@@ -792,6 +806,9 @@ class Scheduler:
                         job["admission"]["measurement_busy"] = int(
                             bool(sample.get("busy"))
                         )
+                        from scheduler_metrics import account_blocker
+
+                        account_blocker(job, job["admission"]["reason"], time.monotonic())
                         self.save(data)
                         if wait is not None and time.monotonic() - began >= wait:
                             print(
@@ -815,9 +832,11 @@ class Scheduler:
                                 dict(
                                     event="stalled",
                                     job_ref=int(ident[:13], 16),
+                                    classification_code=job.get("classification_code", 0),
                                     queue_wait_ms=int(
                                         (time.monotonic() - began) * 1000
                                     ),
+                                    **blocker_fields(job),
                                     **{
                                         k: v
                                         for k, v in job["admission"].items()
@@ -855,14 +874,13 @@ class Scheduler:
                             key
                             and not self.cancelled
                             and result == 0
-                            and not job.get("learning_incomplete")
                             and job.get("sample_count", 0) >= 2
                         ):
                             history = data.setdefault("estimates", {})
                             history[key] = record_estimate(
                                 history.get(key, {"estimate_kb": job["memory_kb"]}),
                                 job.get("observed_peak_kb", 0),
-                                complete=True,
+                                complete=not job.get("learning_incomplete"),
                             )
                             while len(history) > 256:
                                 del history[next(iter(history))]
@@ -876,6 +894,8 @@ class Scheduler:
                                 **completion_fields(result, self.cancelled),
                                 runtime_ms=int((time.time() - job["started"]) * 1000),
                                 peak_kb=job.get("observed_peak_kb", 0),
+                                learning_complete=int(not job.get("learning_incomplete")),
+                                **blocker_fields(job),
                             ),
                         )
                     self.save(data)
@@ -947,6 +967,9 @@ class Scheduler:
             time.sleep(self.poll)
 
     def launch(self, argv, cwd, job, data):
+        from scheduler_metrics import account_blocker
+
+        account_blocker(job, None, time.monotonic())
         if (self.directory.parent / "paused").is_file():
             # A registered waiter may be released by an owner pause. Preserve
             # supervision of its existing job, but impose no worker limits and
@@ -962,7 +985,8 @@ class Scheduler:
             # A smaller final allocation is safe, but do not teach a larger-worker
             # profile using the smaller run's peak.
             if workers != job.get("workers", workers):
-                job["estimate_key"] = ""
+                if job.get("estimate_key"):
+                    job["estimate_key"], _ = self.demand(argv, cwd, workers, data)
             job["workers"] = workers
             if (
                 len(argv) >= 3
@@ -1021,6 +1045,10 @@ class Scheduler:
                     job_ref=int(job["id"][:13], 16),
                     workers=workers,
                     request_kb=job["memory_kb"],
+                    classification_code=job.get("classification_code", 0),
+                    estimate_source=job.get("estimate_source", 0),
+                    estimate_complete_runs=job.get("estimate_complete_runs", 0),
+                    **blocker_fields(job),
                     queue_wait_ms=int((time.time() - job["enqueued"]) * 1000),
                 ),
             )
@@ -1048,7 +1076,7 @@ class Scheduler:
                 "queue registry is damaged; refusing to discard reservations"
             ) from exc
 
-    def wait_for(self, ident, timeout):
+    def wait_for(self, ident, timeout, session_key=None):
         if (
             (ident != "--session" and not re.fullmatch(r"[a-f0-9]{8,32}", ident))
             or not math.isfinite(timeout)
@@ -1072,7 +1100,7 @@ class Scheduler:
                                 "cannot identify this agent; use memcap wait JOB_ID --timeout 60"
                             )
                         matches = Collector(self.directory.parent).pending_jobs(
-                            str(os.getpid()), table
+                            str(os.getpid()), table, session_key=session_key
                         )
                     except GCError as exc:
                         raise QueueError(
@@ -1222,11 +1250,12 @@ def main():
             help="wait on finite jobs owned by this agent process; no lookup pipeline",
         )
         parser.add_argument("--timeout", type=float, default=60)
+        parser.add_argument("--session-key", default=None, help=argparse.SUPPRESS)
         args = parser.parse_args(sys.argv[2:])
         if bool(args.job_id) == args.session:
             parser.error("choose JOB_ID or --session")
         return scheduler.wait_for(
-            "--session" if args.session else args.job_id, args.timeout
+            "--session" if args.session else args.job_id, args.timeout, args.session_key
         )
     if action == "authorize":
         ids = scheduler.authorize_cancel(
@@ -1262,6 +1291,7 @@ def main():
                 )
         return 0
     parser = argparse.ArgumentParser(prog="memcap run")
+    parser.add_argument("--classification-code", type=int, choices=range(6), default=0, help=argparse.SUPPRESS)
     parser.add_argument("--resource", default="")
     parser.add_argument("--memory", type=float)
     parser.add_argument(
@@ -1279,6 +1309,7 @@ def main():
     parser.add_argument("--shell-command")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(sys.argv[2:])
+    scheduler.classification_code = args.classification_code
     argv = args.command[1:] if args.command[:1] == ["--"] else args.command
     if args.shell_command is not None:
         if not (directory.parent / "paused").is_file() and polling_loop(

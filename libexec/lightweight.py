@@ -105,6 +105,10 @@ def sed_command(args):
 
 def extra_family(name, args):
     """Return None for families handled by the older classifier."""
+    if name == "pdftotext":
+        return True  # text extraction, no rasterization or child execution
+    if name == "textutil":
+        return args[:2] == ["-convert", "txt"] and "-stdout" in args
     if name in {"gzip", "gunzip", "base64"}:
         return True  # streaming transforms; no arbitrary child execution
     if name == "file":

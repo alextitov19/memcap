@@ -11,7 +11,8 @@ import subprocess
 import tempfile
 import time
 
-EVENTS = {"sample", "queued", "admitted", "completed", "cancelled", "stalled"}
+BLOCKERS = ("unknown", "budget", "headroom", "slots", "pressure_or_measurement", "measurement", "fairness", "startup", "stabilizing", "paging", "sampling")
+EVENTS = {"sample", "queued", "admitted", "completed", "cancelled", "stalled", "reservation"}
 FIELDS = {
     "job_ref",
     "signal",
@@ -38,8 +39,40 @@ FIELDS = {
     "policy",
     "reason",
     "sample_age_ms",
-}
+    "sample_duration_ms",
+    "classification_code",
+    "estimate_source",
+    "estimate_complete_runs",
+    "reservation_kb",
+    "measured_kb",
+    "reservation_source",
+    "measurement_complete",
+    "learning_complete",
+} | {"blocked_" + reason + "_ms" for reason in BLOCKERS}
 MAX_SEGMENT = 16 * 1024 * 1024
+
+
+def account_blocker(job, reason, now):
+    """Attribute elapsed observations to the previous decision, not root cause.
+
+    Monotonic times are local to a live supervisor; this is never used to admit.
+    """
+    prior = job.get("blocker_clock")
+    if isinstance(prior, list) and len(prior) == 2 and prior[0] in BLOCKERS and number(prior[1]) and now >= prior[1]:
+        totals = job.get("blocked_ms", {})
+        if not isinstance(totals, dict):
+            totals = {}
+        previous = totals.get(prior[0], 0)
+        totals[prior[0]] = (previous if number(previous) else 0) + int((now - prior[1]) * 1000)
+        job["blocked_ms"] = totals
+    job["blocker_clock"] = [reason, now] if reason in BLOCKERS else None
+
+
+def blocker_fields(job):
+    totals = job.get("blocked_ms", {})
+    if not isinstance(totals, dict):
+        return {}
+    return {"blocked_" + reason + "_ms": value for reason, value in totals.items() if reason in BLOCKERS and number(value)}
 
 
 def completion_fields(result, cancelled=0):
@@ -141,16 +174,16 @@ def shared_sample(directory: Path, key: str, sampler) -> dict:
         except (OSError, ValueError):
             return {}
 
-    def fresh(value):
+    def fresh(value, maximum=2):
         stamp = value.get("sample", {}).get("monotonic")
         return (
             value.get("key") == key
             and number(stamp)
-            and 0 <= time.monotonic() - stamp < 2
+            and 0 <= time.monotonic() - stamp < maximum
         )
 
     cached = read()
-    if fresh(cached):
+    if fresh(cached, 1):
         return cached["sample"]
     fd = os.open(
         directory / "sample.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
@@ -159,6 +192,10 @@ def shared_sample(directory: Path, key: str, sampler) -> dict:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            # Refresh begins before expiry. Other supervisors can still use a
+            # valid sample while the elected sampler works; never extend TTL.
+            if fresh(cached):
+                return cached["sample"]
             return {
                 "fault": True,
                 "busy": True,
@@ -166,12 +203,14 @@ def shared_sample(directory: Path, key: str, sampler) -> dict:
                 "monotonic": time.monotonic(),
             }
         cached = read()
-        if fresh(cached):
+        if fresh(cached, 1):
             return cached["sample"]
+        began = time.monotonic()
         sample = sampler()
         vm = vm_sample()
         sample.update(vm)
         sample["monotonic"] = time.monotonic()
+        sample["sample_duration_ms"] = int((time.monotonic() - began) * 1000)
         previous = cached.get("sample", {})
         for counter, field in (
             ("swapins", "swap_in_kbps"),
@@ -206,19 +245,7 @@ def append_event(directory: Path, event: dict) -> None:
     row = {
         k: v for k, v in event.items() if k in FIELDS and number(v) and v <= 2**63 - 1
     }
-    reasons = (
-        "unknown",
-        "budget",
-        "headroom",
-        "slots",
-        "pressure_or_measurement",
-        "measurement",
-        "fairness",
-        "startup",
-        "stabilizing",
-        "paging",
-        "sampling",
-    )
+    reasons = BLOCKERS
     if event.get("reason") in reasons:
         row["reason_code"] = reasons.index(event["reason"])
     row.update(event=event["event"], timestamp=time.time())

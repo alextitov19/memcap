@@ -15,6 +15,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class InspectionExpansionTests(unittest.TestCase):
+    def test_environment_expansion_preserves_output_status_and_rejects_execution_options(self):
+        from inspection import guarded_shell, inspect_argv
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "space name").write_text("needle\n")
+            env = {**os.environ, "SEARCH_PATH": "space name", "MEMCAP_ROOT": str(ROOT),
+                   "MC_DRY_RUN": "1", "MEMCAP_CONFIG_HOME": str(root / "config"),
+                   "MEMCAP_STATE_HOME": str(root / "state")}
+            for pattern, status in [("needle", 0), ("absent", 1)]:
+                command = f'rg {pattern} "$SEARCH_PATH"'
+                rewritten = guarded_shell(command, str(ROOT / "bin/memcap"), "session")
+                result = subprocess.run(["/bin/bash", "-c", rewritten], cwd=root, env=env, capture_output=True, text=True, timeout=10)
+                original = subprocess.run(["/bin/bash", "-c", command], cwd=root, env=env, capture_output=True, text=True, timeout=10)
+                self.assertEqual((result.returncode, result.stdout), (status, original.stdout))
+                self.assertFalse((root / "state/memcap/queue").exists())
+            with patch("inspection.os.execvpe") as execute:
+                fallback = []
+                self.assertEqual(inspect_argv(["rg", "pattern", "--pre=script"], lambda argv: fallback.append(argv) or 75), 75)
+                execute.assert_not_called()
+                self.assertEqual(len(fallback), 1)
+
     def test_reported_glob_search_gets_argument_guard_not_heavy_wrapper(self):
         command = (
             'cd /repo && rg -n "func Store" -A 60 *.go | rg -n "kept|status" | head -30'

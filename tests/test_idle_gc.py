@@ -279,6 +279,25 @@ class IdleGCTests(unittest.TestCase):
         (q / "jobs.json").write_text(json.dumps({"jobs": jobs}))
         self.assertEqual(self.gc.continuation("90", self.table), {})
 
+    def test_sibling_subagent_work_does_not_block_own_stop_or_wait(self):
+        from session_identity import key, identity
+
+        self.table["30"] = row(10, "python3 /memcap/scheduler.py run")
+        self.table["31"] = row(10, "python3 /memcap/scheduler.py run")
+        q = self.gc.directory.parent / "queue"
+        q.mkdir()
+        first = dict(session_id="parent", agent_id="one")
+        second = dict(session_id="parent", agent_id="two")
+        jobs = [dict(id=name, owner=pid, owner_start="start", status="waiting", resource="", session_key=key(payload))
+                for name, pid, payload in [("mine", 30, first), ("sibling", 31, second)]]
+        (q / "jobs.json").write_text(json.dumps(dict(jobs=jobs)))
+        self.assertEqual([j["id"] for j in self.gc.pending_jobs("90", self.table, session_key=key(first))], ["mine"])
+        response = self.gc.continuation("90", self.table, identity(first))
+        self.assertIn("mine", response["reason"])
+        self.assertNotIn("sibling", response["reason"])
+        (q / "jobs.json").write_text(json.dumps(dict(jobs=jobs[1:])))
+        self.assertEqual(self.gc.continuation("90", self.table, identity(first)), {})
+
     def test_cancelled_or_dead_job_does_not_force_continuation(self):
         q = self.gc.directory.parent / "queue"
         q.mkdir()

@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.18.0 — 2026-09-28
+
+- Keep Git branch inspection, finite jq formatting/interpolation, document text
+  extraction and finite GitHub comment calls out of workload admission. Validate
+  environment-variable arguments and inline remote helper assignments at runtime.
+  Unknown scripts, generators and execution-capable options remain managed.
+- Scope subagent jobs, Stop hooks and hook-generated session waits consistently;
+  sibling subagents no longer share a completion scope when agent IDs are supplied.
+- Refresh shared observations before expiry and allow concurrent readers to use
+  still-valid data. Preserve the two-second deadline and fresh pressure checks.
+- Preserve observed large peaks when incomplete measurements prevent downward
+  learning. Train reduced-worker runs under their actual worker configuration.
+- Record numeric classification, estimate provenance, reservation changes,
+  sampling duration and per-blocker elapsed intervals. Public reports remain
+  opt-in and contain no commands, paths or process identities.
+
+See [investigation and limitations](docs/queue-productivity-0.18.md).
+
 ## v0.17.1 — 2026-09-25
 
 - Describe an expired but otherwise valid adaptive observation as waiting for
