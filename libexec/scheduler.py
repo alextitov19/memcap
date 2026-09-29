@@ -881,16 +881,18 @@ class Scheduler:
                     members = dict(job["members"])
                     if result is not None and not members:
                         key = job.get("estimate_key")
-                        learning_complete = job.get("sample_count", 0) >= 2 and not job.get("learning_incomplete")
+                        learning_complete = result == 0 and job.get("sample_count", 0) >= 2 and not job.get("learning_incomplete")
                         if (
                             key
                             and not self.cancelled
-                            and result == 0
                             and (learning_complete or job.get("observed_peak_kb", 0) > 0)
                         ):
                             history = data.setdefault("estimates", {})
+                            # Updating an old key must refresh its retention
+                            # position; otherwise frequent expensive work loses
+                            # its estimate when unrelated commands fill the cache.
                             history[key] = record_estimate(
-                                history.get(key, {"estimate_kb": job["memory_kb"]}),
+                                history.pop(key, {"estimate_kb": job["memory_kb"]}),
                                 job.get("observed_peak_kb", 0),
                                 complete=learning_complete,
                             )

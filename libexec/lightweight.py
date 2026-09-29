@@ -116,6 +116,21 @@ def sed_command(args):
 
 def extra_family(name, args):
     """Return None for families handled by the older classifier."""
+    if name == "command":
+        return len(args) >= 2 and args[0] in {"-v", "-V"} and all(not a.startswith("-") for a in args[1:])
+    if name == "unzip":
+        return len(args) >= 2 and args[0] in {"-p", "-l", "-t"} and all(not a.startswith("-") for a in args[1:])
+    if name == "gofmt":
+        # Formatting source does not execute it. Unknown flags, rewrite programs
+        # and directory-wide invocations retain normal admission.
+        files = []
+        for arg in args:
+            if arg in {"-w", "-l", "-d", "-s"}:
+                continue
+            if arg.startswith("-") or not arg.endswith(".go"):
+                return False
+            files.append(arg)
+        return 1 <= len(files) <= 64
     if name == "paste":
         return True  # streaming text columns; no child-execution option
     if name == "lsof":
@@ -209,6 +224,18 @@ def extra_family(name, args):
             for a in args
         )
     if name == "benmore":
+        if len(args) == 2 and args[1] in {"--help", "-h"} and re.fullmatch(r"[a-z][a-z-]*", args[0]):
+            return True  # Help or an older CLI's usage error; neither runs a build.
+        if args[:1] == ["push"]:
+            rest, files = list(args[1:]), []
+            while rest:
+                if rest[0] in {"--app", "--env"} and len(rest) > 1 and not rest[1].startswith("-"):
+                    rest = rest[2:]
+                elif not rest[0].startswith("-") and re.search(r"\.(?:tsx?|jsx?|ya?ml|html|css|json|md|svg|txt|sql)$", rest[0]):
+                    files.append(rest.pop(0))
+                else:
+                    return False
+            return 1 <= len(files) <= 64
         return (
             bool(args)
             and args[0]
@@ -228,6 +255,7 @@ def extra_family(name, args):
                 "list",
                 "whoami",
                 "use",
+                "describe",
             }
             and not any(
                 a in {"-f", "--follow", "--watch"}

@@ -70,10 +70,14 @@ def light_words(words: list[str], glob_checked=False) -> bool:
     if Path(words[0]).name == "env":
         words.pop(0)
     while words and re.fullmatch(
-        r"(?:LC_ALL|LANG|AWS_PROFILE|AWS_REGION|AWS_DEFAULT_REGION|AWS_PAGER)=[^\n]*",
+        r"(?:LC_ALL|LANG|AWS_PROFILE|AWS_REGION|AWS_DEFAULT_REGION|AWS_PAGER|AWS_RETRY_MODE|AWS_MAX_ATTEMPTS)=[^\n]*",
         words[0],
     ):
         if words[0].startswith("AWS_PAGER=") and words[0] != "AWS_PAGER=":
+            return False
+        if words[0].startswith("AWS_RETRY_MODE=") and words[0].split("=", 1)[1] not in {"standard", "adaptive", "legacy"}:
+            return False
+        if words[0].startswith("AWS_MAX_ATTEMPTS=") and not re.fullmatch(r"AWS_MAX_ATTEMPTS=(?:[1-9]|[1-9][0-9]|100)", words[0]):
             return False
         words.pop(0)
     if not words:
@@ -113,6 +117,18 @@ def light_words(words: list[str], glob_checked=False) -> bool:
                 args = args[2:]
             else:
                 return False
+        if args[:2] == ["sso", "login"]:
+            # Remote authentication (and its normal browser handoff), no local
+            # build, plugin command or arbitrary shell body.
+            rest = args[2:]
+            while rest:
+                if rest[0] in {"--no-browser", "--use-device-code", "--no-cli-pager"}:
+                    rest = rest[1:]
+                elif rest[0] in {"--profile", "--region", "--sso-session"} and len(rest) > 1 and not rest[1].startswith("-"):
+                    rest = rest[2:]
+                else:
+                    return False
+            return True
         if args[:2] == ["logs", "tail"]:
             return not any(
                 a == "--follow" or a.startswith("--follow=") for a in args[2:]
@@ -274,6 +290,10 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             and float(words[1]) <= 60
         )
     if name == "memcap" and len(words) >= 2:
+        if words[1] == "cancel":
+            # Unsupported public command: the dispatcher returns usage. Never
+            # reserve memory merely to discover that native cancellation is needed.
+            return True
         if words[1] in {"--version", "-v", "--help", "-h"}:
             return len(words) == 2
         if words[1] == "_inspect":
@@ -316,6 +336,13 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         from json_filter import command_safe
 
         return command_safe(words[1:])
+    if (name == "gh" and len(words) == 4
+            and words[1] in {"issue", "pr", "release", "run", "workflow", "auth"}
+            and re.fullmatch(r"[a-z][a-z-]*", words[2])
+            and words[3] in {"--help", "-h"}):
+        # Built-in help only. Alias/extension dispatch and actual mutation
+        # commands still follow their existing classification and permissions.
+        return True
     if name == "gh" and len(words) >= 3 and words[1] in {"issue", "pr"} and words[2] == "comment":
         # A finite remote API write; permission remains the agent tool's job.
         return not any(a in {"--editor", "-e", "--web", "-w"} for a in words[3:])

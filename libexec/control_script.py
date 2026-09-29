@@ -128,7 +128,10 @@ def rewrite(text, executable, session_key, names=None, depth=0, functions=()):
             from scheduler_policy import literal_shell
 
             # Assignment-only statements preserve the original shell's scope.
-            if not literal_shell(stage) or any(b[1] not in names for b in bindings):
+            # A literal ~/ path on the RHS is shell data. Mask it only for
+            # proof; execution retains the caller shell's HOME expansion.
+            proof = re.sub(r"(?<==)~/[A-Za-z0-9_./-]+", "/__MEMCAP_HOME_PATH__", stage)
+            if not literal_shell(proof) or any(b[1] not in names for b in bindings):
                 return None
             continue
         if words in (["set", "-euo", "pipefail"], ["set", "-eu"], ["set", "-e"], ["set", "-u"]):
@@ -148,7 +151,7 @@ def rewrite(text, executable, session_key, names=None, depth=0, functions=()):
             # or -v variable assignment. Data operands may be expanded normally.
             if len(words) < 2 or MARKER in words[1] or words[1].startswith("-"):
                 return None
-        elif name not in {"cd", "echo", "true", "false"}:
+        elif name not in {"cd", "echo", "true", "false", "command"}:
             inserts.append(
                 (
                     start + len(masked[start:end]) - len(masked[start:end].lstrip()),

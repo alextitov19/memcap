@@ -50,9 +50,34 @@ def guard_for_loop(command, executable, session_key):
         return None
     # The only arithmetic allowed here is an offset from a literal numeric
     # loop value. Never evaluate arbitrary shell arithmetic or environment data.
+    # A finite list of file:line literals may split each value before reading
+    # nearby lines. The arithmetic operand must come from those checked digits,
+    # never from glob results, an environment variable or a later reassignment.
+    split = re.match(r"\s*([A-Za-z_][A-Za-z_0-9]*)=\$\{" + re.escape(variable)
+                     + r"%%:\*\};\s*([A-Za-z_][A-Za-z_0-9]*)=\$\{"
+                     + re.escape(variable) + r"##\*:\};", body)
+    if split:
+        file_var, line_var = split[1], split[2]
+        if (len({variable, file_var, line_var}) != 3
+                or not all(local_variable(v) for v in (file_var, line_var))
+                or not all(re.fullmatch(r"[A-Za-z0-9_./-]+:[1-9][0-9]{0,6}", v) for v in values)):
+            return None
+        remainder = body[split.end():]
+        if re.search(r"(?:^|[;\s])(?:" + file_var + "|" + line_var + r")=", remainder):
+            return None
+        arithmetic = re.compile(r"\$\(\(\s*" + line_var + r"\s*([+-])\s*([0-9]{1,7})\s*\)\)")
+        for value in values:
+            filename, line = value.rsplit(":", 1)
+            proof = arithmetic.sub(lambda m: str(int(line) + (1 if m[1] == "+" else -1) * int(m[2])), remainder)
+            for name, literal in ((variable, value), (file_var, filename), (line_var, line)):
+                proof = substitute_reference(proof, name, literal)
+            if not light_shell(proof, allow_bare_globs=True):
+                return None
+        guarded = guard_stages(body, executable, session_key, force=True)
+        return text[:body_start] + guarded + text[body_end:] if guarded is not None else None
     arithmetic = re.compile(r"\$\(\(\s*" + re.escape(variable) + r"\s*([+-])\s*([0-9]{1,7})\s*\)\)")
     numeric = all(re.fullmatch(r"[0-9]{1,7}", value) for value in values)
-    proofs = values if numeric else ["/__MEMCAP_LOOP_FILE__"]
+    proofs = values if numeric or literal_shell(values_text) else ["/__MEMCAP_LOOP_FILE__"]
     for value in proofs:
         proof = body
         if numeric:

@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.18.4 — 2026-09-29
+
+- Recognize bounded AWS retry settings, SSO authentication, hosted Benmore
+  uploads/description, archive inspection, source formatting, command lookup
+  built-in GitHub CLI help and finite jq grouping/extrema without workload
+  admission. Unknown executable options and local builds still queue; tool
+  permissions are unchanged.
+- Preserve home-directory aliases and finite file:line inspection/upload loops.
+  Prove arithmetic from literal line numbers and check expanded consumers again
+  before execution. Negative cases retain admission.
+- Claim session guidance atomically so concurrent hooks send the full policy
+  once per session/version/pause state. Queue transitions then use a short
+  reminder; SessionStart still refreshes after resume or compaction.
+- Retain measured peaks from failed jobs for upward-only learning, without
+  complete-run credit. Updating an existing estimate now refreshes its cache
+  retention order instead of allowing a recently trained estimate to be evicted.
+
+See [issue reproductions and release evidence](docs/open-issues-0.18.4.md).
+
 ## v0.18.3 — 2026-09-28
 
 - Keep finite filename/read loops, streaming awk excerpts, paste and socket

@@ -4,12 +4,14 @@ Never persists tool output, changes queue records, boots devices or signals PIDs
 """
 
 from datetime import datetime, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 from report import PERFORMANCE_GUIDANCE, PROTECTION_GUIDANCE, MEMORY_GUIDANCE
@@ -309,6 +311,13 @@ def guidance(payload, state, refresh=False, brief=False):
             re.I,
         )
     ):
+        if brief:
+            return (
+                "Queue transition, not final task status. Use the existing task's blocking wait up to 60 seconds; "
+                "read final output/exit status. MUST report delayed inspection once with memcap report lightweight-queued "
+                "and excessive polling once with memcap report polling-overhead; reuse existing incident URLs. "
+                "Existing protection guidance still applies; do not duplicate work or bypass memcap."
+            )
         return (
             "Memcap reported a queue transition, not a workload result. Await native completion "
             "notifications without polling when supported; otherwise use one blocking wait up to "
@@ -382,15 +391,80 @@ def guidance(payload, state, refresh=False, brief=False):
     return "\n".join(lines)
 
 
+def session_guidance(payload, state, token):
+    """Claim one refresh atomically; never store commands or tool output.
+
+    Only the short, probe-free session message holds this separate receipt lock.
+    Queue observation and diagnostic probes never hold it or the registry lock.
+    """
+    from session_identity import key
+
+    if not isinstance(payload, dict):
+        return ""
+    scope = key(payload)
+    event = payload.get("hook_event_name")
+    if not scope:
+        return guidance(payload, state, refresh=True)
+    directory = state / "job-feedback"
+    # Parent/subagent keys contain a separator; keep every receipt a basename.
+    receipt = directory / ("guidance-" + scope.replace("/", "-") + ".receipt")
+    refresh_event = event in {"PreToolUse", "UserPromptSubmit", "SessionStart"}
+
+    def current():
+        try:
+            return not receipt.is_symlink() and receipt.read_text().strip() == token
+        except OSError:
+            return False
+
+    if not refresh_event:
+        return guidance(payload, state, brief=current())
+    fd = None
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if directory.is_symlink() or directory.stat().st_uid != os.getuid():
+            return guidance(payload, state, refresh=True)
+        fd = os.open(str(receipt) + ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        if os.fstat(fd).st_uid != os.getuid():
+            return guidance(payload, state, refresh=True)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            if event == "SessionStart":
+                # Compaction may have dropped all prior context. A concurrent
+                # receipt writer must not turn its required refresh into a hint.
+                return guidance(payload, state, refresh=True)
+            return guidance(payload, state, brief=True)
+        refresh = event == "SessionStart" or not current()
+        message = guidance(payload, state, refresh=refresh, brief=not refresh)
+        if refresh and message:
+            tmp_fd, temporary = tempfile.mkstemp(prefix=".guidance-", dir=directory)
+            try:
+                with os.fdopen(tmp_fd, "w") as stream:
+                    stream.write(token + "\n")
+                os.replace(temporary, receipt)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+        return message
+    except OSError:
+        return guidance(payload, state, refresh=True)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 if __name__ == "__main__":
     try:
         state = (
             Path(os.environ.get("MEMCAP_STATE_HOME", str(Path.home() / ".local/state")))
             / "memcap"
         )
+        payload = json.load(sys.stdin)
         print(
-            guidance(
-                json.load(sys.stdin),
+            session_guidance(payload, state, sys.argv[2])
+            if len(sys.argv) == 3 and sys.argv[1] == "--session-token"
+            else guidance(
+                payload,
                 state,
                 refresh=sys.argv[1:] == ["--session-guidance"],
                 brief=sys.argv[1:] == ["--brief-guidance"],
