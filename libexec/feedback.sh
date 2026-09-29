@@ -46,7 +46,7 @@ mc_feedback_trim() {
 }
 
 mc_feedback_hook() {
-  local jqbin payload event cwd session key dir file message messages="" at now receipt token canonical python refresh="" guidance_token
+  local jqbin payload event cwd session key dir file message messages="" at now receipt token canonical python guidance_token
   jqbin=$(mc_feedback_jq) || { echo 'memcap feedback requires jq' >&2; return 1; }
   # Routing and selected tool result fields only; never read a transcript or
   # persist tool output. Invalid JSON or unsupported events inject no context.
@@ -59,22 +59,10 @@ mc_feedback_hook() {
   canonical=$(cd "$cwd" && pwd -P) 2>/dev/null || return 1
   [ "$canonical" != / ] || return 0
   key=$(printf '%s' "$session" | shasum -a 256 | awk '{print $1}') || return 1
-  receipt="$(mc_state_dir)/job-feedback/guidance-$key.receipt"
   guidance_token="$MEMCAP_VERSION:active"
   mc_is_paused && guidance_token="$MEMCAP_VERSION:paused"
-  case "$event" in
-    PreToolUse|SessionStart|UserPromptSubmit)
-      if [ "$event" = SessionStart ] || [ "$(cat "$receipt" 2>/dev/null)" != "$guidance_token" ]; then
-        refresh=--session-guidance
-      else
-        refresh=--brief-guidance
-      fi ;;
-  esac
   if python=$(command -v python3); then
-    messages=$(printf '%s' "$payload" | "$python" "$LIB/agent_diagnostics.py" "$refresh") || messages=""
-    if [ "$refresh" = --session-guidance ] && [ -n "$messages" ]; then
-      mc_state_write "$receipt" "$guidance_token" || :
-    fi
+    messages=$(printf '%s' "$payload" | "$python" "$LIB/agent_diagnostics.py" --session-token "$guidance_token") || messages=""
     [ -z "$messages" ] || messages="${messages}
 "
   fi

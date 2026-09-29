@@ -321,7 +321,7 @@ def guard_stages(text, executable, session_key, variable=None, force=False):
         name = Path(words[0]).name
         if name == "printf":
             return None  # expanded -v could assign variables in the caller shell
-        if name in {"cd", "echo", "true", "false"}:
+        if name in {"cd", "echo", "true", "false", "command"}:
             # These builtins cannot spawn an expansion-supplied command. Keeping
             # cd in the original shell preserves directory changes across stages.
             continue

@@ -12,6 +12,7 @@ FUNCTIONS = {
     "map", "map_values", "values", "strings", "numbers", "objects", "arrays",
     "ascii_downcase", "ascii_upcase", "startswith", "endswith", "contains",
     "if", "then", "elif", "else", "end",
+    "group_by", "min", "max", "min_by", "max_by", "add",
 }
 
 
