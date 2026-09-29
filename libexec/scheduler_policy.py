@@ -142,6 +142,21 @@ def light_words(words: list[str], glob_checked=False) -> bool:
     if name == "git":
         while len(words) > 2 and words[1] == "-C":
             words = [words[0]] + words[3:]
+        if words[1:2] == ["remote"]:
+            return words[2:] in ([], ["-v"], ["--verbose"])
+        if words[1:2] == ["ls-remote"]:
+            # Ref discovery is bounded remote inspection. Accept named remotes
+            # only; custom upload-pack programs and helper protocols still queue.
+            flags = {"-h", "-t", "-q", "--heads", "--branches", "--tags",
+                     "--refs", "--quiet", "--exit-code", "--symref", "--get-url"}
+            positional = []
+            for argument in words[2:]:
+                if argument.startswith("-"):
+                    if argument not in flags:
+                        return False
+                else:
+                    positional.append(argument)
+            return bool(positional and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", positional[0]))
         if len(words) > 1 and words[1] == "branch":
             return all(
                 a in {"-a", "-r", "-v", "-vv", "--all", "--remotes", "--list", "--show-current", "--no-color"}
@@ -341,6 +356,10 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         return not any(a == "--slurp" for a in words[2:])
     if name == "gh" and len(words) >= 3 and words[1] in {"issue", "pr"}:
         return words[2] in {"list", "view", "status", "checks"} and not any(
+            word == "-w" or word.startswith("--web") for word in words[3:]
+        )
+    if name == "gh" and len(words) >= 3 and words[1] == "release":
+        return words[2] in {"list", "view"} and not any(
             word == "-w" or word.startswith("--web") for word in words[3:]
         )
     if name == "gh" and words[1:] == ["auth", "status"]:
@@ -934,6 +953,21 @@ def worker_environment(environ: dict[str, str], workers: int) -> dict[str, str]:
     return env
 
 
+def rewritten_response(payload, updated, agent, context=""):
+    result = {"hookEventName": "PreToolUse", "updatedInput": updated}
+    if context:
+        result["additionalContext"] = context
+    if agent == "codex":
+        # Codex needs allow for updatedInput. Classification grants no permission.
+        if payload.get("permission_mode") != "bypassPermissions":
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": "Run this queued command through the normal approval flow: " + updated["command"],
+            }}
+        result["permissionDecision"] = "allow"
+    return {"hookSpecificOutput": result}
+
+
 def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
     if payload.get("hook_event_name") != "PreToolUse" or payload.get(
         "tool_name"
@@ -952,44 +986,67 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
             }
         }
     kind, resource = classify_shell(command)
-    from inspection import guarded_shell
+    from inspection import guarded_shell, spans
 
-    from session_identity import key
+    from session_identity import key, bind_runner, scope_waits
 
     session_key = key(payload)
-    guarded = guarded_shell(command, executable, session_key) if kind == "job" else None
+    cwd = original.get("workdir") or original.get("cwd") or payload.get("cwd")
+    guarded = guarded_shell(command, executable, session_key, cwd if isinstance(cwd, str) else None) if kind == "job" else None
     try:
-        wrapped = shlex.split(command)
+        wrapped = shlex.split(normalized_lines(command))
     except ValueError:
         wrapped = []
-    # Only an entire canonical wrapper invocation bypasses reinsertion. A
+    # Only an entire literal wrapper invocation bypasses reinsertion. A
     # wrapper followed by '; another-command' must still queue as a whole.
     already_wrapped = (
         len(wrapped) > 1
         and wrapped[0] in {executable, "memcap"}
         and wrapped[1] in {"run", "queue", "status", "feedback", "_inspect"}
-        and shlex.join(wrapped) == command
+        and literal_shell(command)
+        and not any(part[2] and all(char in "|&;<>" for char in part[2])
+                    for part in spans(normalized_lines(command)))
     )
+    if already_wrapped:
+        bound = bind_runner(wrapped, session_key)
+        if bound is not None:
+            updated = {**original, "command": shlex.join(bound)}
+            updated.pop("cmd", None)
+            return rewritten_response(payload, updated, agent)
     control = simple_words(command)
     if (
         kind == "light"
         and control
-        and control[:2] == ["memcap", "wait"]
+        and control[0] in {"memcap", executable}
+        and control[1:2] == ["wait"]
         and Path(executable).is_absolute()
     ):
         # Hooks already know their installed executable. A native wait must not
         # depend on the caller's PATH or the global Homebrew bin symlink.
         wait_args = [executable, *control[1:]]
-        if "--session" in control and session_key and "--session-key" not in control:
+        if "--session" in control and session_key:
+            # A cached/manual wait must observe the current hook scope too.
+            wait_args, i = [executable, "wait"], 2
+            while i < len(control):
+                if control[i] == "--session-key":
+                    i += 2
+                elif control[i].startswith("--session-key="):
+                    i += 1
+                else:
+                    wait_args.append(control[i])
+                    i += 1
             wait_args += ["--session-key", session_key]
+        if wait_args == control:
+            return {}
         updated = {**original, "command": shlex.join(wait_args)}
         updated.pop("cmd", None)
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "updatedInput": updated,
-            }
-        }
+        return rewritten_response(payload, updated, agent)
+    if kind == "light":
+        scoped = scope_waits(command, executable, session_key)
+        if scoped is not None:
+            updated = {**original, "command": scoped}
+            updated.pop("cmd", None)
+            return rewritten_response(payload, updated, agent)
     if kind == "light" or already_wrapped:
         return {}
     default_shell = (
@@ -1004,7 +1061,6 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
         args.append("--login")
     if resource:
         args += ["--resource", resource]
-    cwd = original.get("workdir") or original.get("cwd") or payload.get("cwd")
     if isinstance(cwd, str):
         args += ["--cwd", cwd]
     timeout = original.get("timeout")
@@ -1024,11 +1080,11 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
     updated["command"] = guarded or shlex.join(args)
     # Codex's hook schema uses command even when its exec tool uses cmd.
     updated.pop("cmd", None)
-    result = {"hookEventName": "PreToolUse", "updatedInput": updated}
+    context = ""
     if agent == "claude" and not guarded:
         from report import PERFORMANCE_GUIDANCE
 
-        result["additionalContext"] = (
+        context = (
             "memcap keeps this task queued until memory is available, then starts it automatically. "
             "Await native completion notifications without polling when supported. Otherwise use TaskOutput with block=true and timeout=60000 for one blocking wait of up to 60 seconds. If TaskOutput is unavailable, use memcap wait JOB_ID --timeout 60 with the existing ID from memcap queue; it creates no job or reservation. Repeat once per minute while pending; do not repeatedly read output files or emit holding messages. "
             "If Stop has blocked ending the turn, use that blocking wait instead of trying to finish for a notification. "
@@ -1037,17 +1093,4 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
             + " "
             + PERFORMANCE_GUIDANCE
         )
-    if agent == "codex":
-        # Codex requires allow with updatedInput. Do not silently grant broader
-        # command approval in a session that has not already opted out of prompts.
-        if payload.get("permission_mode") != "bypassPermissions":
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": "Run this queued command through the normal approval flow: "
-                    + updated["command"],
-                }
-            }
-        result["permissionDecision"] = "allow"
-    return {"hookSpecificOutput": result}
+    return rewritten_response(payload, updated, agent, context)

@@ -615,23 +615,26 @@ class Collector:
         agent = owner(caller, table)
         if not agent:
             return []
-        scoped = session is not None or session_key is not None
         if session_key is None:
             from session_identity import identity_key
 
             session_key = identity_key(session)
+        # A shared app-server PID is not a conversation. Legacy unkeyed jobs
+        # cannot be attributed to a scoped hook; keep their leases/enforcement,
+        # but never make every conversation wait for them. Unscoped CLI callers
+        # retain the documented process-wide observation fallback.
         pending = [
             j
             for j in self.resources
             if not j.get("resource")
             and (
-                not scoped
-                or not j.get("session_key")
-                or j["session_key"] == session_key
+                not session_key
+                or j.get("session_key") == session_key
             )
             and not j.get("cancel")
             and j.get("status") in {"waiting", "running"}
             and str(j.get("owner")) in table
+            and table[str(j["owner"])]["uid"] == os.getuid()
             and table[str(j["owner"])]["start"] == j.get("owner_start")
             and owner(str(j["owner"]), table) == agent
         ]

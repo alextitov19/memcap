@@ -10,6 +10,11 @@ setup_common() {
   export MEMCAP_CONFIG_HOME MEMCAP_STATE_HOME
   mkdir -p "$MEMCAP_CONFIG_HOME" "$MEMCAP_STATE_HOME"
 
+  # Even a read of the real Group Containers path can wait indefinitely for
+  # macOS privacy consent. Docker tests supply their own store fixtures; all
+  # other tests must be independent of the developer's Docker settings.
+  export MC_DOCKER_STORE="$BATS_TEST_TMPDIR/docker-settings.json"
+
   # Sandbox for the LaunchAgent feature (service.sh): this machine has a real,
   # live, enforcing memcap install. `memcap uninstall` already called
   # `brew services stop memcap` for real, unsandboxed, before this existed --

@@ -10,7 +10,7 @@ import shlex
 import stat
 from pathlib import Path
 
-from lightweight import local_variable
+from lightweight import local_variable, parameter_value
 
 MARKER = "/__MEMCAP_SCRIPT_VALUE_"
 
@@ -59,10 +59,7 @@ def rewrite(text, executable, session_key, names=None, depth=0):
                 return None
             value, consumed = "$(" + producer + ")", end + 1 - i
         elif quote != "'" and c == "$":
-            match = re.match(
-                r"\$(?:\{([A-Za-z_][A-Za-z_0-9]*|[0-9])\}|([A-Za-z_][A-Za-z_0-9]*|[0-9]))",
-                text[i:],
-            )
+            match = parameter_value(text[i:])
             if match:
                 # Parameter values are data. Dynamic executable names and
                 # execution-capable expanded arguments are still checked below.
@@ -153,14 +150,14 @@ def prepared(argv, executable, session_key="", cwd=None):
     return [argv[0], "-c", guarded, argv[1], *argv[2:]]
 
 
-def guard_invocation(command, executable, session_key):
+def guard_invocation(command, executable, session_key, cwd=None):
     from inspection import spans
     from scheduler_policy import light_shell, literal_shell, normalized_lines
 
     text = normalized_lines(command)
     if not literal_shell(text):
         return None
-    cwd, start, scripts = Path.cwd(), 0, []
+    cwd, start, scripts = Path(cwd or os.getcwd()), 0, []
     for token in list(spans(text)) + [(len(text), len(text), ";", False)]:
         if token[2] not in {";", "&&", "||", "|"}:
             continue

@@ -1343,7 +1343,7 @@ def main():
         from inspection import guarded_shell
 
         guarded = guarded_shell(
-            args.shell_command, str(ROOT / "bin/memcap"), args.session_key
+            args.shell_command, str(ROOT / "bin/memcap"), args.session_key, args.cwd
         )
         if guarded and args.shell in {"/bin/bash", "/bin/zsh", "/bin/sh"}:
             os.chdir(Path(args.cwd or os.getcwd()).resolve(strict=True))

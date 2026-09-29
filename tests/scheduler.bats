@@ -206,3 +206,9 @@ sample_fixture() {
   [ "$status" = 0 ]
   assert_contains "$output" 'OK'
 }
+
+@test "QUEUE: completion ownership and inspection regressions" {
+  run python3 "$MEMCAP_ROOT/tests/test_completion_scope.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}

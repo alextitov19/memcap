@@ -10,6 +10,14 @@ setup() {
 }
 
 # --- mc_format_age -----------------------------------------------------------
+@test "shared test setup isolates Docker settings before sourcing libraries" {
+  [ "$MC_DOCKER_STORE" = "$BATS_TEST_TMPDIR/docker-settings.json" ]
+  [ ! -e "$MC_DOCKER_STORE" ]
+  # shellcheck source=/dev/null
+  source "$MEMCAP_ROOT/libexec/docker.sh"
+  [ "$MC_DOCKER_STORE" = "$BATS_TEST_TMPDIR/docker-settings.json" ]
+}
+
 # Moved here from status.sh so `memcap on` and `memcap status` describe a
 # duration the same way. It is the units mc_etime_secs parses, in reverse.
 
