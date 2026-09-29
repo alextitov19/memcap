@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.19.0 — 2026-09-29
+
+- Recover observation of abandoned queue groups from the regular watchdog. Keep
+  identity checks, fresh measurement windows, explicit floors and pause behavior.
+- Clean up only verified disposable development servers after a two-minute grace;
+  retain unknown work, live claims, pinned servers and active network clients.
+- Add `memcap claim` and show effective reservations, measurement age, recovered
+  ownership and cleanup blockers in queue output.
+- Persist measured peaks before completion, so a supervisor lost to session
+  termination cannot discard the evidence. Reuse a script's measured peak across
+  changing tag arguments, with content/worker/dependency identity checks, and
+  raise already-waiting automatic requests when new evidence arrives.
+  Stamp numeric runner versions into
+  admission telemetry to distinguish installed updates from old supervisors.
+- Keep hosted Benmore inspection, formatted Docker stats, Git searches, image
+  metadata, grouped reads and guarded finite remote helpers outside admission.
+  Preserve shell validation branches and execute checked script bytes once.
+
+See [issue evidence](docs/open-issues-0.19.0.md).
+
 ## v0.18.4 — 2026-09-29
 
 - Recognize bounded AWS retry settings, SSO authentication, hosted Benmore

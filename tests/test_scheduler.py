@@ -35,6 +35,9 @@ class SchedulerTests(unittest.TestCase):
         cls.policy = __import__("scheduler_policy")
 
     def setUp(self):
+        origin = patch("orphan_recovery.agent_identity", return_value={})
+        origin.start()
+        self.addCleanup(origin.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)

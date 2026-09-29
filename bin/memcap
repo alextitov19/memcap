@@ -35,7 +35,7 @@ case "${1:-help}" in
     . "$LIB/idle_gc.sh"
     mc_gc_status
     ;;
-  run|queue|wait|_inspect)
+  run|queue|wait|claim|_inspect)
     action="$1"; shift
     # shellcheck source=/dev/null
     . "$LIB/scheduler.sh"
@@ -113,6 +113,8 @@ case "${1:-help}" in
     ;;
   watch)
     # shellcheck source=/dev/null
+    . "$LIB/orphan_recovery.sh"
+    # shellcheck source=/dev/null
     . "$LIB/poll_cleanup.sh"
     # shellcheck source=/dev/null
     . "$LIB/boot_timeout.sh"
@@ -135,6 +137,8 @@ case "${1:-help}" in
     mc_watch
     ;;
   clean)
+    # shellcheck source=/dev/null
+    . "$LIB/orphan_recovery.sh"
     # shellcheck source=/dev/null
     . "$LIB/enforce.sh"
     # `memcap off` is a kill switch, so it stops manual sweeps too. Otherwise

@@ -10,6 +10,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "libexec"))
 
 
 class MetricsTests(unittest.TestCase):
+    def test_events_stamp_actual_numeric_runner_version(self):
+        from scheduler_metrics import append_event, runner_version
+        with tempfile.TemporaryDirectory() as tmp:
+            append_event(Path(tmp), dict(event="admitted", runner_version=999999))
+            row=json.loads((Path(tmp)/"events.jsonl").read_text())
+            self.assertEqual(row["runner_version"], runner_version())
+            self.assertGreater(row["runner_version"], 0)
+            self.assertNotEqual(row["runner_version"], 999999)
+
     def test_rate_uses_actual_page_size_and_elapsed_time(self):
         from scheduler_metrics import rate
 

@@ -15,8 +15,87 @@ from lightweight import local_variable, parameter_value
 MARKER = "/__MEMCAP_SCRIPT_VALUE_"
 
 
+def execution_text(text):
+    # The classifier's normalized ';' placeholders include blank/comment lines
+    # and the newline after `then`. Restore separators before executing a proof.
+    # Quoted semicolons and case's ';;' remain untouched.
+    from inspection import spans
+    for start, end, token, _ in reversed(list(spans(text))):
+        if token == ";":
+            text = text[:start] + "\n" + text[end:]
+    return text
+
+
+def condition(text):
+    """Data-only bash tests used by finite remote helpers; never evaluate here."""
+    value = r'(?:"\$(?:[A-Za-z_][A-Za-z_0-9]*|\{[A-Za-z_][A-Za-z_0-9]*(?::-)?\})"|"[A-Za-z_0-9.-]*"|\*\[\[:space:\]\]\*)'
+    clause = r"(?:-[zn]\s+" + value + "|" + value + r"\s+(?:==|!=)\s+" + value + ")"
+    return bool(re.fullmatch(r"\s*" + clause + r"(?:\s*(?:\|\||&&)\s*" + clause + r")*\s*", text))
+
+
+def branches(text, executable, session_key, names, depth, functions):
+    """Prove every branch, then retain the original shell's control flow."""
+    replacements = []
+    from inspection import spans
+    def at(position, word):
+        return any(start == position and token == word for start, _, token, _ in spans(text))
+    # Only non-nested if and case forms. Nested/dynamic syntax remains managed.
+    case = re.compile(r'\bcase\s+"\$[A-Za-z_][A-Za-z_0-9]*"\s+in\s+(.*?)\besac\b', re.S)
+    for match in list(case.finditer(text))[::-1]:
+        if not at(match.start(), "case") or not at(match.end()-4, "esac"):
+            return None
+        arms = match[1].split(";;")
+        if arms[-1].strip("; \t"):
+            return None
+        output = []
+        for arm in arms[:-1]:
+            pair = arm.lstrip("; \t").split(")", 1)
+            if len(pair) != 2 or not re.fullmatch(r"\s*(?:''|\*|[A-Za-z_0-9-]+)(?:\s*\|\s*(?:''|[A-Za-z_0-9-]+))*\s*", pair[0]):
+                return None
+            guarded = rewrite(pair[1], executable, session_key, names, depth+1, functions)
+            if guarded is None:
+                return None
+            output.append(pair[0] + ") " + guarded + ";;")
+        rendered = text[match.start():match.start(1)] + " ".join(output) + " esac"
+        token = "echo __MEMCAP_BRANCH_" + str(len(replacements)) + "__"
+        replacements.append((token, rendered))
+        text = text[:match.start()] + token + text[match.end():]
+    pattern = re.compile(r"\bif\s+\[\[\s+(.*?)\s+\]\];\s*then\s+(.*?)\bfi\b", re.S)
+    for match in list(pattern.finditer(text))[::-1]:
+        if not at(match.start(), "if") or not at(match.end()-2, "fi"):
+            return None
+        if not condition(match[1]):
+            return None
+        guarded = rewrite(match[2], executable, session_key, names, depth+1, functions)
+        if guarded is None:
+            return None
+        rendered = "if [[ " + match[1] + " ]]; then " + guarded + " fi"
+        token = "echo __MEMCAP_BRANCH_" + str(len(replacements)) + "__"
+        replacements.append((token, rendered))
+        text = text[:match.start()] + token + text[match.end():]
+    # A tested assignment such as [[ -n "$SERVICE" ]] && CMD="$CMD $SERVICE".
+    for match in list(re.finditer(r"\[\[\s+(.*?)\s+\]\]", text, re.S))[::-1]:
+        if not at(match.start(), "[[") or not at(match.end()-2, "]]" ):
+            return None
+        if not condition(match[1]):
+            return None
+        token = "echo __MEMCAP_BRANCH_" + str(len(replacements)) + "__"
+        replacements.append((token, match[0]))
+        text = text[:match.start()] + token + text[match.end():]
+    if not replacements:
+        return None
+    guarded = rewrite(text, executable, session_key, names, depth+1, functions)
+    if guarded is None:
+        return None
+    for token, rendered in reversed(replacements):
+        guarded = guarded.replace(token, rendered)
+    return guarded
+
+
 def script_argv(argv):
     return (
+        bool(argv) and "/" in argv[0] and argv[0].endswith(".sh")
+    ) or (
         len(argv) >= 2
         and argv[0] in {"bash", "/bin/bash", "sh", "/bin/sh"}
         and not argv[1].startswith("-")
@@ -27,9 +106,15 @@ def rewrite(text, executable, session_key, names=None, depth=0, functions=()):
     from inspection import spans, substitution_end
     from scheduler_policy import light_shell, normalized_lines
 
-    if len(text) > 32768 or depth > 8 or MARKER in text:
+    if len(text) > 32768 or depth > 8 or MARKER in text or (depth == 0 and "__MEMCAP_BRANCH_" in text):
         return None
     text = normalized_lines(text)
+    names = set(names or ())
+    names.update(re.findall(r"(?:^|[;\s])([A-Za-z_][A-Za-z_0-9]*)=", text))
+    if any(not local_variable(name) for name in names):
+        return None
+    if re.search(r"(?:^|[;\s])(?:if|case)\s|\[\[", text):
+        return branches(text, executable, session_key, names, depth, functions)
     # One observed remote parameter helper. Its body is proven and guarded,
     # then calls retain shell-function/positional-argument semantics. Never
     # allow arbitrary definitions, shadow external families or recurse.
@@ -134,7 +219,9 @@ def rewrite(text, executable, session_key, names=None, depth=0, functions=()):
             if not literal_shell(proof) or any(b[1] not in names for b in bindings):
                 return None
             continue
-        if words in (["set", "-euo", "pipefail"], ["set", "-eu"], ["set", "-e"], ["set", "-u"]):
+        if words in (["set", "-euo", "pipefail"], ["set", "-eu"], ["set", "-e"], ["set", "+e"], ["set", "-u"]):
+            continue
+        if len(words) == 2 and words[0] == "exit" and re.fullmatch(r"[0-9]{1,3}", words[1]) and int(words[1]) <= 255:
             continue
         if words[0] in functions:
             # Arguments are data to a checked helper, including substitutions
@@ -168,7 +255,8 @@ def rewrite(text, executable, session_key, names=None, depth=0, functions=()):
 def prepared(argv, executable, session_key="", cwd=None):
     if not script_argv(argv) or any(os.environ.get(k) for k in ("BASH_ENV", "ENV")):
         return None
-    path = Path(cwd or os.getcwd()) / argv[1]
+    direct = "/" in argv[0] and argv[0].endswith(".sh")
+    path = Path(cwd or os.getcwd()) / argv[0 if direct else 1]
     try:
         # Nonblocking open also prevents a changed path becoming a FIFO wait.
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
@@ -179,10 +267,16 @@ def prepared(argv, executable, session_key="", cwd=None):
             text = source.read(32769)
     except (OSError, UnicodeError):
         return None
+    if direct:
+        first = text.splitlines()[0] if text else ""
+        if first not in {"#!/bin/bash", "#!/usr/bin/env bash", "#!/bin/sh"} or not os.access(path, os.X_OK):
+            return None
+        interpreter = "bash" if first == "#!/usr/bin/env bash" else "/bin/sh" if first == "#!/bin/sh" else "/bin/bash"
+        argv = [interpreter, *argv]
     guarded = rewrite(text, executable, session_key)
     if guarded is None:
         return None
-    return [argv[0], "-c", guarded, argv[1], *argv[2:]]
+    return [argv[0], "-c", execution_text(guarded), argv[1], *argv[2:]]
 
 
 def guard_invocation(command, executable, session_key, cwd=None):
@@ -219,7 +313,7 @@ def guard_invocation(command, executable, session_key, cwd=None):
     )
     for offset in reversed(scripts):
         text = text[:offset] + prefix + text[offset:]
-    return text
+    return execution_text(text)
 
 
 def guard_inline(command, executable, session_key):
@@ -227,4 +321,5 @@ def guard_inline(command, executable, session_key):
     # pasted directly into Bash, rather than requiring a separate script file.
     if not re.search(r"(?:^|[;\s])(?:[A-Za-z_][A-Za-z_0-9]*=|ssm\(\))", command):
         return None
-    return rewrite(command, executable, session_key)
+    guarded = rewrite(command, executable, session_key)
+    return execution_text(guarded) if guarded is not None else None

@@ -6,6 +6,7 @@ import shlex
 
 def guard_for_loop(command, executable, session_key):
     from inspection import spans, substitute_reference, guard_stages
+    from control_script import rewrite, execution_text
     from lightweight import local_variable
     from scheduler_policy import literal_shell, light_shell, normalized_lines
 
@@ -83,9 +84,11 @@ def guard_for_loop(command, executable, session_key):
         if numeric:
             proof = arithmetic.sub(lambda m: str(int(value) + (1 if m[1] == "+" else -1) * int(m[2])), proof)
         proof = substitute_reference(proof, variable, value)
-        if not light_shell(proof, allow_bare_globs=True):
+        if not light_shell(proof, allow_bare_globs=True) and rewrite(proof, executable, session_key) is None:
             return None
     guarded = guard_stages(body, executable, session_key, variable, force=True)
     if guarded is None:
+        guarded = rewrite(body, executable, session_key, names={variable})
+    if guarded is None:
         return None
-    return text[:body_start] + guarded + text[body_end:]
+    return execution_text(text[:body_start] + guarded + text[body_end:])

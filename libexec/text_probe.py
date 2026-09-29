@@ -12,6 +12,9 @@ MAX_TEXT = 32 * 1024 * 1024
 
 
 def eligible(argv, check_files=False):
+    from json_probe import eligible as json_eligible
+    if json_eligible(argv, check_files=check_files):
+        return True
     if (
         len(argv) != 3
         or Path(argv[0]).name not in {"python", "python3"}
