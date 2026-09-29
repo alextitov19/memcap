@@ -319,11 +319,14 @@ class Scheduler:
                 # The foreground group finished while attributed work remains.
                 # Its future peak is unknown; never train a lower estimate.
                 job["learning_incomplete"] = True
+            if not sample.get("fault"):
+                # A verified partial measurement is a lower bound on the peak.
+                # Preserve it for upward-only learning even when siblings were
+                # missing or the command exits before a second observation.
+                job["observed_peak_kb"] = max(job.get("observed_peak_kb", 0), measured)
             if sample.get("fault") or not all(p in footprints for p in footprint_members(job)):
                 job["learning_incomplete"] = True
                 continue
-            measured = sum(footprints[p] for p in footprint_members(job))
-            job["observed_peak_kb"] = max(job.get("observed_peak_kb", 0), measured)
             job["sample_count"] = job.get("sample_count", 0) + 1
 
     def allocation(self, jobs):
@@ -878,17 +881,18 @@ class Scheduler:
                     members = dict(job["members"])
                     if result is not None and not members:
                         key = job.get("estimate_key")
+                        learning_complete = job.get("sample_count", 0) >= 2 and not job.get("learning_incomplete")
                         if (
                             key
                             and not self.cancelled
                             and result == 0
-                            and job.get("sample_count", 0) >= 2
+                            and (learning_complete or job.get("observed_peak_kb", 0) > 0)
                         ):
                             history = data.setdefault("estimates", {})
                             history[key] = record_estimate(
                                 history.get(key, {"estimate_kb": job["memory_kb"]}),
                                 job.get("observed_peak_kb", 0),
-                                complete=not job.get("learning_incomplete"),
+                                complete=learning_complete,
                             )
                             while len(history) > 256:
                                 del history[next(iter(history))]
@@ -902,7 +906,7 @@ class Scheduler:
                                 **completion_fields(result, self.cancelled),
                                 runtime_ms=int((time.time() - job["started"]) * 1000),
                                 peak_kb=job.get("observed_peak_kb", 0),
-                                learning_complete=int(not job.get("learning_incomplete")),
+                                learning_complete=int(learning_complete),
                                 **blocker_fields(job),
                             ),
                         )

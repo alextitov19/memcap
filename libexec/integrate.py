@@ -435,7 +435,19 @@ class Installer:
             label = f"{agent}: {directory}"
             try:
                 edits = self.prepare([(agent, directory)])
-                pending = [e.path.name for e in edits if e.before != e.after]
+                pending = []
+                for edit in edits:
+                    if edit.before == edit.after:
+                        continue
+                    if edit.path.name == ".memcap-integration.json" and edit.before:
+                        installed = json_object(edit.before.decode(), edit.path)
+                        expected = json_object(edit.after.decode(), edit.path)
+                        previous_version = installed.pop("memcap_version", None)
+                        expected.pop("memcap_version", None)
+                        if isinstance(previous_version, str) and previous_version and installed == expected:
+                            print(f"INFO {label}: installation metadata version/format differs; current hook definitions are checked below. No profile changes required for metadata alone.")
+                            continue
+                    pending.append(edit.path.name)
                 if pending:
                     print(
                         f"WARN {label}: missing/stale integration ({', '.join(pending)}); run memcap integrate."

@@ -610,6 +610,37 @@ class Collector:
         except (ValueError, AttributeError) as e:
             raise GCError("queue registry unavailable; retaining helpers") from e
 
+    @staticmethod
+    def running_resource(job, table):
+        """Recognize an old runner's verified foreground server without edits.
+
+        A server descendant alone is insufficient: the original group leader
+        must still have its recorded identity and live supervisor ancestry.
+        This only affects completion observation, never leases or signal scope.
+        """
+        if job.get("status") != "running" or not job.get("group"):
+            return False
+        root = str(job["group"])
+        row = table.get(root)
+        members = job.get("members", {})
+        if not row or row.get("uid") != os.getuid() or not isinstance(members, dict):
+            return False
+        if not row.get("start") or members.get(root) != row["start"]:
+            return False
+        pid, seen = root, set()
+        for _ in range(128):
+            if pid == str(job.get("owner")):
+                from scheduler_policy import classify_shell
+
+                command = row.get("command")
+                return isinstance(command, str) and classify_shell(command)[0] == "resource"
+            parent = table.get(pid)
+            if not parent or pid in seen:
+                return False
+            seen.add(pid)
+            pid = str(parent.get("ppid"))
+        return False
+
     def pending_jobs(self, caller, table, session=None, session_key=None):
         self.load_resources()
         agent = owner(caller, table)
@@ -637,6 +668,7 @@ class Collector:
             and table[str(j["owner"])]["uid"] == os.getuid()
             and table[str(j["owner"])]["start"] == j.get("owner_start")
             and owner(str(j["owner"]), table) == agent
+            and not self.running_resource(j, table)
         ]
         return pending
 

@@ -447,14 +447,21 @@ class IntegrateTests(unittest.TestCase):
             with self.assertRaises(integrate.IntegrationError):
                 integrate.Edit.read(self.config)
 
-    def test_stale_version_metadata_is_reported_and_refreshed(self):
+    def test_version_only_metadata_is_informational_without_profile_writes(self):
         self.install()
         metadata = self.profile / ".memcap-integration.json"
         value = json.loads(metadata.read_text())
         value["memcap_version"] = "0.0.1"
         metadata.write_text(json.dumps(value))
+        original, modified = metadata.read_bytes(), metadata.stat().st_mtime_ns
         result = self.cli("doctor", "--claude-dir", str(self.profile))
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+        self.assertIn("INFO", result.stdout)
+        self.assertNotIn("missing/stale integration", result.stdout)
+        self.assertEqual((metadata.read_bytes(), metadata.stat().st_mtime_ns), (original, modified))
+        value["executable"] = "/wrong/memcap"
+        metadata.write_text(json.dumps(value))
+        self.assertNotEqual(self.cli("doctor", "--claude-dir", str(self.profile)).returncode, 0)
         self.install()
         self.assertEqual(
             self.cli("doctor", "--claude-dir", str(self.profile)).returncode, 0

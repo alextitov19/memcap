@@ -135,6 +135,8 @@ def light_words(words: list[str], glob_checked=False) -> bool:
                     "get-command-invocation",
                     "list-command-invocations",
                     "list-commands",
+                    "get-parameter",
+                    "get-parameters",
                 }
                 or args[1:3] == ["wait", "command-executed"]
             )
@@ -278,43 +280,8 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             # This runtime guard either execs proven inspection or enters the queue.
             return True
         if words[1] == "report":
-            from report import KINDS, CONTEXTS, SYMPTOMS
-
-            if len(words) < 3:
-                return False
-            if words[2] in {"status", "enable", "disable", "--help", "-h"}:
-                return len(words) == 3
-            if words[2] not in KINDS:
-                return False
-            i, seen = 3, set()
-            while i < len(words):
-                option = words[i]
-                if option in seen:
-                    return False
-                seen.add(option)
-                if option == "--dry-run":
-                    i += 1
-                elif (
-                    option == "--symptom"
-                    and i + 1 < len(words)
-                    and words[i + 1] in SYMPTOMS
-                ):
-                    i += 2
-                elif (
-                    option == "--context"
-                    and i + 1 < len(words)
-                    and words[i + 1] in CONTEXTS
-                ):
-                    i += 2
-                elif (
-                    option == "--wait-seconds"
-                    and i + 1 < len(words)
-                    and re.fullmatch(r"[0-9]{1,6}", words[i + 1])
-                    and int(words[i + 1]) <= 604800
-                ):
-                    i += 2
-                else:
-                    return False
+            # Reporting has its own fixed-vocabulary parser and consent gate.
+            # Even usage errors must return without reserving a workload slot.
             return True
         if words[1] == "wait":
             # The read-only CLI validates usage and cannot launch work. Even
@@ -795,10 +762,44 @@ def persistent_shell(command):
     words = segments[-1]
     while words and re.fullmatch(r"(?:PORT|HOST|NODE_ENV)=[A-Za-z0-9_.:-]+", words[0]):
         words = words[1:]
+    if words[:1] == ["exec"]:
+        words = words[1:]
+        if words[:1] == ["--"]:
+            words = words[1:]
+        if not words or words[0].startswith("-"):
+            return ""
     if not words:
         return ""
+    # These wrappers retain admission and reservation accounting. Only known
+    # long-running commands are excluded from finite completion; source scripts,
+    # custom interpreter flags and mixed build/server chains remain finite.
+    if words[:2] == ["uv", "run"]:
+        words = words[2:]
+        if not words or words[0].startswith("-"):
+            return ""
     name = Path(words[0]).name
     args = words[1:]
+    if re.fullmatch(r"python(?:3(?:\.[0-9]+)?)?", name):
+        if "--help" in args or "-h" in args:
+            return ""
+        if args[:2] == ["-m", "http.server"]:
+            i, port_seen = 2, False
+            while i < len(args):
+                if args[i] in {"--bind", "-b", "--directory", "-d", "--protocol", "-p"}:
+                    if i + 1 >= len(args) or args[i + 1].startswith("-"):
+                        return ""
+                    i += 2
+                elif not port_seen and len(args[i]) <= 5 and args[i].isdigit() and 0 <= int(args[i]) <= 65535:
+                    port_seen = True
+                    i += 1
+                else:
+                    return ""
+            return "shell:" + text
+        if len(args) >= 2 and Path(args[0]).name == "manage.py" and args[1] == "runserver":
+            if all(a in {"--noreload", "--nothreading", "--insecure", "--ipv6", "-6"}
+                   or re.fullmatch(r"[A-Za-z0-9_.:\[\]-]+", a) and not a.startswith("-")
+                   for a in args[2:]):
+                return "shell:" + text
     if name in {"npm", "pnpm", "yarn"}:
         if args[:1] in (["run"], ["run-script"]):
             args = args[1:]

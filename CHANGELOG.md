@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.18.3 — 2026-09-28
+
+- Keep finite filename/read loops, streaming awk excerpts, paste and socket
+  inspection out of workload admission. Expanded consumers still pass runtime
+  argument checks; arbitrary loops and execution-capable options remain managed.
+- Recognize finite jq conditionals and null-input constructors, SSM parameter
+  reads and the checked `ssm()` shell helper. Malformed report arguments now
+  reach usage validation immediately, without queuing or changing report consent.
+- Recognize Python HTTP/Django servers under literal exec/uv wrappers as
+  persistent resources. Completion can identify an old runner's foreground
+  server using its recorded PID identity, UID and live supervisor ancestry;
+  reservations and cancellation scope stay intact.
+- Retain valid single/partial observed peaks for upward-only estimate learning.
+  Complete-run counters and downward learning still require complete samples;
+  completion telemetry no longer labels unsampled runs complete.
+- Protect the specific iOS device held by a same-user Maestro driver connected
+  through an MCP server to a live agent. Check that cross-tree ownership again
+  immediately before shutdown; unrelated and abandoned devices remain eligible
+  under the existing idle and mobile gates.
+- Bound Docker settings reads when Python is available so macOS consent stalls
+  cannot hang status/watch diagnostics. Preserve unknown/permission-error states
+  and explicitly labeled cached ceilings; Docker settings are never changed.
+- Treat an old installation version in otherwise matching metadata as
+  informational. Doctor still checks actual hooks, timeouts, guidance and trust;
+  a release bump alone no longer reports broken integration or requests profile edits.
+
+See [investigation, evidence and limits](docs/remaining-issue-investigation.md).
+
 ## v0.18.2 — 2026-09-28
 
 - Fix cross-conversation Stop blocking on shared agent daemons. Explicit and

@@ -1235,6 +1235,58 @@ mc_sim_device_tracked() {
   return 1
 }
 
+# CoreSimulator owns launchd_sim, so its ancestry cannot reveal the live MCP
+# client holding the device. Maestro's native driver names the exact UDID.
+# Fresh same-user driver -> MCP -> classified agent evidence protects only that
+# device, even when the MCP server is CPU-flat while its agent waits in queue.
+mc_sim_device_held() {
+  local udid="$1" table verdict
+  [ -n "${AGENTPIDS+x}" ] || return 0
+  table=$(ps -Ao pid=,ppid=,uid=,command= 2>/dev/null) || return 0
+  [ -n "$table" ] || return 0
+  verdict=$(printf '%s\n' "$table" | awk -v device="$udid" -v uid="$(id -u)" \
+      -v agents=" $AGENTPIDS " -v srv="$MC_HELD_SERVER_PATTERN" '
+    {
+      # argv can contain newlines. Ignore continuation lines without a PID,
+      # but retain a known driver if any row in its own ancestry is missing.
+      if($1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/) next
+      valid++
+      p=$1; PP[p]=$2; U[p]=$3; cmd=$0
+      sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, "", cmd)
+      if(NF==3) cmd=""
+      C[p]=cmd
+      n=split(cmd,a,/[[:space:]]+/)
+      if(n==4 && a[1] ~ /^\/.*\/\.maestro\/deps\/simulator-server$/ &&
+         a[2]=="ios" && a[3]=="--id" && tolower(a[4])==tolower(device)) D[p]=1
+    }
+    END {
+      if(!valid || uid !~ /^[0-9]+$/) { print "unknown"; exit }
+      for(p in D) {
+        if(U[p]!=uid) continue
+        cur=p; holder=0
+        for(i=0;i<128;i++) {
+          if(cur=="0" || cur=="1") break
+          if(!(cur in PP)) { print "unknown"; exit }
+          if(C[cur]=="") { print "unknown"; exit }
+          if(U[cur]!=uid) break
+          if(index(agents," " cur " ")) {
+            exe=C[cur]; sub(/[[:space:]].*$/, "", exe); sub(/^.*\//, "", exe)
+            if(holder && (exe=="claude" || exe=="codex")) { print "held " p; exit }
+            break
+          }
+          if(cur!=p && C[cur] ~ srv) holder=1
+          cur=PP[cur]
+        }
+        if(i==128) { print "unknown"; exit }
+      }
+      print "free"
+    }') || return 0
+  case "$verdict" in
+    free) return 1 ;;
+  esac
+  return 0
+}
+
 # SIM_IDLE_GRACE_SEC gives a hand-booted simulator a reprieve. Without it, someone
 # running Simulator.app or `simctl` directly -- no Xcode open, no agent session --
 # has their simulator killed within one poll.
@@ -1451,6 +1503,10 @@ mc_reap_sims() {
     udid="${device%% *}"
     name="${device#* }"
     if dev_pid="$(mc_sim_device_pid "$udid" "$ios_ready_map")"; then
+      if mc_sim_device_held "$udid"; then
+        mc_log_throttled "tier3-device-held-$udid" "tier3: retaining device $udid -- held by a live agent driver or ownership measurement unavailable"
+        continue
+      fi
       shutdowns="${shutdowns}${udid} ${dev_pid} ${name}
 "
       continue
@@ -1503,6 +1559,9 @@ EOF
     else
       age=0
     fi
+    # Repeat the cross-tree ownership observation immediately before acting.
+    # A driver may have attached since this pass planned the idle device.
+    mc_sim_device_held "$udid" && continue
     if [ "$MC_DRY_RUN" = "1" ]; then
       echo "would shut down device $udid ($name)"
       continue

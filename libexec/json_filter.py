@@ -11,6 +11,7 @@ FUNCTIONS = {
     "tsv", "csv", "json", "text", "empty", "not", "and", "or", "del",
     "map", "map_values", "values", "strings", "numbers", "objects", "arrays",
     "ascii_downcase", "ascii_upcase", "startswith", "endswith", "contains",
+    "if", "then", "elif", "else", "end",
 }
 
 
@@ -96,8 +97,8 @@ def command_safe(args):
     args = list(args)
     variables = []
     while args:
-        if (re.fullmatch(r"-[rceMC]+", args[0]) or args[0] in {
-            "--raw-output", "--compact-output", "--exit-status", "--monochrome-output"
+        if (re.fullmatch(r"-[nrceMC]+", args[0]) or args[0] in {
+            "--raw-output", "--compact-output", "--exit-status", "--monochrome-output", "--null-input"
         }):
             args.pop(0)
         elif (args[0] == "--arg" and len(args) >= 3

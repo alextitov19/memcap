@@ -23,13 +23,38 @@ def script_argv(argv):
     )
 
 
-def rewrite(text, executable, session_key, names=None, depth=0):
+def rewrite(text, executable, session_key, names=None, depth=0, functions=()):
     from inspection import spans, substitution_end
     from scheduler_policy import light_shell, normalized_lines
 
     if len(text) > 32768 or depth > 8 or MARKER in text:
         return None
     text = normalized_lines(text)
+    # One observed remote parameter helper. Its body is proven and guarded,
+    # then calls retain shell-function/positional-argument semantics. Never
+    # allow arbitrary definitions, shadow external families or recurse.
+    tokens = list(spans(text))
+    definitions = [i for i, token in enumerate(tokens) if token[2] == "ssm()"]
+    if definitions:
+        if len(definitions) != 1 or "ssm" in functions:
+            return None
+        start = definitions[0]
+        # The definition must execute in the current shell unconditionally.
+        # Otherwise a skipped/pipelined definition could leave a same-named
+        # external program available to an apparently checked helper call.
+        if (start and tokens[start-1][2] != ";") or start+2 >= len(tokens) or tokens[start+1][2] != "{":
+            return None
+        end = next((i for i in range(start+2, len(tokens)) if tokens[i][2] == "}"), None)
+        if end is None or tokens[end-1][2] != ";":
+            return None
+        if end+1 < len(tokens) and tokens[end+1][2] not in {";", "&&", "||"}:
+            return None
+        before = rewrite(text[:tokens[start][0]], executable, session_key, names, depth+1, functions)
+        body = rewrite(text[tokens[start+1][1]:tokens[end][0]], executable, session_key, names, depth+1)
+        after = rewrite(text[tokens[end][1]:], executable, session_key, names, depth+1, (*functions, "ssm"))
+        if before is None or body is None or after is None:
+            return None
+        return before + "ssm() {" + body + "}" + after
     # Local aliases are data only. Startup/lookup/exported settings are excluded.
     names = set(names or ())
     names.update(re.findall(r"(?:^|[;\s])([A-Za-z_][A-Za-z_0-9]*)=", text))
@@ -53,7 +78,7 @@ def rewrite(text, executable, session_key, names=None, depth=0):
             if end is None:
                 return None
             producer = rewrite(
-                text[i + 2 : end], executable, session_key, names, depth + 1
+                text[i + 2 : end], executable, session_key, names, depth + 1, functions
             )
             if producer is None:
                 return None
@@ -106,7 +131,14 @@ def rewrite(text, executable, session_key, names=None, depth=0):
             if not literal_shell(stage) or any(b[1] not in names for b in bindings):
                 return None
             continue
-        if words in (["set", "-euo", "pipefail"], ["set", "-eu"], ["set", "-e"]):
+        if words in (["set", "-euo", "pipefail"], ["set", "-eu"], ["set", "-e"], ["set", "-u"]):
+            continue
+        if words[0] in functions:
+            # Arguments are data to a checked helper, including substitutions
+            # already guarded above. Prove the remaining shell syntax as echo.
+            offset = stage.find(words[0]) + len(words[0])
+            if not light_shell("echo " + stage[offset:], allow_bare_globs=True):
+                return None
             continue
         if MARKER in words[0] or not light_shell(stage, allow_bare_globs=True):
             return None
@@ -190,6 +222,6 @@ def guard_invocation(command, executable, session_key, cwd=None):
 def guard_inline(command, executable, session_key):
     # Preserve assignment scope and quote handling for remote API helpers
     # pasted directly into Bash, rather than requiring a separate script file.
-    if not re.search(r"(?:^|[;\s])[A-Za-z_][A-Za-z_0-9]*=", command):
+    if not re.search(r"(?:^|[;\s])(?:[A-Za-z_][A-Za-z_0-9]*=|ssm\(\))", command):
         return None
     return rewrite(command, executable, session_key)
