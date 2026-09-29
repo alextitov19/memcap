@@ -96,6 +96,9 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         ):
             return False
     name = Path(words[0]).name
+    if name == "psql":
+        from catalog_inspection import catalog_argv
+        return bool(any(w in {"-X", "--no-psqlrc"} for w in words[1:]) and catalog_argv(words))
     if any("__MEMCAP_READ_SUBSTITUTION__" in w for w in words) and name != "aws":
         # Unquoted substitution can turn an rg argument into --pre, for example.
         # Only the fixed SSM API operations below may receive these values.
@@ -263,6 +266,7 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         and words[1]
         in {
             "status",
+            "grep",
             "diff",
             "log",
             "show",
@@ -278,7 +282,8 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         }
     ):
         if not any(
-            a.startswith(("--ext-diff", "--textconv", "--output", "--exec"))
+            a.startswith(("--ext-diff", "--textconv", "--output", "--exec", "--open-files-in-pager"))
+            or (words[1] == "grep" and a.startswith("-") and not a.startswith("--") and "O" in a[1:])
             for a in words[2:]
         ):
             return True
@@ -303,7 +308,7 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             # Reporting has its own fixed-vocabulary parser and consent gate.
             # Even usage errors must return without reserving a workload slot.
             return True
-        if words[1] == "wait":
+        if words[1] in {"wait", "claim"} or words[1:] == ["run", "--help"]:
             # The read-only CLI validates usage and cannot launch work. Even
             # malformed timeouts/IDs must fail immediately, outside admission.
             return True
@@ -408,7 +413,7 @@ def literal_shell(command: str, allow_bare_globs=False) -> bool:
                 return False
             prefix += c
         elif not quote and c == "{" and allow_bare_globs and "/" in prefix:
-            brace = re.match(r"\{[A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)+\}", command[i:])
+            brace = re.match(r"\{[A-Za-z0-9_.*?-]+(?:,[A-Za-z0-9_.*?-]+)+\}", command[i:])
             if not brace:
                 return False
             prefix += brace[0]

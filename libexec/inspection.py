@@ -170,9 +170,64 @@ def guard_read_consumers(command, executable, session_key):
     return command[:start] + " " + replacement + " " + command[end:]
 
 
+def guard_groups(command):
+    """Literal, non-nested inspection subshells; both body and consumers prove light."""
+    text = normalized_lines(command)
+    quote, escaped, start, groups = "", False, None, []
+    for i, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if char in "\"'":
+            if quote == char:
+                quote = ""
+            elif not quote:
+                quote = char
+        elif not quote and char == "(":
+            if start is not None or (i and text[i-1] == "$"):
+                return None
+            start = i
+        elif not quote and char == ")":
+            if start is None or not light_shell(text[start+1:i]):
+                return None
+            groups.append((start, i+1))
+            start = None
+    if start is not None or not groups or len(groups) > 8:
+        return None
+    proof = text
+    for start, end in reversed(groups):
+        proof = proof[:start] + " true " + proof[end:]
+    if not light_shell(proof):
+        return None
+    from control_script import execution_text
+    return execution_text(text)
+
+
 def guarded_shell(command, executable, session_key="", cwd=None):
     from control_script import guard_invocation, guard_inline
     from inspection_loops import guard_for_loop
+    from catalog_inspection import catalog_argv
+    from scheduler_policy import literal_shell
+
+    if literal_shell(command):
+        start = 0
+        for end, following, raw, _ in list(spans(command)) + [(len(command), len(command), ";", False)]:
+            if raw not in {";", "|", "&&", "||"}:
+                continue
+            try:
+                catalog = catalog_argv(shlex.split(command[start:end]))
+            except ValueError:
+                catalog = None
+            if catalog and light_shell(command[:start] + " true " + command[end:]):
+                return command[:start] + shlex.join([executable, "_inspect", "--session-key", session_key, "--", *catalog]) + command[end:]
+            start = following
+
+    grouped = guard_groups(command)
+    if grouped:
+        return grouped
 
     loop = guard_for_loop(command, executable, session_key)
     if loop:

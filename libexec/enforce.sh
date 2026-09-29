@@ -307,6 +307,20 @@ mc_filter_protected() {
   mc_protection_ready || return 1
   self=$(mc_self_ancestry) || return 1
   mc_veto_evidence_warm
+  case "$scope" in
+    full|sims|idle-gc|poll-cleanup|boot-timeout)
+      if command -v mc_claims_prepare >/dev/null 2>&1; then
+        mc_claims_prepare || return 1
+      fi
+      ;;
+  esac
+  if [ "$scope" = orphan-recovery ]; then
+    command -v mc_orphan_prepare >/dev/null 2>&1 || return 1
+    mc_orphan_prepare || return 1
+    for pid in $MC_ORPHAN_ALLOWED; do
+      case " ${AGENTPIDS} $self " in *" $pid "*) return 1 ;; esac
+    done
+  fi
   if [ "$scope" = poll-cleanup ]; then
     command -v mc_poll_prepare >/dev/null 2>&1 || return 1
     mc_poll_prepare || return 1
@@ -328,6 +342,16 @@ mc_filter_protected() {
     mc_gc_prepare "$1" || return 1
   fi
   for pid in $1; do
+    case "$scope" in
+      full|sims|idle-gc|poll-cleanup|boot-timeout)
+        case " ${MC_CLAIM_PROTECTED:-} " in *" $pid "*) continue ;; esac
+        ;;
+    esac
+    if [ "$scope" = orphan-recovery ]; then
+      mc_orphan_allowed "$pid" || continue
+      out="$out $pid"
+      continue
+    fi
     if [ "$scope" = poll-cleanup ]; then
       mc_poll_allowed "$pid" || continue
       case " ${AGENTPIDS} $self " in *" $pid "*) continue ;; esac
@@ -442,7 +466,7 @@ mc_kill_pids() {
     idents="$idents$p|$(mc_pid_identity "$p")
 "
   done
-  if [ "$scope" = oversized ] || [ "$scope" = scheduled ] || [ "$scope" = idle-gc ] || [ "$scope" = boot-timeout ] || [ "$scope" = poll-cleanup ]; then
+  if [ "$scope" = oversized ] || [ "$scope" = scheduled ] || [ "$scope" = idle-gc ] || [ "$scope" = boot-timeout ] || [ "$scope" = poll-cleanup ] || [ "$scope" = orphan-recovery ]; then
     # Logging and feedback can take time under pressure. Revalidate the original
     # identity after those subprocesses, as close to TERM as shell permits.
     pids=$(mc_filter_protected "$pids" "$scope") || return 1
@@ -475,6 +499,8 @@ mc_kill_pids() {
   if [ "$scope" = boot-timeout ]; then MC_BOOT_ESCALATING=1; fi
   # shellcheck disable=SC2034 # read by poll_cleanup.sh
   if [ "$scope" = poll-cleanup ]; then MC_POLL_ESCALATING=1; fi
+  # shellcheck disable=SC2034 # read by orphan_recovery.sh
+  if [ "$scope" = orphan-recovery ]; then MC_ORPHAN_ESCALATING=1; fi
   alive=$(mc_filter_protected "$alive" "$scope") || alive=""
   # shellcheck disable=SC2086
   [ -n "${alive// /}" ] && kill -KILL $alive 2>/dev/null
@@ -1836,6 +1862,10 @@ mc_watch() {
   mc_reap_sims
 
   MC_POLL_RECLAIMED=0
+  MC_ORPHAN_RECLAIMED=0
+  if command -v mc_recover_orphans >/dev/null 2>&1; then
+    mc_recover_orphans
+  fi
   if command -v mc_reap_poll_loops >/dev/null 2>&1; then
     mc_reap_poll_loops
   fi
@@ -1846,7 +1876,7 @@ mc_watch() {
   if command -v mc_reap_idle_helpers >/dev/null 2>&1; then
     mc_reap_idle_helpers
   fi
-  if [ "${MC_GC_RECLAIMED:-0}" = 1 ] || [ "$MC_BOOT_RECLAIMED" = 1 ] || [ "$MC_POLL_RECLAIMED" = 1 ]; then
+  if [ "${MC_GC_RECLAIMED:-0}" = 1 ] || [ "$MC_BOOT_RECLAIMED" = 1 ] || [ "$MC_POLL_RECLAIMED" = 1 ] || [ "$MC_ORPHAN_RECLAIMED" = 1 ]; then
     mc_snapshot_capture
     sample="$MC_CAPTURE_SNAPSHOT"
     unset AGENT_KB DOCKER_KB SIM_KB AGENTPIDS PROTECTEDPIDS SIMPIDS ORPHANS DEVPIDS

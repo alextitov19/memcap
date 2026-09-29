@@ -10,7 +10,7 @@ def parameter_value(text):
     No assignment, nested expansion, quoting, arithmetic or executable fallback.
     Actual expanded argv is still checked by the runtime inspection guard.
     """
-    name = r"(?:[A-Za-z_][A-Za-z_0-9]*|[0-9])"
+    name = r"(?:[A-Za-z_][A-Za-z_0-9]*|[0-9]|\?)"
     default = r"(?:\$" + name + r"|\$\{" + name + r"\}|[A-Za-z_0-9./:@-]*)"
     return re.match(r"\$(?:\{" + name + r"(?::?-" + default + r")?\}|" + name + r")", text)
 
@@ -152,6 +152,8 @@ def extra_family(name, args):
                 regex + r"(?:\s*,\s*" + regex + r")?",
                 comparison + r"(?:\s*(?:&&|\|\|)\s*" + comparison + r"){0,3}",
                 regex + r"\s*\{f=1;next\}\s*f\s*&&\s*" + regex + r"\s*\{exit\}\s*f",
+                r"NR\s*(?:<=|<)\s*[0-9]{1,6}\s*&&\s*" + regex,
+                r"NR>=[0-9]{1,6}\s*&&\s*" + regex + r"\{p=\$0\}\s*NR>=[0-9]{1,6}\s*&&\s*NR<=[0-9]{1,6}\s*&&\s*" + regex + r'\{print NR": "\$0\}',
             )
             if any(re.fullmatch(pattern, rest[0].strip()) for pattern in patterns):
                 return True
@@ -224,6 +226,24 @@ def extra_family(name, args):
             for a in args
         )
     if name == "benmore":
+        if args[:1] in (["docs"], ["check"], ["pull"]):
+            if args[0] == "pull" and len(args) == 5 and args[3] == "--env":
+                return all(not a.startswith("-") for a in [*args[1:3], args[4]])
+            return 2 <= len(args) <= (3 if args[0] == "pull" else 2) and all(
+                not a.startswith("-") for a in args[1:])
+        if args[:1] == ["tail"]:
+            rest = list(args[1:])
+            if not rest or rest.pop(0).startswith("-"):
+                return False
+            while rest:
+                if len(rest) < 2:
+                    return False
+                flag, value = rest[:2]
+                if not ((flag == "--lines" and re.fullmatch(r"[1-9][0-9]{0,3}", value))
+                        or (flag == "--since" and re.fullmatch(r"[0-9]{1,6}[smhd]", value))):
+                    return False
+                rest = rest[2:]
+            return True
         if len(args) == 2 and args[1] in {"--help", "-h"} and re.fullmatch(r"[a-z][a-z-]*", args[0]):
             return True  # Help or an older CLI's usage error; neither runs a build.
         if args[:1] == ["push"]:
@@ -266,6 +286,20 @@ def extra_family(name, args):
     if name == "docker":
         if not args:
             return False
+        if args[0] == "stats":
+            rest = list(args[1:])
+            if "--no-stream" not in rest:
+                return False
+            while rest:
+                if rest[0] in {"--no-stream", "--no-trunc", "--all", "-a"}:
+                    rest.pop(0)
+                elif rest[0] == "--format" and len(rest) >= 2:
+                    rest = rest[2:]
+                elif not rest[0].startswith("-"):
+                    rest.pop(0)
+                else:
+                    return False
+            return True
         if args[0] == "compose":
             args = args[1:]
             while len(args) > 1 and args[0] in {
@@ -293,4 +327,16 @@ def extra_family(name, args):
                 or (a.startswith("-") and not a.startswith("--") and "f" in a[1:])
                 for a in args[1:]
             )
+    if name == "sips":
+        rest, properties, files = list(args), 0, 0
+        while rest:
+            if rest[0] in {"-g", "--getProperty"} and len(rest) > 1 and rest[1] in {"pixelWidth", "pixelHeight", "format", "space", "hasAlpha"}:
+                properties += 1
+                rest = rest[2:]
+            elif not rest[0].startswith("-"):
+                files += 1
+                rest.pop(0)
+            else:
+                return False
+        return bool(properties and files)
     return None

@@ -355,6 +355,39 @@ memcap queue --json
 memcap wait --session --timeout 60
 ```
 
+The watchdog now recovers observation of abandoned registered groups. Queue output
+shows requested/effective memory, the age of the last measurement, watchdog
+ownership and cleanup blockers. Recovery requires unchanged process identities and
+complete group membership; it does not transfer cancellation ownership or erase a
+reservation. A renewable 90-second observation lease allows the existing adaptive
+measurement window to retire old peaks. Explicit requests retain their floors.
+
+For newly registered agent work, known development-server groups may be cleaned up
+after two minutes of consecutive owner-loss observations. Live related sessions,
+unknown agents or children, missing lifecycle/network evidence and active clients
+all veto cleanup. Legacy jobs without a verified originating agent retain cleanup
+protection, while verified groups can still recover measurement. An agent which
+is idle or has exhausted its token allowance is not presumed dead.
+
+Use `memcap claim JOB_ID` when another session reuses a server; the claim lasts for
+that verified agent process's lifetime. Reusing an existing `run --resource` also
+records this claim automatically. `memcap claim JOB_ID --release` releases
+only the caller's claim. `--pin` retains a shared server until `--unpin`, including
+ordinary orphan/idle cleanup. Pins do not override the configured oversized-child
+limit or an owning supervisor's explicit cancellation. Cleanup revalidates before
+TERM and KILL; capacity is released only after the managed group exits. User pause
+stops watchdog recovery and cleanup. Existing supervisors retain their loaded code;
+new runners adopt these changes without modifying agent profiles or trust.
+
+Observed peaks are saved while jobs run. Automatic requests for the same script
+can reuse that evidence across changing tag arguments; script content, worker
+allocation, project, executable and dependency fingerprints bound the fallback.
+An exact learned profile takes precedence. Waiting automatic requests increase
+when newer evidence arrives. First-ever workloads can still exceed predictions:
+reservations are admission estimates, not kernel memory limits. Numeric telemetry
+records the emitting runner version (`major*1000000 + minor*1000 + patch`) and
+estimate source (1 explicit, 2 prior, 3 exact history, 4 script fallback).
+
 
 `wait --session` is a read-only, bounded wait on finite jobs belonging to the
 calling agent process. It does not acquire the queue lock, create a reservation,

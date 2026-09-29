@@ -10,10 +10,12 @@ import stat
 import subprocess
 import tempfile
 import time
+from functools import lru_cache
 
 BLOCKERS = ("unknown", "budget", "headroom", "slots", "pressure_or_measurement", "measurement", "fairness", "startup", "stabilizing", "paging", "sampling")
 EVENTS = {"sample", "queued", "admitted", "completed", "cancelled", "stalled", "reservation"}
 FIELDS = {
+    "runner_version",
     "job_ref",
     "signal",
     "completion_kind",
@@ -238,6 +240,19 @@ def shared_sample(directory: Path, key: str, sampler) -> dict:
         os.close(fd)
 
 
+@lru_cache(maxsize=1)
+def runner_version():
+    try:
+        version = re.search(r'^MEMCAP_VERSION="([0-9]+)\.([0-9]+)\.([0-9]+)"',
+                            Path(__file__).with_name("common.sh").read_text(), re.M)
+        if version:
+            major, minor, patch = map(int, version.groups())
+            return major * 1000000 + minor * 1000 + patch
+    except OSError:
+        pass
+    return 0
+
+
 def append_event(directory: Path, event: dict) -> None:
     """Best effort, bounded private events; failure never changes admission."""
     if event.get("event") not in EVENTS:
@@ -248,7 +263,7 @@ def append_event(directory: Path, event: dict) -> None:
     reasons = BLOCKERS
     if event.get("reason") in reasons:
         row["reason_code"] = reasons.index(event["reason"])
-    row.update(event=event["event"], timestamp=time.time())
+    row.update(event=event["event"], timestamp=time.time(), runner_version=runner_version())
     directory = Path(directory)
     lock = None
     fd = None

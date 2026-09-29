@@ -185,7 +185,7 @@ class Scheduler:
             raise QueueError("queue concurrency/worker settings must be at most 64")
 
     @contextmanager
-    def locked(self):
+    def locked(self, timeout=35):
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self.directory.is_symlink() or self.directory.stat().st_uid != os.getuid():
             raise QueueError(
@@ -196,7 +196,7 @@ class Scheduler:
             self.directory / "lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
         )
         try:
-            deadline = time.monotonic() + 35
+            deadline = time.monotonic() + timeout
             while True:
                 try:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -304,6 +304,7 @@ class Scheduler:
             measured = sum(footprints.get(p, 0) for p in footprint_members(job))
             if complete:
                 job["measured_kb"] = measured
+                job["measured_at"] = time.time()
             previous_reservation = job.get("reservation_kb", job["memory_kb"])
             job["reservation_kb"] = self.reservation(
                 job, sample, measured, adaptive=self.policy == "adaptive"
@@ -324,10 +325,31 @@ class Scheduler:
                 # Preserve it for upward-only learning even when siblings were
                 # missing or the command exits before a second observation.
                 job["observed_peak_kb"] = max(job.get("observed_peak_kb", 0), measured)
+                # Persist observed growth immediately. A supervisor killed by a
+                # session limit may never reach the completion-learning path.
+                key = job.get("estimate_key")
+                if key and measured > job.get("learned_peak_kb", 0):
+                    history = data.setdefault("estimates", {})
+                    for learned_key in {key, job.get("estimate_family_key", "")} - {""}:
+                        history[learned_key] = record_estimate(history.pop(learned_key, {"estimate_kb": job["memory_kb"]}), measured, complete=False)
+                    job["learned_peak_kb"] = measured
+                    while len(history) > 256:
+                        del history[next(iter(history))]
             if sample.get("fault") or not all(p in footprints for p in footprint_members(job)):
                 job["learning_incomplete"] = True
                 continue
             job["sample_count"] = job.get("sample_count", 0) + 1
+        if self.policy == "adaptive":
+            history = data.get("estimates", {})
+            for job in data["jobs"]:
+                if job["status"] != "waiting" or job.get("elastic") is not True:
+                    continue
+                exact = history.get(job.get("estimate_key", ""), {})
+                row = exact or history.get(job.get("estimate_family_key", ""), {})
+                if row.get("estimate_kb", 0) > job["memory_kb"]:
+                    job["memory_kb"] = row["estimate_kb"]
+                    job["estimate_source"] = 3 if exact else 4
+                    job["estimate_complete_runs"] = row.get("complete_runs", 0)
 
     def allocation(self, jobs):
         if self.policy == "strict":
@@ -371,8 +393,7 @@ class Scheduler:
             if path.is_file():
                 manifests[name] = hashlib.sha256(path.read_bytes()).hexdigest()
         secret = data.setdefault("estimate_secret", os.urandom(32).hex())
-        key = fingerprint(
-            dict(
+        description = dict(
                 argv=argv,
                 cwd=str(cwd),
                 executable=executable,
@@ -383,9 +404,22 @@ class Scheduler:
                     name: (cwd / name).exists()
                     for name in ("node_modules", "target", ".build", "build")
                 },
-            ),
-            bytes.fromhex(secret),
         )
+        key = fingerprint(description, bytes.fromhex(secret))
+        # A timestamp/tag argument must not erase evidence from the same script.
+        # Exact profiles still win. The fallback only raises first-use estimates
+        # and is isolated by script bytes, cwd, executable, workers and manifests.
+        self.estimate_family_key = ""
+        script_index = 1 if Path(words[0]).name in {"bash", "sh", "zsh", "python", "python3"} else 0
+        if len(words) > script_index and not words[script_index].startswith("-"):
+            script = cwd / words[script_index]
+            try:
+                if script.suffix in {".sh", ".py"} and script.is_file() and script.stat().st_size <= 1048576:
+                    self.estimate_family_key = fingerprint(
+                        {**description, "argv": words[:script_index+1], "script": str(script.resolve()),
+                         "script_sha256": hashlib.sha256(script.read_bytes()).hexdigest()}, bytes.fromhex(secret))
+            except OSError:
+                pass
         # Opaque commands retain the configured prior. Recognized small tool
         # families get a smaller startup allowance, never a zero-cost bypass.
         tool = Path(words[0]).name
@@ -406,7 +440,8 @@ class Scheduler:
         )
         if tool in {"xcodebuild", "swift"}:
             prior = max(prior, 4 * GIB)
-        row = data.get("estimates", {}).get(key, {})
+        history = data.get("estimates", {})
+        row = history.get(key, {}) or history.get(self.estimate_family_key, {})
         return key, row.get("estimate_kb", prior)
 
     def refresh(self, data, table):
@@ -433,6 +468,8 @@ class Scheduler:
                         job.setdefault("footprint_members", dict(job["members"]))
                         job["members"] = members
                     job["orphaned"] = not owner_alive
+                    from orphan_recovery import recovered
+                    job["recovery_active"] = not owner_alive and recovered(job, table, time.time())
                     live.append(job)
             except (KeyError, TypeError) as exc:
                 raise QueueError(
@@ -446,7 +483,8 @@ class Scheduler:
         # Automatic estimates cover the startup burst, then follow observed demand.
         # Explicit requests and uncertain/departed owners keep their full allowance.
         reserve = job.get("reservation_kb", job["memory_kb"])
-        if not adaptive or job.get("elastic") is not True or job.get("orphaned"):
+        uncertain = job.get("orphaned") and not job.get("recovery_active")
+        if not adaptive or job.get("elastic") is not True or uncertain:
             reserve = max(job["memory_kb"], reserve)
         # Automatic adaptive allowances may already have shrunk from the startup
         # estimate. A busy/faulty/incomplete observation retains that established
@@ -454,7 +492,7 @@ class Scheduler:
         # complete observations alone can shrink, and known growth still raises it.
         if (
             job.get("elastic") is True
-            and not job.get("orphaned")
+            and not uncertain
             and footprint_members(job)
             and not sample.get("fault", False)
             and all(p in sample.get("footprints", {}) for p in footprint_members(job))
@@ -507,6 +545,9 @@ class Scheduler:
                 job["reservation_kb"] = self.reservation(
                     job, sample, measured, adaptive=self.policy == "adaptive"
                 )
+                if not sample.get("fault") and all(p in sample.get("footprints", {}) for p in footprint_members(job)):
+                    job["measured_kb"] = measured
+                    job["measured_at"] = time.time()
         decision = decide(
             dict(
                 mode=self.policy,
@@ -622,6 +663,8 @@ class Scheduler:
         child = None
         registered = False
         estimate_key = ""
+        from orphan_recovery import agent_identity
+        originating_agent = agent_identity()
         try:
             for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                 old_handlers[sig] = signal.signal(sig, self.handle_signal)
@@ -656,11 +699,13 @@ class Scheduler:
                 if self.policy == "adaptive" and memory_gb is None:
                     estimate_key, memory = self.demand(argv, cwd, workers, data)
                 estimate_row = data.get("estimates", {}).get(estimate_key, {})
+                family_row = data.get("estimates", {}).get(getattr(self, "estimate_family_key", ""), {}) if estimate_key else {}
                 data["jobs"].append(
                     {
                         "id": ident,
                         "owner": os.getpid(),
                         "owner_start": owner["start"],
+                        **originating_agent,
                         "group": 0,
                         "members": {},
                         "status": "waiting",
@@ -669,7 +714,8 @@ class Scheduler:
                         "memory_kb": memory,
                         "workers": workers,
                         "estimate_key": estimate_key,
-                        "estimate_source": 1 if memory_gb is not None else (3 if estimate_row else 2),
+                        "estimate_family_key": getattr(self, "estimate_family_key", "") if estimate_key else "",
+                        "estimate_source": 1 if memory_gb is not None else (3 if estimate_row else 4 if family_row else 2),
                         "estimate_complete_runs": estimate_row.get("complete_runs", 0),
                         "classification_code": getattr(self, "classification_code", 0),
                         "scheduler_version": 2,
@@ -703,6 +749,7 @@ class Scheduler:
                     self.refresh(data, processes())
                     self.observe(data, sample)
                     job = next(j for j in data["jobs"] if j["id"] == ident)
+                    memory = job["memory_kb"]
                     active_resource = next(
                         (
                             j
@@ -714,6 +761,10 @@ class Scheduler:
                         None,
                     )
                     if active_resource:
+                        if originating_agent:
+                            active_resource.setdefault("claims", {})[str(originating_agent["agent_owner"])] = originating_agent["agent_start"]
+                            active_resource.pop("recovery", None)
+                            self.save(data)
                         print(
                             f"memcap: resource already running as job {active_resource['id'][:8]} (pid {active_resource['group']}); reuse it",
                             file=sys.stderr,
@@ -1001,6 +1052,7 @@ class Scheduler:
             if workers != job.get("workers", workers):
                 if job.get("estimate_key"):
                     job["estimate_key"], _ = self.demand(argv, cwd, workers, data)
+                    job["estimate_family_key"] = self.estimate_family_key
             job["workers"] = workers
             if (
                 len(argv) >= 3
@@ -1221,6 +1273,18 @@ def main():
         policy=os.environ.get("QUEUE_POLICY", "strict"),
     )
     action = sys.argv[1]
+    if action == "claim":
+        from orphan_recovery import claim
+        parser = argparse.ArgumentParser(prog="memcap claim")
+        parser.add_argument("job_id")
+        flags = parser.add_mutually_exclusive_group()
+        flags.add_argument("--pin", action="store_true")
+        flags.add_argument("--unpin", action="store_true")
+        flags.add_argument("--release", action="store_true")
+        args = parser.parse_args(sys.argv[2:])
+        claim(scheduler, args.job_id, True if args.pin else False if args.unpin else None, args.release)
+        print("memcap: resource claim updated; supervisor ownership and reservation preserved")
+        return 0
     if action == "_inspect":
         from inspection import inspect_argv
 
@@ -1298,10 +1362,16 @@ def main():
             print("No queued or running jobs.")
         else:
             for job in jobs:
-                state = "orphaned" if job.get("orphaned") else job["status"]
+                state = "watchdog" if job.get("recovery_active") else "orphaned" if job.get("orphaned") else job["status"]
                 kind = "resource" if job["resource"] else "job"
+                age = f"{max(0, int(time.time() - job['measured_at']))}s ago" if "measured_at" in job else "age unknown"
+                measured = (f"{job['measured_kb'] / GIB:.3f} GiB ({age})"
+                            if "measured_kb" in job else "unknown")
                 print(
-                    f"{job['id'][:8]}  {state:9s} {kind:8s} {job['memory_kb'] / GIB:g} GB  pid={job['group']}  {job['cwd']}"
+                    f"{job['id'][:8]}  {state:9s} {kind:8s} requested={job['memory_kb'] / GIB:g} GiB "
+                    f"reserved={job.get('reservation_kb', job['memory_kb']) / GIB:.3f} GiB "
+                    f"measured={measured} cleanup={job.get('cleanup_blocker', 'not-observed')} "
+                    f"pinned={bool(job.get('pinned'))} pid={job['group']}  {job['cwd']}"
                 )
         return 0
     parser = argparse.ArgumentParser(prog="memcap run")

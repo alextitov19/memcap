@@ -196,6 +196,17 @@ Explicit `--memory`, orphaned groups and incomplete measurements retain their
 allowances. Do not equate a smaller reservation with process termination or reclaim
 capacity by deleting leases. A lease remains until its managed group exits.
 
+`orphan_recovery.py` is a narrow exception for measurement recovery: the watchdog
+renews a 90-second observation lease only for unchanged, owned registered groups
+without escaped descendants. It never transfers cancellation ownership. Complete
+fresh observations still need the ordinary adaptive window before retiring peaks.
+Cleanup separately requires verified originating-agent death, two minutes of
+continuous eligibility, known dev-server commands, lifecycle and network evidence,
+and no live claims or pins. Legacy origin gaps retain cleanup protection. Every
+signal uses `mc_kill_pids` with fresh authorization; pause stops maintenance.
+Pins/claims protect ordinary cleanup, not configured oversized-child enforcement or
+supervisor cancellation. Do not weaken these distinctions to clear a queue.
+
 Rotate new admissions across sessions and resource types. The aged-request gate
 may hold back new work while finite jobs drain, but must not leave smaller jobs
 blocked when no running finite job can free capacity. Never implement rotation by
