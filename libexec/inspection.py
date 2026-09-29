@@ -110,15 +110,14 @@ def guard_read_consumers(command, executable, session_key):
     )
     if loop:
         body = loop["body"]
+        from lightweight import local_variable
         try:
             words = shlex.split(body)
         except ValueError:
             return None
         if (
             not words
-            or words[0] != "rg"
-            or words[-1] != "$" + loop["var"]
-            or not body.endswith('"$' + loop["var"] + '"')
+            or not local_variable(loop["var"])
             or not light_shell(substitute_reference(body, loop["var"], "/MEMCAP_PATH"))
             or not light_shell(loop["before"])
             or (
@@ -126,7 +125,10 @@ def guard_read_consumers(command, executable, session_key):
             )
         ):
             return None
-        return command[: loop.start("body")] + prefix + command[loop.start("body") :]
+        guarded = guard_stages(body, executable, session_key, loop["var"], force=True)
+        if guarded is None:
+            return None
+        return command[:loop.start("body")] + guarded + command[loop.end("body"):]
     # A single xargs -I{} rg invocation. Every surrounding stage must independently
     # qualify; insert the existing expanded-argv guard into each child invocation.
     tokens = list(spans(command))
@@ -170,6 +172,11 @@ def guard_read_consumers(command, executable, session_key):
 
 def guarded_shell(command, executable, session_key="", cwd=None):
     from control_script import guard_invocation, guard_inline
+    from inspection_loops import guard_for_loop
+
+    loop = guard_for_loop(command, executable, session_key)
+    if loop:
+        return loop
 
     script = guard_invocation(command, executable, session_key, cwd)
     if script:

@@ -128,7 +128,7 @@ mc_docker_ceiling_cache_age() {
 # a caller needing the diagnosis alongside the number does not have to choose
 # between them. Prints nothing at all on 1 or 2.
 mc_docker_ceiling_gb() {
-  local mib="" src=""
+  local mib="" src="" read_rc=0
   MC_DOCKER_CEILING_GB=""
   MC_DOCKER_CEILING_SOURCE=""
   MC_DOCKER_CEILING_ERR=""
@@ -144,7 +144,11 @@ mc_docker_ceiling_gb() {
     src=override
   else
     [ -f "$MC_DOCKER_STORE" ] || return 1
-    if cat "$MC_DOCKER_STORE" >/dev/null 2>&1; then
+    if command -v python3 >/dev/null 2>&1; then
+      # A Group Containers read can wait indefinitely for macOS consent, not
+      # merely return EPERM. Bound it without signalling Docker or any helper.
+      mib=$(python3 -I "$MEMCAP_ROOT/libexec/docker_read.py" "$MC_DOCKER_STORE" 2>/dev/null) || read_rc=$?
+    elif cat "$MC_DOCKER_STORE" >/dev/null 2>&1; then
       if command -v jq >/dev/null 2>&1; then
         mib=$(jq -r '.MemoryMiB // empty' "$MC_DOCKER_STORE" 2>/dev/null)
       else
@@ -154,7 +158,13 @@ mc_docker_ceiling_gb() {
         # which is worse than no warning.
         mib=$(sed -n 's/.*"MemoryMiB"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$MC_DOCKER_STORE" 2>/dev/null | head -1)
       fi
+    else
+      read_rc=2
+    fi
+    if [ "$read_rc" -eq 0 ]; then
       src=live
+    elif [ "$read_rc" -eq 1 ]; then
+      return 1  # readable but malformed/unknown; never present stale data as live
     else
       # `cat`, not the shell's own `read`: an EMPTY but readable store must land
       # in the readable branch above (there is simply no ceiling recorded in it),
@@ -162,7 +172,7 @@ mc_docker_ceiling_gb() {
       # permission problem and put a "launchd cannot read this" line in
       # actions.log about a file that is perfectly readable.
       # shellcheck disable=SC2034  # read by mc_watch and the tests, not here
-      MC_DOCKER_CEILING_ERR="cannot read $MC_DOCKER_STORE -- macOS denies launchd agents access to ~/Library/Group Containers"
+      MC_DOCKER_CEILING_ERR="cannot read $MC_DOCKER_STORE -- macOS may deny or delay access to ~/Library/Group Containers"
       if mc_docker_ceiling_cache_read; then
         mib="$MC_DOCKER_CEILING_CACHE_MIB"
         src=cached

@@ -2207,6 +2207,42 @@ spawn_launchd_sim() {
   wait_spawned "$launchd_sim_pid"
 }
 
+@test "XCRUN: a CPU-flat device held by an agent driver is retained" {
+  set_booted "$MC_UDID_X=iPhone 17"
+  spawn_launchd_sim "$MC_UDID_X"; sim="$launchd_sim_pid"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034 # consumed by mc_reap_sims
+  SIMPIDS="$sim"
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
+  # shellcheck disable=SC2329 # Called indirectly by mc_reap_sims.
+  mc_sim_device_held() { return 0; }
+  run mc_reap_sims
+  kill "$sim" 2>/dev/null
+  assert_not_contains "$output" "would shut down device"
+  assert_contains "$(cat "$(mc_state_dir)/actions.log")" "retaining device"
+}
+
+@test "XCRUN: a driver attaching after planning vetoes device shutdown" {
+  set_booted "$MC_UDID_X=iPhone 17"
+  spawn_launchd_sim "$MC_UDID_X"; sim="$launchd_sim_pid"
+  AGENTPIDS=""
+  # shellcheck disable=SC2034 # consumed by mc_reap_sims
+  SIMPIDS="$sim"
+  mkdir -p "$(mc_sims_idle_dir)"
+  printf '1 999999\n' > "$(mc_sims_idle_stamp "$sim")"
+  # shellcheck disable=SC2329 # Called indirectly by mc_reap_sims.
+  mc_sim_device_held() {
+    [ -f "$BATS_TEST_TMPDIR/driver-checked" ] && return 0
+    touch "$BATS_TEST_TMPDIR/driver-checked"
+    return 1
+  }
+  run mc_reap_sims
+  kill "$sim" 2>/dev/null
+  assert_not_contains "$output" "would shut down device"
+  [ -f "$BATS_TEST_TMPDIR/driver-checked" ]
+}
+
 MC_UDID_X="F096B0A2-20F5-4637-BC0E-19098780FA83"
 MC_UDID_Y="0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9"
 

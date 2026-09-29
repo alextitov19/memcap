@@ -298,6 +298,33 @@ ceiling_read() {
   [ -z "$MC_DOCKER_CEILING_ERR" ]
 }
 
+@test "a timed out settings reader retains the cached ceiling with its age" {
+  MC_DOCKER_STORE="$BATS_TEST_TMPDIR/settings.json"
+  printf '{"MemoryMiB": 8192}\n' > "$MC_DOCKER_STORE"
+  mkdir -p "$MEMCAP_STATE_HOME/memcap"
+  printf '6144 %s\n' "$(date +%s)" > "$MEMCAP_STATE_HOME/memcap/docker-ceiling"
+  # shellcheck disable=SC2329 # Called indirectly by the sourced ceiling reader.
+  python3() { return 2; }
+  ceiling_read
+  [ "$MC_CEILING_RC" -eq 0 ]
+  [ "$MC_CEILING_OUT" = 6 ]
+  assert_contains "$MC_DOCKER_CEILING_SOURCE" cached
+  assert_contains "$MC_DOCKER_CEILING_ERR" "cannot read"
+  assert_contains "$(cat "$MEMCAP_STATE_HOME/memcap/docker-ceiling")" '6144 '
+}
+
+@test "a timed out settings reader without cache is unknown and diagnosed" {
+  MC_DOCKER_STORE="$BATS_TEST_TMPDIR/settings.json"
+  printf '{"MemoryMiB": 8192}\n' > "$MC_DOCKER_STORE"
+  # shellcheck disable=SC2329 # Called indirectly by the sourced ceiling reader.
+  python3() { return 2; }
+  ceiling_read
+  [ "$MC_CEILING_RC" -eq 2 ]
+  [ -z "$MC_CEILING_OUT" ]
+  [ "$MC_DOCKER_CEILING_UNREADABLE" = 1 ]
+  assert_contains "$MC_DOCKER_CEILING_ERR" "cannot read"
+}
+
 @test "EPERM: an empty but readable store is unknown, not unreadable" {
   # An empty file opens fine and simply records no ceiling. Distinguished here
   # because the obvious readability probe -- the shell's own `read` -- fails at
@@ -468,4 +495,3 @@ ceiling_read() {
   # was in them beforehand.
   assert_matches "$output" '^5120 [0-9]+$'
 }
-

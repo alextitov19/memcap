@@ -116,6 +116,30 @@ def sed_command(args):
 
 def extra_family(name, args):
     """Return None for families handled by the older classifier."""
+    if name == "paste":
+        return True  # streaming text columns; no child-execution option
+    if name == "lsof":
+        return bool(args) and all(
+            a in {"-n", "-P", "-nP", "-t", "-a", "-sTCP:LISTEN", "-sTCP:ESTABLISHED"}
+            or re.fullmatch(r"-i(?:TCP|UDP)?(?::[0-9]{1,5})?", a)
+            for a in args
+        )
+    if name == "awk":
+        rest = list(args)
+        if rest and rest[0] == "-F" and len(rest) > 1:
+            rest = rest[2:]
+        elif rest and rest[0].startswith("-F") and len(rest[0]) > 2:
+            rest = rest[1:]
+        if rest and not rest[0].startswith("-") and all(not a.startswith("-") and "=" not in a for a in rest[1:]):
+            regex = r"/(?:\\.|[^/\\\n])*/"
+            comparison = r"\$[1-9][0-9]?\s*(?:>=|<=|==|!=|>|<)\s*[0-9]{1,9}"
+            patterns = (
+                regex + r"(?:\s*,\s*" + regex + r")?",
+                comparison + r"(?:\s*(?:&&|\|\|)\s*" + comparison + r"){0,3}",
+                regex + r"\s*\{f=1;next\}\s*f\s*&&\s*" + regex + r"\s*\{exit\}\s*f",
+            )
+            if any(re.fullmatch(pattern, rest[0].strip()) for pattern in patterns):
+                return True
     if name == "pdftotext":
         return True  # text extraction, no rasterization or child execution
     if name == "textutil":

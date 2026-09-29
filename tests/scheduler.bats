@@ -212,3 +212,9 @@ sample_fixture() {
   [ "$status" = 0 ]
   assert_contains "$output" 'OK'
 }
+
+@test "QUEUE: remaining incident reproductions preserve finite completion and diagnostics" {
+  run python3 "$MEMCAP_ROOT/tests/test_remaining_issues.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}

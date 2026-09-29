@@ -575,12 +575,12 @@ class SchedulerTests(unittest.TestCase):
             "memcap report polling-overhead --wait-seconds 120",
             "memcap report queue-stall --wait-seconds 120 --dry-run",
             "memcap report queue-stall --dry-run --wait-seconds 0",
+            "memcap report queue-stall --wait-seconds SECRET",
+            "memcap report queue-stall --wait-seconds 1 --wait-seconds 2",
         ):
             with self.subTest(command=command):
                 self.assertEqual(self.policy.classify_shell(command)[0], "light")
         for command in (
-            "memcap report queue-stall --wait-seconds SECRET",
-            "memcap report queue-stall --wait-seconds 1 --wait-seconds 2",
             "memcap report queue-stall --wait-seconds 120 && npm test",
         ):
             with self.subTest(command=command):
