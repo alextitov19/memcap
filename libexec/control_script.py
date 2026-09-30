@@ -319,7 +319,7 @@ def guard_invocation(command, executable, session_key, cwd=None):
 def guard_inline(command, executable, session_key):
     # Preserve assignment scope and quote handling for remote API helpers
     # pasted directly into Bash, rather than requiring a separate script file.
-    if not re.search(r"(?:^|[;\s])(?:[A-Za-z_][A-Za-z_0-9]*=|ssm\(\))", command):
+    if not re.search(r"(?:^|[;\s])(?:[A-Za-z_][A-Za-z_0-9]*=|ssm\(\)|set\s)", command):
         return None
     guarded = rewrite(command, executable, session_key)
     return execution_text(guarded) if guarded is not None else None

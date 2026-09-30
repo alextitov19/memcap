@@ -1,5 +1,12 @@
 # memcap
 
+Local performance analytics can record queue delay, native/paused hook activity,
+unfinished work, pressure/paging observations, and code/policy provenance without
+changing enforcement. Run `memcap analytics enable --service --claude`, then
+`memcap analytics today`. Data stays on your Mac. Existing hooks pick up recording
+on their next invocation; native Claude API/token telemetry applies at session
+startup. See [analytics setup, interpretation, and benchmarks](docs/analytics.md).
+
 [![CI](https://github.com/alextitov19/memcap/actions/workflows/ci.yml/badge.svg)](https://github.com/alextitov19/memcap/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#requirements)
@@ -1390,7 +1397,22 @@ These are initial tuning parameters, not a guarantee that running or unmanaged
 work can never push the machine into red.
 
 Recognized searches, reads, status and remote SSM control remain outside the heavy
-queue. Managed work uses the configured startup prior, with smaller priors for
+queue, including Parameter Store single/batch reads, path reads, history and
+parameter descriptions. Supported AWS profile, region, output, query and socket
+timeout options accept both `--option value` and `--option=value`. Shell helpers
+still need provable contents and expanded-argument checks; adding a local build
+to an API command keeps that work managed. Lightweight routing does not grant
+permission to access parameters or execute remote commands.
+
+For a middle ground between the strict profile and 12-slot adaptive throughput,
+owners can keep `QUEUE_POLICY=adaptive` and `QUEUE_MAX_PRESSURE=yellow`, with
+`QUEUE_MAX_JOBS=4` and `QUEUE_WORKERS=4`. This limits heavy-work concurrency while
+recognized lightweight calls remain outside those slots. Heavy starts still need
+fresh measurements, estimated headroom and staged admission; yellow alone does
+not block them, and red still blocks new heavy starts. Adaptive mode still uses
+the emergency margin described above, not the full strict-mode headroom setting.
+
+Managed work uses the configured startup prior, with smaller priors for
 recognized small tool families and at least 4 GB for direct Xcode/Swift builds.
 Successful, sufficiently sampled runs teach private estimates keyed by project,
 command, executable metadata, dependency manifests, worker allocation and common

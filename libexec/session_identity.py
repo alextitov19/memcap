@@ -33,7 +33,8 @@ def bind_runner(argv, session_key):
     if not session_key or len(argv) < 2 or argv[1] not in {"run", "_inspect"}:
         return None
     values = {"--classification-code", "--resource", "--memory", "--wait",
-              "--cwd", "--session-key", "--shell", "--shell-command"}
+              "--cwd", "--session-key", "--shell", "--shell-command",
+              "--analytics-operation", "--analytics-turn"}
     flags = {"--wait-forever", "--login"}
     result, i = [*argv[:2], "--session-key", session_key], 2
     while i < len(argv):

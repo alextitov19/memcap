@@ -52,6 +52,13 @@ FIELDS = {
     "learning_complete",
 } | {"blocked_" + reason + "_ms" for reason in BLOCKERS}
 MAX_SEGMENT = 16 * 1024 * 1024
+ANALYTICS_CONTEXT = {}
+
+
+def analytics_context(**fields):
+    """Loaded runner metadata only; never used for admission or ownership."""
+    ANALYTICS_CONTEXT.clear()
+    ANALYTICS_CONTEXT.update(fields)
 
 
 def account_blocker(job, reason, now):
@@ -257,6 +264,19 @@ def append_event(directory: Path, event: dict) -> None:
     """Best effort, bounded private events; failure never changes admission."""
     if event.get("event") not in EVENTS:
         return
+    try:
+        from analytics_events import emit, root
+        fields = {**ANALYTICS_CONTEXT, **event, "source": "scheduler"}
+        fields["runner_version"] = runner_version()
+        fields.pop("event", None)
+        if "job_ref" in event:
+            fields["job"] = str(event["job_ref"])
+        # Synthetic Scheduler directories must never leak fixture observations
+        # into an enabled live recorder when unit tests run outside Bats.
+        if Path(directory) == root().parent / "queue":
+            emit(event["event"], **fields)
+    except Exception:
+        pass
     row = {
         k: v for k, v in event.items() if k in FIELDS and number(v) and v <= 2**63 - 1
     }

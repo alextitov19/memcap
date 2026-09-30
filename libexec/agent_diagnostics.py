@@ -460,7 +460,7 @@ if __name__ == "__main__":
             / "memcap"
         )
         payload = json.load(sys.stdin)
-        print(
+        message = (
             session_guidance(payload, state, sys.argv[2])
             if len(sys.argv) == 3 and sys.argv[1] == "--session-token"
             else guidance(
@@ -468,8 +468,10 @@ if __name__ == "__main__":
                 state,
                 refresh=sys.argv[1:] == ["--session-guidance"],
                 brief=sys.argv[1:] == ["--brief-guidance"],
-            ),
-            end="",
+            )
         )
+        from analytics_events import emit, hook_fields
+        emit("feedback", **hook_fields(payload), feedback_bytes=len(message.encode()))
+        print(message, end="")
     except (OSError, ValueError, TypeError):
         pass  # Optional context must not break normal hook permission semantics.

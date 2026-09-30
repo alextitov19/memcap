@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import sys
+import time
 from pathlib import Path
 from scheduler_policy import light_shell, light_words, normalized_lines
 
@@ -15,11 +16,18 @@ from scheduler_policy import light_shell, light_words, normalized_lines
 def inspect_argv(argv, fallback, session_key=""):
     from text_probe import eligible
     from control_script import prepared
+    from analytics_events import emit, family
+    began = time.monotonic()
+
+    def observed(route):
+        emit("route", source="scheduler", session=session_key, route=route,
+             family=family(shlex.join(argv)), guard_ms=(time.monotonic() - began) * 1000)
 
     script = prepared(
         argv, str(Path(__file__).resolve().parents[1] / "bin/memcap"), session_key
     )
     if script:
+        observed("guarded")
         os.execvpe(script[0], script, os.environ)
 
     probe = eligible(argv, check_files=True)
@@ -28,11 +36,23 @@ def inspect_argv(argv, fallback, session_key=""):
         # from PYTHONPATH and cwd modules that could run unrelated local code.
         argv = [argv[0], "-I", *argv[1:]]
     if probe or light_words(argv, glob_checked=True):
+        if Path(argv[0]).name == "memcap" and argv[1:2] == ["wait"]:
+            from session_identity import scope_waits
+
+            scoped = scope_waits(shlex.join(argv), argv[0], session_key)
+            if scoped is not None:
+                argv = shlex.split(scoped)
+            if argv[0] == "memcap":
+                # The outer guard already has a working installed path.
+                # Do not make its nested wait depend on Homebrew in PATH.
+                argv[0] = str(Path(__file__).resolve().parents[1] / "bin/memcap")
+        observed("guarded")
         try:
             os.execvpe(argv[0], argv, os.environ)
         except (FileNotFoundError, PermissionError) as exc:
             print(f"memcap inspection: {argv[0]}: {exc}", file=sys.stderr)
             return 127 if isinstance(exc, FileNotFoundError) else 126
+    observed("managed")
     return fallback(argv)
 
 

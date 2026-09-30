@@ -210,10 +210,18 @@ ps -Ao pid= | awk "NR%50==0 {next} {print \$1\"  100M\"}"'
 # One unrecognised unit is a fault regardless of how few: it means top's output
 # format is not the one this code was written against. The old `else kb = v + 0`
 # turned "512B" into 512 KB and "1.5T" into 1 KB and said nothing.
-@test "an unrecognised unit is a fault even as a single row" {
+stub_bad_unit_sample() {
+  # A live PID chosen by row number can exit between the top and ps probes,
+  # removing the invalid reading from the merge before the assertion sees it.
+  stub_bin ps '#!/bin/sh
+[ "$*" = "-Ao pid=,ppid=,rss=,command=" ] || exit 1
+printf "4242 1 12345 fixture-one\n4243 1 12345 fixture-two\n4244 1 12345 fixture-three\n"'
   stub_bin top '#!/bin/sh
-echo "PID    MEM"
-ps -Ao pid= | awk "NR==3 {print \$1\"  1.5X\"; next} {print \$1\"  100M\"}"'
+printf "PID MEM\n4242 100M\n4243 100M\n4244 1.5X\n"'
+}
+
+@test "an unrecognised unit is a fault even as a single row" {
+  stub_bad_unit_sample
   mc_ps_snapshot > "$SNAP"
   [ "$MC_MEASURE_DEGRADED" = "1" ]
   [ "$MC_MEASURE_FAULT" = "1" ]
@@ -221,9 +229,7 @@ ps -Ao pid= | awk "NR==3 {print \$1\"  1.5X\"; next} {print \$1\"  100M\"}"'
 }
 
 @test "the unrecognised unit is named in the log" {
-  stub_bin top '#!/bin/sh
-echo "PID    MEM"
-ps -Ao pid= | awk "NR==3 {print \$1\"  1.5X\"; next} {print \$1\"  100M\"}"'
+  stub_bad_unit_sample
   mc_ps_snapshot > "$SNAP"
   run cat "$(mc_state_dir)/actions.log"
   assert_contains "$output" "1.5X"
@@ -270,9 +276,12 @@ echo "$pid  $STUB_TOP_VALUE"'
 }
 
 @test "mc_footprint_kb falls back to ps RSS on an unrecognised unit rather than mis-scaling" {
-  sleep 600 &
-  marker=$!
-  wait_spawned "$marker"
+  # Two reads of a live process can differ as macOS pages it in/out. Exercise
+  # fallback selection with a deterministic synthetic process instead.
+  marker=4242
+  stub_bin ps '#!/bin/sh
+[ "$*" = "-o rss= -p 4242" ] || exit 1
+printf "    12345\n"'
   stub_bin top '#!/bin/sh
 pid=""
 prev=""
@@ -283,23 +292,20 @@ done
 echo "PID    MEM"
 echo "$pid  1.5X"'
   got=$(mc_footprint_kb "$marker")
-  rss=$(ps -o rss= -p "$marker" 2>/dev/null | tr -d ' ')
-  kill "$marker" 2>/dev/null || true
-  [ "$got" = "$rss" ]
+  [ "$got" = 12345 ]
   run cat "$(mc_state_dir)/actions.log"
   assert_contains "$output" "1.5X"
 }
 
 @test "mc_footprint_kb falls back to ps RSS when top has no row for the pid" {
-  sleep 600 &
-  marker=$!
-  wait_spawned "$marker"
+  marker=4242
+  stub_bin ps '#!/bin/sh
+[ "$*" = "-o rss= -p 4242" ] || exit 1
+printf "    12345\n"'
   stub_bin top '#!/bin/sh
 echo "PID    MEM"'
   got=$(mc_footprint_kb "$marker")
-  rss=$(ps -o rss= -p "$marker" 2>/dev/null | tr -d ' ')
-  kill "$marker" 2>/dev/null || true
-  [ "$got" = "$rss" ]
+  [ "$got" = 12345 ]
 }
 
 # --- C4: the flag has to survive the subshell it is set in --------------------

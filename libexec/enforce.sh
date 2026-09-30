@@ -442,7 +442,7 @@ EOF
 # protected set is unknown" all return 1, so a caller that gates a "killed"
 # notification on this cannot claim one that never happened.
 mc_kill_pids() {
-  local pids reason="$2" scope="${3:-full}" p alive="" idents="" now_ident was_ident
+  local pids reason="$2" scope="${3:-full}" p alive="" idents="" now_ident was_ident analytics_id="$$:$RANDOM:$SECONDS"
   if ! pids=$(mc_filter_protected "$1" "$scope"); then
     mc_log "$reason: refusing to kill -- the protected pid set is unknown (classification did not run, or ps could not resolve memcap's own ancestry)"
     return 1
@@ -474,8 +474,18 @@ mc_kill_pids() {
   fi
   # shellcheck disable=SC2086
   if ! kill -TERM $pids 2>/dev/null; then
+    if [ -n "${LIB:-}" ] && [ -f "$LIB/analytics.sh" ]; then
+      # shellcheck source=/dev/null
+      . "$LIB/analytics.sh"
+      mc_analytics_signal "$scope" 15 0 "$pids" "$analytics_id"
+    fi
     mc_log "$reason: SIGTERM failed for:$pids"
     return 1
+  fi
+  if [ -n "${LIB:-}" ] && [ -f "$LIB/analytics.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$LIB/analytics.sh"
+    mc_analytics_signal "$scope" 15 1 "$pids" "$analytics_id"
   fi
   sleep 2
   for p in $pids; do
@@ -502,8 +512,14 @@ mc_kill_pids() {
   # shellcheck disable=SC2034 # read by orphan_recovery.sh
   if [ "$scope" = orphan-recovery ]; then MC_ORPHAN_ESCALATING=1; fi
   alive=$(mc_filter_protected "$alive" "$scope") || alive=""
-  # shellcheck disable=SC2086
-  [ -n "${alive// /}" ] && kill -KILL $alive 2>/dev/null
+  if [ -n "${alive// /}" ]; then
+    # shellcheck disable=SC2086
+    if kill -KILL $alive 2>/dev/null; then
+      command -v mc_analytics_signal >/dev/null 2>&1 && mc_analytics_signal "$scope" 9 1 "$alive" "$analytics_id"
+    else
+      command -v mc_analytics_signal >/dev/null 2>&1 && mc_analytics_signal "$scope" 9 0 "$alive" "$analytics_id"
+    fi
+  fi
   return 0
 }
 

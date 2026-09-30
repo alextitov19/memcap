@@ -312,6 +312,7 @@ class Scheduler:
             if job["reservation_kb"] != previous_reservation and re.fullmatch(r"[a-f0-9]{32}", str(job.get("id", ""))):
                 append_event(self.directory, dict(
                     event="reservation", job_ref=int(job["id"][:13], 16),
+                    session=job.get("session_key", ""), family="unknown",
                     reservation_kb=job["reservation_kb"], measured_kb=measured,
                     measurement_complete=int(complete),
                     reservation_source=job.get("reservation_source", 0),
@@ -636,6 +637,14 @@ class Scheduler:
         self, argv, cwd=None, resource="", memory_gb=None, wait=1800, session_key=""
     ):
         cwd = Path(cwd or os.getcwd()).resolve(strict=True)
+        from analytics_events import producer, family
+        from scheduler_metrics import analytics_context
+        producer()  # Capture code/policy before this supervisor can outlive an upgrade.
+        analytics_command = argv[-1] if argv and Path(argv[0]).name in {"bash", "zsh", "sh"} else " ".join(argv)
+        analytics_context(session=session_key, family=family(analytics_command),
+                          explicit_memory=int(memory_gb is not None),
+                          persistent=int(bool(resource)),
+                          **getattr(self, "analytics_metadata", {}))
         if (self.directory.parent / "paused").is_file():
             # Pause restores native execution before registry locks, sampling,
             # reservations or worker rewriting. Do not manufacture a queued task.
@@ -661,6 +670,7 @@ class Scheduler:
         began = time.monotonic()
         old_handlers = {}
         child = None
+        analytics_claimed = False
         registered = False
         estimate_key = ""
         from orphan_recovery import agent_identity
@@ -721,6 +731,7 @@ class Scheduler:
                         "scheduler_version": 2,
                         "elastic": memory_gb is None,
                         "enqueued": time.time(),
+                        "enqueued_monotonic": time.monotonic(),
                         "label": Path(argv[0]).name,
                         "cancel": False,
                         "session_key": session_key,
@@ -728,6 +739,8 @@ class Scheduler:
                 )
                 self.save(data)
                 registered = True
+            append_event(self.directory, dict(event="queued", job_ref=int(ident[:13], 16),
+                                              request_kb=memory, workers=workers))
             last_notice = 0.0
             waited = False
             while child is None:
@@ -761,6 +774,10 @@ class Scheduler:
                         None,
                     )
                     if active_resource:
+                        from analytics_events import emit
+                        emit("claim", source="scheduler", session=session_key, job=str(int(ident[:13], 16)),
+                             resource=str(int(active_resource["id"][:13], 16)), persistent=1)
+                        analytics_claimed = True
                         if originating_agent:
                             active_resource.setdefault("claims", {})[str(originating_agent["agent_owner"])] = originating_agent["agent_start"]
                             active_resource.pop("recovery", None)
@@ -957,7 +974,7 @@ class Scheduler:
                                 event="completed",
                                 job_ref=int(ident[:13], 16),
                                 **completion_fields(result, self.cancelled),
-                                runtime_ms=int((time.time() - job["started"]) * 1000),
+                                runtime_ms=int(max(0, time.monotonic() - job.get("start_monotonic", time.monotonic())) * 1000),
                                 peak_kb=job.get("observed_peak_kb", 0),
                                 learning_complete=int(learning_complete),
                                 **blocker_fields(job),
@@ -993,6 +1010,11 @@ class Scheduler:
                 time.sleep(self.poll)
         finally:
             if registered:
+                if child is None and not analytics_claimed:
+                    append_event(self.directory, dict(event="cancelled", job_ref=int(ident[:13], 16),
+                                                      queue_wait_ms=int((time.monotonic() - began) * 1000),
+                                                      signal=self.cancelled,
+                                                      outcome="cancelled" if self.cancelled else "timeout" if wait is not None and time.monotonic() - began >= wait else "failed"))
                 # Keep running groups when interrupted or the supervisor fails;
                 # another admission must not mistake lost supervision for free RAM.
                 with self.observed_registry(retry=child is not None) as (data, table):
@@ -1115,7 +1137,8 @@ class Scheduler:
                     estimate_source=job.get("estimate_source", 0),
                     estimate_complete_runs=job.get("estimate_complete_runs", 0),
                     **blocker_fields(job),
-                    queue_wait_ms=int((time.time() - job["enqueued"]) * 1000),
+                    queue_wait_ms=(int(max(0, time.monotonic() - job["enqueued_monotonic"]) * 1000)
+                                   if "enqueued_monotonic" in job else None),
                 ),
             )
             os.write(write_fd, b"1")
@@ -1305,9 +1328,15 @@ def main():
             agent = sys.argv[2] if len(sys.argv) > 2 else "codex"
             if agent not in {"codex", "claude"}:
                 raise ValueError("unsupported agent")
-            result = hook_response(
-                json.load(sys.stdin), str(ROOT / "bin/memcap"), agent
-            )
+            payload = json.load(sys.stdin)
+            started_hook = time.monotonic()
+            result = hook_response(payload, str(ROOT / "bin/memcap"), agent)
+            from analytics_events import emit, hook_fields
+            detail = result.get("hookSpecificOutput", {})
+            updated = detail.get("updatedInput", {}).get("command", "")
+            route = "denied" if detail.get("permissionDecision") == "deny" else "guarded" if " _inspect " in updated else "managed" if " run " in updated else "native"
+            emit("route", **hook_fields(payload), agent=agent, route=route,
+                 guard_ms=(time.monotonic() - started_hook) * 1000)
         except (ValueError, TypeError, AttributeError):
             result = {
                 "hookSpecificOutput": {
@@ -1383,6 +1412,8 @@ def main():
     )
     parser.add_argument("--cwd")
     parser.add_argument("--session-key", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--analytics-operation", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--analytics-turn", default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         "--wait-forever",
         action="store_true",
@@ -1394,6 +1425,7 @@ def main():
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(sys.argv[2:])
     scheduler.classification_code = args.classification_code
+    scheduler.analytics_metadata = {k: v for k, v in dict(operation=args.analytics_operation, turn=args.analytics_turn).items() if v}
     argv = args.command[1:] if args.command[:1] == ["--"] else args.command
     if args.shell_command is not None:
         if not (directory.parent / "paused").is_file() and polling_loop(

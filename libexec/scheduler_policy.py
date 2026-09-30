@@ -111,13 +111,21 @@ def light_words(words: list[str], glob_checked=False) -> bool:
     if name == "aws":
         args = words[1:]
         while args and args[0].startswith("--"):
-            if args[0] in {"--no-cli-pager", "--no-cli-auto-prompt"}:
+            flag, equals, value = args[0].partition("=")
+            if not equals and flag in {"--no-cli-pager", "--no-cli-auto-prompt", "--no-paginate"}:
                 args = args[1:]
-            elif (
-                args[0] in {"--profile", "--region", "--output", "--query"}
-                and len(args) > 1
-            ):
-                args = args[2:]
+            elif flag in {"--profile", "--region", "--output", "--query",
+                          "--cli-connect-timeout", "--cli-read-timeout"}:
+                if equals:
+                    args = args[1:]
+                elif len(args) > 1:
+                    value, args = args[1], args[2:]
+                else:
+                    return False
+                if not value or value.startswith("-"):
+                    return False
+                if flag in {"--cli-connect-timeout", "--cli-read-timeout"} and not re.fullmatch(r"[0-9]+", value):
+                    return False
             else:
                 return False
         if args[:2] == ["sso", "login"]:
@@ -156,6 +164,9 @@ def light_words(words: list[str], glob_checked=False) -> bool:
                     "list-commands",
                     "get-parameter",
                     "get-parameters",
+                    "get-parameters-by-path",
+                    "get-parameter-history",
+                    "describe-parameters",
                 }
                 or args[1:3] == ["wait", "command-executed"]
             )
@@ -304,6 +315,10 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         if words[1] == "_inspect":
             # This runtime guard either execs proven inspection or enters the queue.
             return True
+        if words[1] == "analytics":
+            # Read-only reports and explicit installation are control operations.
+            # Benchmarks and a foreground collector still use workload admission.
+            return len(words) >= 3 and words[2] in {"today", "status", "doctor", "builds", "trends", "explain", "compare", "html", "work", "enable", "disable"}
         if words[1] == "report":
             # Reporting has its own fixed-vocabulary parser and consent gate.
             # Even usage errors must return without reserving a workload slot.
@@ -1106,6 +1121,10 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
             "--session-key",
             session_key,
         ]
+    for source, flag in (("tool_use_id", "--analytics-operation"), ("prompt_id", "--analytics-turn")):
+        value = payload.get(source)
+        if isinstance(value, str) and 0 < len(value) <= 256:
+            args += [flag, value]
     args += ["--shell-command", command]
     updated = dict(original)
     if agent == "claude" and not guarded:
