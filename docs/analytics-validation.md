@@ -1,5 +1,16 @@
 # Analytics validation, September 29–30, 2026
 
+## Release CI correction
+
+The first release CI runs failed the collector heartbeat deadline. A diagnostic
+stack trace located startup in `HTTPServer.server_bind` → `socket.getfqdn`:
+reverse DNS stalled despite the receiver binding only numeric loopback. The
+receiver now binds through `TCPServer` and uses its numeric address directly.
+A negative control makes any DNS lookup fail; it failed before the correction
+and passes afterward, alongside authenticated OTLP delivery and collector checks.
+The eight-second readiness deadline remains unchanged. Publication CI results
+are recorded on PR #268; the earlier evidence below describes pre-release runs.
+
 This work adds local analytics and retains the previously installed SSM inspection
 improvement. It does not change enforcement thresholds, resume the owner's pause,
 or widen process eligibility. Every enforcement signal still goes through the

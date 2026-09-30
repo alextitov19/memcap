@@ -111,6 +111,14 @@ def decode_logs(body):
 
 
 def server(port, token, inbox):
+    class LoopbackServer(HTTPServer):
+        def server_bind(self):
+            # HTTPServer resolves its name through getfqdn(), which can block
+            # collector startup on DNS. This endpoint is numeric loopback only.
+            from socketserver import TCPServer
+            TCPServer.server_bind(self)
+            self.server_name, self.server_port = self.server_address[:2]
+
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
             super().setup()
@@ -149,7 +157,7 @@ def server(port, token, inbox):
             self.end_headers()
             self.wfile.write(b"{}")
 
-    http = HTTPServer(("127.0.0.1", port), Handler)
+    http = LoopbackServer(("127.0.0.1", port), Handler)
     http.timeout = .5
     thread = threading.Thread(target=http.serve_forever, kwargs={"poll_interval": .5}, daemon=True)
     thread.start()

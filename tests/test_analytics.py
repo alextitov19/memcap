@@ -288,7 +288,8 @@ class AnalyticsTests(unittest.TestCase):
     def test_otlp_http_authentication_and_documented_wire_format(self):
         from analytics_otlp import server
         inbox = queue.Queue(maxsize=1)
-        http, thread = server(0, "private-token", inbox)
+        with patch("socket.getfqdn", side_effect=AssertionError("loopback startup must not query DNS")):
+            http, thread = server(0, "private-token", inbox)
         def request(headers):
             connection = HTTPConnection("127.0.0.1", http.server_port, timeout=3)
             try:
