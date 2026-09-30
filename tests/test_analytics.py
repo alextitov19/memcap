@@ -323,7 +323,22 @@ class AnalyticsTests(unittest.TestCase):
         env = {**os.environ, "MEMCAP_ROOT": str(repo), "MEMCAP_STATE_HOME": str(state),
                "MEMCAP_CONFIG_HOME": str(Path(self.temp.name) / "config"),
                "MC_DRY_RUN": "1", "HOME": self.temp.name}
-        code = "import sys; sys.path.insert(0,sys.argv[1]); import analytics_collector as c; c.host_sample=lambda d,p: ({'pressure':2,'available_kb':123}, {}); c.collect(__import__('pathlib').Path(sys.argv[2]),0)"
+        code = """
+import faulthandler
+import sys
+import traceback
+faulthandler.dump_traceback_later(7)
+sys.path.insert(0, sys.argv[1])
+import analytics_collector as c
+c.host_sample = lambda d, p: ({'pressure': 2, 'available_kb': 123}, {})
+def diagnostic(frame, event, arg):
+    if event == 'exception' and frame.f_code.co_filename == c.__file__:
+        if isinstance(arg[1], (c.sqlite3.Error, OSError)) and not isinstance(arg[1], BlockingIOError):
+            traceback.print_exception(*arg)
+    return diagnostic
+sys.settrace(diagnostic)
+c.collect(__import__('pathlib').Path(sys.argv[2]), 0)
+"""
         child = subprocess.Popen([sys.executable, "-c", code, str(repo / "libexec"), str(root)], env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
@@ -332,7 +347,10 @@ class AnalyticsTests(unittest.TestCase):
                 if child.poll() is not None:
                     self.fail(child.communicate()[1].decode())
                 time.sleep(.05)
-            self.assertTrue((root / "heartbeat.json").exists())
+            if not (root / "heartbeat.json").exists():
+                child.terminate()
+                _, errors = child.communicate(timeout=8)
+                self.fail("collector heartbeat deadline expired:\n" + errors.decode())
             payload = dict(hook_event_name="PreToolUse", session_id="private", tool_use_id="call",
                            cwd=self.temp.name, tool_name="Bash", tool_input={"command": "cat SECRET"})
             result = subprocess.run([str(repo / "bin/memcap"), "feedback"], input=json.dumps(payload),
