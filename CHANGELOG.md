@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.20.0 — 2026-09-30
+
+- Add opt-in, local performance analytics with bounded SQLite retention, private
+  numeric events, build/policy comparisons and standalone HTML reports. Track
+  queue exposure, job outcomes, memory pressure, reservation slack, hook overhead
+  and collector cost; retain unknown coverage rather than inventing causality.
+- Add an independent analytics service and authenticated loopback Claude OTLP
+  receiver. Existing sessions gain hook observations; native Claude API/token
+  telemetry starts in newly launched processes after explicit setup. Codex API
+  and token usage remain unknown. No transcript scraping or public analytics upload.
+- Add bounded, isolated paired benchmarks and explicit work outcome markers.
+  Comparisons are observational unless supported by matched benchmark evidence.
+- Keep validated option-prefixed reads, searches, status calls, SSM parameter
+  reads and remote controls outside workload admission. Unknown execution remains
+  managed. Preserve shell output, exit status and single execution.
+- Bind guarded session waits to the calling scope and resolve the installed
+  executable even when Homebrew is absent from PATH. Preserve other sessions'
+  leases and all existing enforcement protections.
+
+See [analytics](docs/analytics.md), [validation](docs/analytics-validation.md) and
+[issue evidence and remaining unknowns](docs/issues-259-266.md).
+
 ## v0.19.0 — 2026-09-29
 
 - Recover observation of abandoned queue groups from the regular watchdog. Keep

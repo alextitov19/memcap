@@ -157,6 +157,12 @@ sample_fixture() {
   assert_contains "$output" 'OK'
 }
 
+@test "QUEUE: option-prefixed inspection and guarded session waits" {
+  run python3 "$MEMCAP_ROOT/tests/test_issue_259_266.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}
+
 @test "QUEUE: adaptive admission, shared sampling and learned demand contracts" {
   for suite in admission scheduler_metrics workload_estimates adaptive_scheduler; do
     run python3 "$MEMCAP_ROOT/tests/test_${suite}.py"

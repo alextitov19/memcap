@@ -732,6 +732,10 @@ def main():
     action = sys.argv[1]
     if action == "event":
         payload = json.load(sys.stdin)
+        from analytics_events import hook, emit, hook_fields
+        hook(payload)
+        if payload.get("hook_event_name") == "PreToolUse" and (root / "paused").is_file():
+            emit("route", **hook_fields(payload), route="paused")
         table = process_table()
         gc.event(payload, str(os.getpid()), table, time.time())
         if payload.get("hook_event_name") == "Stop":
@@ -739,10 +743,14 @@ def main():
                 str(os.getpid()), table, identity(payload)
             )
             if response:
+                emit("stop_wait", **hook_fields(payload), blocked=1,
+                     feedback_bytes=len(json.dumps(response).encode()))
                 print(json.dumps(response))
         return 0
     if action == "wait":
         payload = json.load(sys.stdin)
+        from analytics_events import emit, hook_fields
+        wait_began = time.monotonic()
         if payload.get("hook_event_name") == "Stop":
             # The shell invokes wait only after event observed pending work.
             # It may have completed between interpreters; still request its result.
@@ -750,6 +758,8 @@ def main():
                 gc, str(os.getpid()), identity(payload)
             ) or dict(COMPLETED_GUIDANCE)
             if response:
+                emit("stop_wait", **hook_fields(payload), duration_ms=(time.monotonic() - wait_began) * 1000,
+                     feedback_bytes=len(json.dumps(response).encode()))
                 print(json.dumps(response))
         return 0
     if action == "status":

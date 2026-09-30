@@ -170,7 +170,9 @@ printf '%s\\n' "$VALUE"
             env = {**os.environ, "MEMCAP_CONFIG_HOME": tmp+"/config", "MEMCAP_STATE_HOME": tmp+"/state", "MC_DRY_RUN": "1", "MEMCAP_ROOT": str(root)}
             for command in (
                 'for f in *.txt; do echo "== $f"; rg match "$f"; done',
-                'rg -l match . --glob "*.txt" | while read f; do rg -q absent "$f" || echo "missing: $f"; done',
+                # rg's parallel traversal has no stable output order by default;
+                # compare exact native/guarded output only with an explicit order.
+                'rg -l --sort path match . --glob "*.txt" | while read f; do rg -q absent "$f" || echo "missing: $f"; done',
                 'for n in 1 2; do sed -n "$((n+0))p" one.txt; done',
             ):
                 guarded = guarded_shell(command, str(root/"bin/memcap"), "fixture")

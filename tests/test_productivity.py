@@ -16,6 +16,66 @@ from scheduler_policy import classify_shell, hook_response
 
 
 class ProductivityTests(unittest.TestCase):
+    def test_parameter_store_reads_stay_native_with_global_options(self):
+        for command in (
+            "aws ssm get-parameters-by-path --path /fixture --recursive --with-decryption",
+            "aws ssm get-parameter-history --name /fixture --with-decryption",
+            "aws ssm describe-parameters --max-items 10",
+            "aws --profile=fixture --region=us-east-1 ssm get-parameter --name /fixture",
+            "aws --no-cli-pager --no-cli-auto-prompt --output=json ssm get-parameters-by-path --path /fixture",
+            "aws --no-paginate ssm get-parameters-by-path --path /fixture --query 'Parameters[*].[Name,Value]'",
+            "aws --cli-connect-timeout 10 --cli-read-timeout=30 ssm get-parameters --names /fixture",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(classify_shell(command)[0], "light")
+                for agent, name, field in (
+                    ("claude", "Bash", "command"),
+                    ("codex", "exec_command", "cmd"),
+                ):
+                    self.assertEqual(hook_response({
+                        "hook_event_name": "PreToolUse", "tool_name": name,
+                        "tool_input": {field: command},
+                    }, "/opt/homebrew/opt/memcap/bin/memcap", agent), {})
+
+    def test_parameter_reads_do_not_hide_local_execution(self):
+        from inspection import guarded_shell
+        for command in (
+            "aws ssm get-parameters-by-path --path /fixture; npm test",
+            'aws ssm get-parameters-by-path --path "$(npm test)"',
+            "aws --profile=$(npm test) ssm get-parameter --name /fixture",
+            "aws --unknown=fixture ssm get-parameter --name /fixture",
+            "aws --cli-read-timeout=garbage ssm get-parameter --name /fixture",
+            "aws ssm start-session --target fixture",
+            "aws s3 sync s3://fixture .",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(classify_shell(command)[0], "job")
+                self.assertIsNone(guarded_shell(command, "/opt/memcap", "fixture"))
+
+    def test_guarded_parameter_read_executes_once_without_reservation(self):
+        from inspection import guarded_shell
+        root = Path(__file__).resolve().parents[1]
+        command = '''PARAM_ROOT=/fixture
+aws --profile=fixture ssm get-parameters-by-path --path "$PARAM_ROOT" --query 'Parameters[*].Value' --output text
+'''
+        guarded = guarded_shell(command, str(root / "bin/memcap"), "fixture")
+        self.assertIsNotNone(guarded)
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            fake = directory / "aws"
+            fake.write_text('#!/bin/sh\necho called >> "$CALLS"\nprintf "fixture-value\\n"\nexit 7\n')
+            fake.chmod(0o700)
+            env = {**os.environ, "PATH": tmp + os.pathsep + os.environ["PATH"],
+                   "CALLS": tmp + "/calls", "MEMCAP_ROOT": str(root),
+                   "MEMCAP_CONFIG_HOME": tmp + "/config",
+                   "MEMCAP_STATE_HOME": tmp + "/state", "MC_DRY_RUN": "1"}
+            actual = subprocess.run(["/bin/bash", "-c", guarded], env=env,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual((actual.returncode, actual.stdout, actual.stderr),
+                             (7, "fixture-value\n", ""))
+            self.assertEqual((directory / "calls").read_text(), "called\n")
+            self.assertFalse((directory / "state/memcap/queue/jobs.json").exists())
+
     def test_light_wrappers_never_enter_workload_queue(self):
         commands = [
             "LC_ALL=C rg -n vendor server/",
