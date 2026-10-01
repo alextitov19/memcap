@@ -359,7 +359,7 @@ class Scheduler:
                     job["estimate_source"] = 3 if exact else 4
                     job["estimate_complete_runs"] = row.get("complete_runs", 0)
 
-    def allocation(self, jobs):
+    def allocation(self, jobs, sample=None):
         if self.policy == "strict":
             return self.workers
         contenders = max(1, len({self.session_bucket(j) for j in jobs}))
@@ -369,7 +369,20 @@ class Scheduler:
             for j in jobs
             if j["status"] == "running" and not j["resource"]
         )
-        return max(1, min(self.workers, pool // contenders, pool - occupied))
+        workers = max(1, min(self.workers, pool // contenders, pool - occupied))
+        if sample and not sample.get('fault') and not sample.get('busy'):
+            available = sample.get('available_kb')
+            if type(available) in (int, float) and math.isfinite(available) and available >= 0:
+                # CPU capacity is not RAM capacity. Allocate at most one worker
+                # per GiB of startup headroom; one is the execution minimum,
+                # not permission to admit. The full admission checks still run.
+                spare = available - min(self.headroom_kb, GIB // 2)
+                for job in jobs:
+                    if job['status'] == 'running':
+                        measured = job.get('measured_kb', 0) if job.get('measurement_complete') else 0
+                        spare -= max(0, job.get('reservation_kb', job.get('memory_kb', self.memory_kb)) - measured)
+                workers = min(workers, max(1, int(spare // GIB)))
+        return workers
 
     def demand(self, argv, cwd, workers, data):
         # Executable identity plus dependency manifests invalidate estimates on
@@ -407,6 +420,8 @@ class Scheduler:
                 executable=executable,
                 version=version,
                 workers=workers,
+                worker_control_version=1,
+                node_worker_limit=int(worker_environment(dict(os.environ), workers)['MEMCAP_NODE_WORKERS']),
                 manifests=manifests,
                 cache_state={
                     name: (cwd / name).exists()
@@ -824,13 +839,17 @@ class Scheduler:
                     if not (self.directory.parent / "paused").exists()
                     else {}
                 )
-                with self.locked() as data:
-                    self.refresh(data, processes())
+                with self.observed_registry(retry=True, pending=True,
+                                            deadline=None if wait is None else began + wait) as (data, table):
+                    if data is None:
+                        waited = True
+                        continue  # Top-of-loop owns deadline/cancellation results.
+                    self.refresh(data, table)
                     self.observe(data, sample)
                     job = next(j for j in data["jobs"] if j["id"] == ident)
                     # Revalidate learned priority for the worker allocation that
                     # will actually launch, inside the same admission lock.
-                    workers = min(job.get("workers", self.workers), self.allocation(data["jobs"]))
+                    workers = min(job.get("workers", self.workers), self.allocation(data["jobs"], sample))
                     if job.get("estimate_key") and (
                         workers != job.get("workers") or
                         (self.lane(job) == "small" and not sample.get("fault") and not sample.get("busy"))
@@ -842,6 +861,7 @@ class Scheduler:
                                    estimate_complete_runs=exact.get("complete_runs", 0),
                                    small_candidate=self.small_candidate if job.get('demand_version') != 1 else False, workers=workers,
                                    memory_kb=max(job["memory_kb"], updated_memory))
+                    job['workers'] = workers
                     memory = job["memory_kb"]
                     active_resource = next(
                         (
@@ -1113,25 +1133,38 @@ class Scheduler:
                                                       queue_wait_ms=int((time.monotonic() - began) * 1000),
                                                       signal=self.cancelled,
                                                       outcome="cancelled" if self.cancelled else "timeout" if wait is not None and time.monotonic() - began >= wait else "failed"))
-                # Keep running groups when interrupted or the supervisor fails;
-                # another admission must not mistake lost supervision for free RAM.
-                with self.observed_registry(retry=child is not None) as (data, table):
-                    self.refresh(data, table)
-                    data["jobs"] = [
-                        j
-                        for j in data["jobs"]
-                        if j["id"] != ident
-                        or (j["status"] == "running" and j["members"])
-                    ]
-                    self.save(data)
+                if child is None:
+                    # This supervisor never launched a group. Retire only its
+                    # own unchanged waiting entry; a failed ps query must not
+                    # turn a deadline/cancellation into another probe failure.
+                    try:
+                        with self.locked() as data:
+                            data['jobs'] = [j for j in data['jobs'] if not (
+                                j['id'] == ident and j.get('owner') == os.getpid()
+                                and j.get('status') == 'waiting' and not j.get('group') and not j.get('members'))]
+                            self.save(data)
+                    except QueueLockBusy:
+                        print('memcap: waiter cleanup deferred; registry is busy.', file=sys.stderr)
+                else:
+                    # An already-started group keeps its reservation until fresh
+                    # identities establish that it exited.
+                    with self.observed_registry(retry=True) as (data, table):
+                        self.refresh(data, table)
+                        data['jobs'] = [j for j in data['jobs'] if j['id'] != ident
+                                        or (j['status'] == 'running' and j['members'])]
+                        self.save(data)
             for sig, handler in old_handlers.items():
                 signal.signal(sig, handler)
 
     @contextmanager
-    def observed_registry(self, retry=False):
+    def observed_registry(self, retry=False, pending=False, deadline=None):
         """Pair a locked registry with fresh identities; release the lock to retry."""
         last_notice = 0.0
+        failed = False
         while True:
+            if pending and failed and (self.cancelled or (deadline is not None and time.monotonic() >= deadline)):
+                yield None, None
+                return
             with ExitStack() as stack:
                 try:
                     data = stack.enter_context(self.locked())
@@ -1147,11 +1180,16 @@ class Scheduler:
                     else:
                         # Yield outside the acquisition error handlers: errors
                         # in the caller must propagate, never repeat its body.
+                        if pending and failed and (self.cancelled or (deadline is not None and time.monotonic() >= deadline)):
+                            yield None, None
+                            return
                         yield data, table
                         return
+            failed = True
             if time.monotonic() - last_notice >= 60:
                 print(
-                    "memcap: running job registry or identities unavailable; retaining supervision and reservations until a fresh query succeeds.",
+                    'memcap: ' + ('pending' if pending else 'running') +
+                    " job registry or identities unavailable; retaining supervision and reservations until a fresh query succeeds.",
                     file=sys.stderr,
                 )
                 last_notice = time.monotonic()
@@ -1239,6 +1277,8 @@ class Scheduler:
                     event="admitted",
                     job_ref=int(job["id"][:13], 16),
                     workers=workers,
+                    worker_control_version=int(workers > 0),
+                    node_worker_limit=int(env.get('MEMCAP_NODE_WORKERS', workers)) if workers > 0 else 0,
                     request_kb=job["memory_kb"],
                     classification_code=job.get("classification_code", 0),
                     estimate_source=job.get("estimate_source", 0),

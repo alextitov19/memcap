@@ -249,6 +249,12 @@ sample_fixture() {
   assert_contains "$output" 'OK'
 }
 
+@test "QUEUE: nested Node test runners retain bounded worker controls" {
+  run python3 "$MEMCAP_ROOT/tests/test_nested_workers.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}
+
 @test "QUEUE: memory demand and native observation preserve binary admission" {
   for suite in demand_policy native_observer; do
     run python3 "$MEMCAP_ROOT/tests/test_${suite}.py"

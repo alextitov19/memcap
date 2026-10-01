@@ -15,6 +15,7 @@ from functools import lru_cache
 BLOCKERS = ("unknown", "budget", "headroom", "slots", "pressure_or_measurement", "measurement", "fairness", "startup", "stabilizing", "paging", "sampling")
 EVENTS = {"sample", "queued", "admitted", "completed", "cancelled", "stalled", "reservation"}
 FIELDS = {
+    "worker_control_version", "node_worker_limit",
     "lane_code",
     "runner_version",
     "job_ref",

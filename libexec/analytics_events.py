@@ -40,6 +40,7 @@ ENUMS = {
 }
 IDS = {"session", "parent", "turn", "operation", "job", "project", "work", "action", "model", "agent_version", "workload", "delivery", "resource"}
 NUMBERS = {
+    "worker_control_version", "node_worker_limit",
     "classifier_version", "dependency_count", "classifier_ms",
     "lane_code",
     "wired_kb", "physical_memory_kb", "kernel_data_1024_inuse_kb", "kernel_data_shared_1024_inuse_kb",
@@ -109,7 +110,7 @@ def make_event(event, fields, key, producer, seq, *, build, policy, boot, wall=N
 def build_digest():
     digest = hashlib.sha256()
     directory = Path(__file__).parent
-    for file in sorted(list(directory.glob("*.py")) + list(directory.glob("*.sh"))):
+    for file in sorted(list(directory.glob("*.py")) + list(directory.glob("*.sh")) + list(directory.glob("*.cjs"))):
         digest.update(file.name.encode())
         digest.update(file.read_bytes())
     dispatcher = directory.parent / "bin/memcap-real"
