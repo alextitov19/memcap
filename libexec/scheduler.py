@@ -7,10 +7,11 @@ through the existing shell choke point, never sent by this module.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import fcntl
 import hashlib
 import json
+import shlex
 import math
 import os
 import re
@@ -23,16 +24,17 @@ import time
 import uuid
 
 from admission import advance, decide
-from scheduler_metrics import append_event, shared_sample, blocker_fields
+from queue_deadlines import WAIT_SECONDS
+from scheduler_metrics import append_event, shared_sample, blocker_fields, BLOCKERS
 from workload_estimates import fingerprint, record as record_estimate
 from workload_members import footprint_members, refresh_footprint_members
+from scheduler_lanes import lane as job_lane, lane_code, candidate as small_candidate, script_index, SMALL_BURST
 
 from scheduler_policy import (
     hook_response,
     polling_loop,
     POLL_GUIDANCE,
     simple_words,
-    light_shell,
     worker_argv,
     worker_environment,
 )
@@ -47,6 +49,10 @@ EXPIRED_GUIDANCE = (
 
 
 class QueueError(Exception):
+    pass
+
+
+class QueueLockBusy(QueueError):
     pass
 
 
@@ -147,6 +153,8 @@ def pressure_allows(allowed, reader=None):
 
 
 class Scheduler:
+    lane = staticmethod(job_lane)
+
     def __init__(
         self,
         directory,
@@ -203,9 +211,7 @@ class Scheduler:
                     break
                 except BlockingIOError:
                     if time.monotonic() > deadline:
-                        raise QueueError(
-                            "queue lock unavailable; command was not admitted"
-                        )
+                        raise QueueLockBusy("queue lock unavailable")
                     time.sleep(0.05)
             path = self.directory / "jobs.json"
             try:
@@ -316,6 +322,7 @@ class Scheduler:
                     reservation_kb=job["reservation_kb"], measured_kb=measured,
                     measurement_complete=int(complete),
                     reservation_source=job.get("reservation_source", 0),
+                    lane_code=lane_code(job),
                 ))
             if not job["members"]:
                 # The foreground group finished while attributed work remains.
@@ -406,21 +413,26 @@ class Scheduler:
                     for name in ("node_modules", "target", ".build", "build")
                 },
         )
-        key = fingerprint(description, bytes.fromhex(secret))
         # A timestamp/tag argument must not erase evidence from the same script.
         # Exact profiles still win. The fallback only raises first-use estimates
         # and is isolated by script bytes, cwd, executable, workers and manifests.
         self.estimate_family_key = ""
-        script_index = 1 if Path(words[0]).name in {"bash", "sh", "zsh", "python", "python3"} else 0
-        if len(words) > script_index and not words[script_index].startswith("-"):
-            script = cwd / words[script_index]
+        self.small_candidate = small_candidate(words)
+        index = script_index(words)
+        if len(words) > index and not words[index].startswith("-"):
+            script = cwd / words[index]
             try:
                 if script.suffix in {".sh", ".py"} and script.is_file() and script.stat().st_size <= 1048576:
+                    description.update(script=str(script.resolve()), script_sha256=hashlib.sha256(script.read_bytes()).hexdigest())
                     self.estimate_family_key = fingerprint(
-                        {**description, "argv": words[:script_index+1], "script": str(script.resolve()),
-                         "script_sha256": hashlib.sha256(script.read_bytes()).hexdigest()}, bytes.fromhex(secret))
+                        {**description, "argv": words[:index+1]}, bytes.fromhex(secret))
+                elif index:
+                    self.small_candidate = False
             except OSError:
-                pass
+                self.small_candidate = False
+        elif index and (len(words) < 2 or words[1] != "-c"):
+            self.small_candidate = False
+        key = fingerprint(description, bytes.fromhex(secret))
         # Opaque commands retain the configured prior. Recognized small tool
         # families get a smaller startup allowance, never a zero-cost bypass.
         tool = Path(words[0]).name
@@ -487,6 +499,16 @@ class Scheduler:
         uncertain = job.get("orphaned") and not job.get("recovery_active")
         if not adaptive or job.get("elastic") is not True or uncertain:
             reserve = max(job["memory_kb"], reserve)
+        admission_peak = job.get("admission_peak_kb")
+        if adaptive and job.get("elastic") is True and type(admission_peak) is int and admission_peak >= 0:
+            # Once a complete window retires an old peak, a sampling gap must
+            # retain the current allowance, not resurrect the lifetime learning
+            # peak. Carry forward partial growth and an uncertain owner's floor
+            # until a new complete window can safely reduce them.
+            admission_peak = max(admission_peak, measured, (reserve * 4 + 4) // 5)
+            job["admission_peak_kb"] = admission_peak
+        else:
+            admission_peak = None
         # Automatic adaptive allowances may already have shrunk from the startup
         # estimate. A busy/faulty/incomplete observation retains that established
         # allowance; it must not silently reinstate the original request. Fresh
@@ -500,6 +522,8 @@ class Scheduler:
         ):
             peak = max(measured, job.get("observed_peak_kb", 0))
             job["observed_peak_kb"] = peak
+            if admission_peak is not None:
+                peak = max(measured, admission_peak)
             stamp = sample.get("monotonic", 0)
             if adaptive and 0 <= time.monotonic() - stamp <= 2:
                 history = job.get("reservation_window", [])
@@ -514,6 +538,7 @@ class Scheduler:
                 job["reservation_window"] = history
                 if stamp - job.get("reservation_window_since", stamp) > 60:
                     peak = max(row[1] for row in history)
+                    job["admission_peak_kb"] = peak
                 job["reservation_source"] = 2  # complete adaptive window
             else:
                 job["reservation_source"] = 1  # lifetime peak / strict policy
@@ -537,7 +562,7 @@ class Scheduler:
             job["reservation_source"] = 3  # explicit or incomplete: retain
         return max(reserve, measured)
 
-    def admissible(self, jobs, memory, resource, sample):
+    def admissible(self, jobs, memory, resource, sample, lane="heavy"):
         for job in jobs:
             if job["status"] == "running":
                 measured = sum(
@@ -583,7 +608,7 @@ class Scheduler:
         # extra turns or extra worker shares by spawning more subagents.
         return job.get("session_key", "").split("/", 1)[0] or "project:" + job.get("cwd", "")
 
-    def next_waiter(self, jobs, resource, sample, turns=None, now=None):
+    def next_waiter(self, jobs, resource, sample, turns=None, now=None, lane_streak=0):
         # One rotation across finite jobs and resources, shared under the queue lock.
         turns = turns or {}
         now = time.time() if now is None else now
@@ -591,19 +616,52 @@ class Scheduler:
         waiting.sort(
             key=lambda j: (turns.get(self.session_bucket(j), 0), j.get("enqueued", now))
         )
+        fitting = {}
         for job in waiting:
+            fitting[job["id"]] = self.admissible(jobs, job["memory_kb"], job["resource"], sample, lane=self.lane(job))[0]
+        heavy = [j for j in waiting if self.lane(j) == "heavy"]
+        small = [j for j in waiting if self.lane(j) == "small"]
+        for job in heavy:
             # Give a large, aging request a chance to accumulate capacity. This
             # gates new admissions only; running jobs and reservations stay intact.
             age = now - job.get("enqueued", now)
             if (
                 age >= 60
+                and not fitting[job["id"]]
                 and (self.policy == "strict" or age % 30 < 6)
                 and any(j["status"] == "running" and not j["resource"] for j in jobs)
-            ) or self.admissible(jobs, job["memory_kb"], job["resource"], sample)[0]:
+            ):
+                return job["id"]
+        if type(lane_streak) is not int:
+            lane_streak = 0
+        ordered = heavy + small if lane_streak >= SMALL_BURST else small + heavy
+        if any(j.get('lane_version') != 1 for j in waiting):
+            ordered = waiting  # Pre-lane supervisors use the original session order.
+        # Lane preference breaks ties within a session rotation. It must not
+        # give a busy project repeated turns ahead of fitting peers. Count
+        # finite work by parent session so spawning subagents cannot buy turns.
+        active = {}
+        for job in jobs:
+            if job['status'] == 'running' and not job['resource']:
+                bucket = self.session_bucket(job)
+                active[bucket] = active.get(bucket, 0) + 1
+        # Already-waiting supervisors retain loaded code after an upgrade.
+        # Two selectors disagreeing can each wait for the other indefinitely.
+        # Keep their lane ordering until those legacy waiters have launched;
+        # running legacy jobs do not prevent the new rotation taking effect.
+        if all(j.get('fairness_version') == 2 for j in waiting):
+            ordered.sort(key=lambda job: (
+                active.get(self.session_bucket(job), 0),
+                turns.get(self.session_bucket(job), 0),
+            ))
+        for job in ordered:
+            if fitting[job["id"]]:
                 return job["id"]
         return None
 
     def record_turn(self, data, job):
+        streak = data.get("small_streak", 0)
+        data["small_streak"] = min(SMALL_BURST, max(0, streak if type(streak) is int else 0) + 1) if self.lane(job) == "small" else 0
         turns = data.setdefault("session_turns", {})
         turns[self.session_bucket(job)] = max(turns.values(), default=0) + 1
         present = {self.session_bucket(j) for j in data["jobs"]}
@@ -634,7 +692,7 @@ class Scheduler:
         return False
 
     def run(
-        self, argv, cwd=None, resource="", memory_gb=None, wait=1800, session_key=""
+        self, argv, cwd=None, resource="", memory_gb=None, wait=WAIT_SECONDS, session_key=""
     ):
         cwd = Path(cwd or os.getcwd()).resolve(strict=True)
         from analytics_events import producer, family
@@ -727,6 +785,10 @@ class Scheduler:
                         "estimate_family_key": getattr(self, "estimate_family_key", "") if estimate_key else "",
                         "estimate_source": 1 if memory_gb is not None else (3 if estimate_row else 4 if family_row else 2),
                         "estimate_complete_runs": estimate_row.get("complete_runs", 0),
+                        "lane_version": 1,
+                        "demand_version": 1,
+                        "fairness_version": 2,
+                        "small_candidate": False,  # Old selectors must also see new managed work as heavy.
                         "classification_code": getattr(self, "classification_code", 0),
                         "scheduler_version": 2,
                         "elastic": memory_gb is None,
@@ -740,7 +802,11 @@ class Scheduler:
                 self.save(data)
                 registered = True
             append_event(self.directory, dict(event="queued", job_ref=int(ident[:13], 16),
-                                              request_kb=memory, workers=workers))
+                                              request_kb=memory, workers=workers,
+                                              lane_code=lane_code(data["jobs"][-1])))
+            from command_trace import job as trace_job
+            trace_job(self.directory, 'queued', job=ident, argv=argv, cwd=str(cwd),
+                      session=session_key, request_kb=memory, workers=workers)
             last_notice = 0.0
             waited = False
             while child is None:
@@ -762,6 +828,20 @@ class Scheduler:
                     self.refresh(data, processes())
                     self.observe(data, sample)
                     job = next(j for j in data["jobs"] if j["id"] == ident)
+                    # Revalidate learned priority for the worker allocation that
+                    # will actually launch, inside the same admission lock.
+                    workers = min(job.get("workers", self.workers), self.allocation(data["jobs"]))
+                    if job.get("estimate_key") and (
+                        workers != job.get("workers") or
+                        (self.lane(job) == "small" and not sample.get("fault") and not sample.get("busy"))
+                    ):
+                        key, updated_memory = self.demand(argv, cwd, workers, data)
+                        exact = data.get("estimates", {}).get(key, {})
+                        job.update(estimate_key=key, estimate_family_key=self.estimate_family_key,
+                                   estimate_source=3 if exact else 4 if data.get("estimates", {}).get(self.estimate_family_key) else 2,
+                                   estimate_complete_runs=exact.get("complete_runs", 0),
+                                   small_candidate=self.small_candidate if job.get('demand_version') != 1 else False, workers=workers,
+                                   memory_kb=max(job["memory_kb"], updated_memory))
                     memory = job["memory_kb"]
                     active_resource = next(
                         (
@@ -797,7 +877,7 @@ class Scheduler:
                                     "job reservation exceeds the entire budget; split the job"
                                 )
                             allowed, reason = self.admissible(
-                                data["jobs"], memory, resource, sample
+                                data["jobs"], memory, resource, sample, lane=self.lane(job)
                             )
                             if (
                                 allowed
@@ -806,6 +886,7 @@ class Scheduler:
                                     resource,
                                     sample,
                                     data.get("session_turns"),
+                                    lane_streak=data.get("small_streak", 0),
                                 )
                                 != ident
                             ):
@@ -844,6 +925,8 @@ class Scheduler:
                         )
                     if allowed:
                         child = self.launch(argv, cwd, job, data)
+                        trace_job(self.directory, 'admitted', job=ident,
+                                  wait_seconds=time.monotonic() - began)
                         if waited:
                             print(
                                 f"memcap: admitted {ident[:8]}; command started. "
@@ -861,6 +944,7 @@ class Scheduler:
                                 "combined budget reserved or in use": "budget",
                                 "preserving host memory headroom": "headroom",
                                 "all finite-job slots occupied": "slots",
+                                "small-job slots occupied": "slots",
                                 "host pressure or unreliable memory measurement": "pressure_or_measurement",
                                 "host pressure or unreliable pressure measurement": "pressure_or_measurement",
                                 "invalid memory measurement": "measurement",
@@ -897,6 +981,10 @@ class Scheduler:
                             )
                             return 75
                         if time.monotonic() - last_notice > 60:
+                            trace_job(self.directory, 'waiting', job=ident,
+                                      argv=argv, cwd=str(cwd),
+                                      wait_seconds=time.monotonic() - began,
+                                      admission=job['admission'])
                             details = ""
                             if job["admission"]["reason"] == "headroom":
                                 d = job["admission"]
@@ -912,6 +1000,7 @@ class Scheduler:
                                     event="stalled",
                                     job_ref=int(ident[:13], 16),
                                     classification_code=job.get("classification_code", 0),
+                                    lane_code=lane_code(job),
                                     queue_wait_ms=int(
                                         (time.monotonic() - began) * 1000
                                     ),
@@ -924,7 +1013,7 @@ class Scheduler:
                                 ),
                             )
                             print(
-                                f"memcap: queued {ident[:8]}: {reason}.{details} Command has not started; "
+                                f"memcap: queued {ident[:8]} ({self.lane(job)} lane): {reason}.{details} Command has not started; "
                                 f"await native completion notifications without polling when supported; otherwise poll this existing task once per minute (TaskOutput block=true timeout=60000 if available; otherwise memcap wait {ident[:8]} --timeout 60). "
                                 "If Stop has blocked ending the turn, use the blocking wait instead of finishing for a notification. "
                                 "Continue independent work; do not submit duplicates or bypass memcap.",
@@ -948,6 +1037,9 @@ class Scheduler:
                     job["cancel"] = bool(self.cancelled)
                     members = dict(job["members"])
                     if result is not None and not members:
+                        trace_job(self.directory, 'completed', job=ident,
+                                  exit_code=result if result >= 0 else 128 - result,
+                                  signal=-result if result < 0 else 0)
                         key = job.get("estimate_key")
                         learning_complete = result == 0 and job.get("sample_count", 0) >= 2 and not job.get("learning_incomplete")
                         if (
@@ -977,6 +1069,7 @@ class Scheduler:
                                 runtime_ms=int(max(0, time.monotonic() - job.get("start_monotonic", time.monotonic())) * 1000),
                                 peak_kb=job.get("observed_peak_kb", 0),
                                 learning_complete=int(learning_complete),
+                                lane_code=job.get("admission_lane_code", lane_code(job)),
                                 **blocker_fields(job),
                             ),
                         )
@@ -1011,6 +1104,11 @@ class Scheduler:
         finally:
             if registered:
                 if child is None and not analytics_claimed:
+                    from command_trace import job as trace_job
+                    trace_job(self.directory, 'not-started', job=ident,
+                              wait_seconds=time.monotonic() - began,
+                              outcome='cancelled' if self.cancelled else 'timeout'
+                              if wait is not None and time.monotonic() - began >= wait else 'failed')
                     append_event(self.directory, dict(event="cancelled", job_ref=int(ident[:13], 16),
                                                       queue_wait_ms=int((time.monotonic() - began) * 1000),
                                                       signal=self.cancelled,
@@ -1034,18 +1132,26 @@ class Scheduler:
         """Pair a locked registry with fresh identities; release the lock to retry."""
         last_notice = 0.0
         while True:
-            with self.locked() as data:
+            with ExitStack() as stack:
                 try:
-                    table = processes()
-                except (QueueError, OSError, ValueError, subprocess.SubprocessError):
+                    data = stack.enter_context(self.locked())
+                except QueueLockBusy:
                     if not retry:
                         raise
                 else:
-                    yield data, table
-                    return
+                    try:
+                        table = processes()
+                    except (QueueError, OSError, ValueError, subprocess.SubprocessError):
+                        if not retry:
+                            raise
+                    else:
+                        # Yield outside the acquisition error handlers: errors
+                        # in the caller must propagate, never repeat its body.
+                        yield data, table
+                        return
             if time.monotonic() - last_notice >= 60:
                 print(
-                    "memcap: running job identities unavailable; retaining supervision and reservations until a fresh query succeeds.",
+                    "memcap: running job registry or identities unavailable; retaining supervision and reservations until a fresh query succeeds.",
                     file=sys.stderr,
                 )
                 last_notice = time.monotonic()
@@ -1118,6 +1224,7 @@ class Scheduler:
                 )
             job.update(
                 status="running",
+                admission_lane_code=lane_code(job),
                 started=time.time(),
                 start_monotonic=time.monotonic(),
                 group=child.pid,
@@ -1136,6 +1243,7 @@ class Scheduler:
                     classification_code=job.get("classification_code", 0),
                     estimate_source=job.get("estimate_source", 0),
                     estimate_complete_runs=job.get("estimate_complete_runs", 0),
+                    lane_code=job["admission_lane_code"],
                     **blocker_fields(job),
                     queue_wait_ms=(int(max(0, time.monotonic() - job["enqueued_monotonic"]) * 1000)
                                    if "enqueued_monotonic" in job else None),
@@ -1226,8 +1334,14 @@ class Scheduler:
                     )
                     for j in live["jobs"]
                 )
+                blockers = sorted({j.get('admission', {}).get('reason') for j in live['jobs']
+                                   if j['status'] == 'waiting'
+                                   and j.get('admission', {}).get('reason') in BLOCKERS})
+                explanation = ('Last recorded admission blocker(s): ' + ', '.join(blockers) + '. '
+                               if blockers else 'Admission blocker unavailable for this runner. ')
                 print(
-                    f"memcap: {ident} pending ({live['jobs'][0]['status']}); {running} running, {waiting} queued; oldest current phase {int(oldest)}s. "
+                    f"memcap: {ident} pending ({live['jobs'][0]['status']}); {running} running, {waiting} queued IN THIS WAIT SCOPE (not host totals); oldest current phase {int(oldest)}s. "
+                    + explanation +
                     f"Repeat memcap wait {ident} --timeout 60 only if native completion notification/blocking task polling is unavailable; no job or reservation was created. Running work has already passed admission. Read original task output for workload progress."
                 )
                 return 0
@@ -1334,7 +1448,14 @@ def main():
             from analytics_events import emit, hook_fields
             detail = result.get("hookSpecificOutput", {})
             updated = detail.get("updatedInput", {}).get("command", "")
-            route = "denied" if detail.get("permissionDecision") == "deny" else "guarded" if " _inspect " in updated else "managed" if " run " in updated else "native"
+            try:
+                wrapper = shlex.split(updated)
+            except ValueError:
+                wrapper = []
+            action_name = wrapper[1] if len(wrapper) > 1 and wrapper[0] in {'memcap', str(ROOT / 'bin/memcap')} else ''
+            route = 'denied' if detail.get('permissionDecision') == 'deny' else {'_inspect': 'guarded', 'run': 'managed'}.get(action_name, 'native')
+            from command_trace import hook as trace_hook
+            trace_hook(payload, route)
             emit("route", **hook_fields(payload), agent=agent, route=route,
                  guard_ms=(time.monotonic() - started_hook) * 1000)
         except (ValueError, TypeError, AttributeError):
@@ -1397,7 +1518,7 @@ def main():
                 measured = (f"{job['measured_kb'] / GIB:.3f} GiB ({age})"
                             if "measured_kb" in job else "unknown")
                 print(
-                    f"{job['id'][:8]}  {state:9s} {kind:8s} requested={job['memory_kb'] / GIB:g} GiB "
+                    f"{job['id'][:8]}  {state:9s} {kind:8s} lane={scheduler.lane(job)} requested={job['memory_kb'] / GIB:g} GiB "
                     f"reserved={job.get('reservation_kb', job['memory_kb']) / GIB:.3f} GiB "
                     f"measured={measured} cleanup={job.get('cleanup_blocker', 'not-observed')} "
                     f"pinned={bool(job.get('pinned'))} pid={job['group']}  {job['cwd']}"
@@ -1408,7 +1529,7 @@ def main():
     parser.add_argument("--resource", default="")
     parser.add_argument("--memory", type=float)
     parser.add_argument(
-        "--wait", type=float, default=env_number("QUEUE_WAIT_SEC", 1800)
+        "--wait", type=float, default=env_number("QUEUE_WAIT_SEC", WAIT_SECONDS)
     )
     parser.add_argument("--cwd")
     parser.add_argument("--session-key", default="", help=argparse.SUPPRESS)
@@ -1448,31 +1569,13 @@ def main():
         and args.memory is None
         and not args.resource
     ):
-        from inspection import guarded_shell
-
-        guarded = guarded_shell(
-            args.shell_command, str(ROOT / "bin/memcap"), args.session_key, args.cwd
-        )
-        if guarded and args.shell in {"/bin/bash", "/bin/zsh", "/bin/sh"}:
-            os.chdir(Path(args.cwd or os.getcwd()).resolve(strict=True))
-            os.execvpe(
-                args.shell,
-                [args.shell, "-lc" if args.login else "-c", guarded],
-                os.environ,
-            )
-    if (
-        args.session_key
-        and args.shell_command is not None
-        and args.memory is None
-        and not args.resource
-        and args.shell in {"/bin/bash", "/bin/zsh", "/bin/sh"}
-        and light_shell(args.shell_command)
-    ):
+        from demand_policy import classify
         # A cached agent wrapper may have been generated before an upgrade.
         # Recheck its original command using today's classifier before reserving.
         # Explicit user reservations/resources retain their requested policy.
-        os.chdir(Path(args.cwd or os.getcwd()).resolve(strict=True))
-        os.execvpe(argv[0], argv, os.environ)
+        if classify(args.shell_command, args.cwd).kind == 'light':
+            os.chdir(Path(args.cwd or os.getcwd()).resolve(strict=True))
+            os.execvpe(argv[0], argv, os.environ)
     return scheduler.run(
         argv,
         args.cwd,

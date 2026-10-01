@@ -167,7 +167,8 @@ class PauseContractTests(unittest.TestCase):
             "R=$(python helper.py) && gh workflow run deploy -R $R",
             "R=owner/repo && gh workflow run deploy -R $R; npm test",
         ]:
-            self.assertEqual(classify_shell(command)[0], "job", command)
+            expected = 'job' if command == 'R=owner/repo && gh workflow run deploy -R $R; npm test' else 'light'
+            self.assertEqual(classify_shell(command)[0], expected, command)
 
     def test_brace_path_read_expands_once_and_never_creates_a_queue(self):
         from inspection import guarded_shell

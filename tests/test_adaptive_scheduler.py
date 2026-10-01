@@ -118,6 +118,59 @@ class AdaptiveSchedulerTests(unittest.TestCase):
         observation["footprints"] = {"42": GIB // 4}
         self.assertEqual(q.reservation(job, observation, GIB // 4), 5 * GIB)
 
+    def retired_peak_job(self):
+        job = dict(status='running', resource='', memory_kb=GIB,
+                   members={'42': 'fixture'}, elastic=True, started=1,
+                   observed_peak_kb=6 * GIB)
+        for stamp in range(1000, 1063, 2):
+            self.observe_reservation(job, stamp)
+        self.assertEqual(job['reservation_kb'], GIB // 2)
+        self.assertEqual(job['observed_peak_kb'], 6 * GIB)
+        return job
+
+    @staticmethod
+    def observe_reservation(job, stamp, measured=GIB // 8, **fields):
+        observation = dict(monotonic=stamp, footprints={p: 0 for p in job['members']}, fault=False)
+        observation['footprints']['42'] = measured
+        observation.update(fields)
+        with patch('scheduler.time.monotonic', return_value=stamp), patch('scheduler.time.time', return_value=stamp):
+            job['reservation_kb'] = Scheduler.reservation(job, observation, measured, adaptive=True)
+
+    def test_fresh_sample_after_gap_does_not_resurrect_a_retired_peak(self):
+        job = self.retired_peak_job()
+        self.observe_reservation(job, 1070)
+        self.assertEqual(job['reservation_kb'], GIB // 2)
+        self.assertEqual(job['observed_peak_kb'], 6 * GIB, 'learning retains the lifetime peak')
+
+    def test_fault_then_fresh_sample_keeps_retired_allowance_until_real_growth(self):
+        job = self.retired_peak_job()
+        self.observe_reservation(job, 1064, fault=True, footprints={})
+        self.assertEqual(job['reservation_kb'], GIB // 2)
+        self.observe_reservation(job, 1070)
+        self.assertEqual(job['reservation_kb'], GIB // 2)
+        self.observe_reservation(job, 1072, measured=2 * GIB)
+        self.assertEqual(job['reservation_kb'], 5 * GIB // 2)
+
+    def test_partial_growth_and_uncertain_orphans_keep_their_floors_after_recovery(self):
+        for change in ('partial-growth', 'orphan'):
+            with self.subTest(change=change):
+                job = self.retired_peak_job()
+                if change == 'partial-growth':
+                    job['members']['43'] = 'child'
+                    self.observe_reservation(job, 1064, measured=2 * GIB, footprints={'42': 2 * GIB})
+                    floor = 5 * GIB // 2
+                else:
+                    job.update(orphaned=True, recovery_active=False)
+                    self.observe_reservation(job, 1064)
+                    floor = GIB
+                    job['recovery_active'] = True
+                self.observe_reservation(job, 1070)
+                self.assertGreaterEqual(job['reservation_kb'], floor)
+                self.assertLess(job['reservation_kb'], 6 * GIB)
+                for stamp in range(1072, 1133, 2):
+                    self.observe_reservation(job, stamp)
+                self.assertEqual(job['reservation_kb'], GIB // 2)
+
     def test_unknown_policy_fails_closed(self):
         with self.assertRaises(QueueError):
             Scheduler(self.root, policy="unrestricted")

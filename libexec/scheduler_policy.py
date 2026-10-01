@@ -96,6 +96,12 @@ def light_words(words: list[str], glob_checked=False) -> bool:
         ):
             return False
     name = Path(words[0]).name
+    # Cancellation cannot need admission from the queue it is trying to cancel.
+    # This is memory classification, not authority to stop another user's work.
+    # Resuming processes, groups, broadcast targets and arbitrary signals queue.
+    if name == "kill":
+        return (len(words) >= 3 and words[1] in {"-TERM", "-INT"}
+                and all(re.fullmatch(r"[1-9][0-9]{0,9}", p) for p in words[2:]))
     if name == "psql":
         from catalog_inspection import catalog_argv
         return bool(any(w in {"-X", "--no-psqlrc"} for w in words[1:]) and catalog_argv(words))
@@ -174,6 +180,11 @@ def light_words(words: list[str], glob_checked=False) -> bool:
     if name == "git":
         while len(words) > 2 and words[1] == "-C":
             words = [words[0]] + words[3:]
+        if words[1:2] == ["config"]:
+            args = words[2:]
+            return (args in (["--list"], ["--list", "--show-origin"])
+                    or (len(args) == 2 and args[0] in {"--get", "--get-all"}
+                        and bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9.-]*", args[1]))))
         if words[1:2] == ["remote"]:
             return words[2:] in ([], ["-v"], ["--verbose"])
         if words[1:2] == ["ls-remote"]:
@@ -306,6 +317,8 @@ def light_words(words: list[str], glob_checked=False) -> bool:
             and float(words[1]) <= 60
         )
     if name == "memcap" and len(words) >= 2:
+        if words[1] == 'trace':
+            return True  # Fixed control parser; even usage errors need no workload slot.
         if words[1] == "cancel":
             # Unsupported public command: the dispatcher returns usage. Never
             # reserve memory merely to discover that native cancellation is needed.
@@ -725,29 +738,13 @@ def light_shell(command: str, allow_bare_globs=False) -> bool:
     )
 
 
-def classify_shell(command: str) -> tuple[str, str]:
-    if light_shell(command):
+def classify_shell(command: str, cwd=None) -> tuple[str, str]:
+    from demand_policy import classify
+    if classify(command, cwd).kind == "light":
         return "light", ""
-    words = simple_words(command)
-    persistent = (
-        persistent_shell(command)
-        if not words or Path(words[0]).name not in {"npm", "pnpm", "yarn", "vite"}
-        else ""
-    )
+    persistent = persistent_shell(command)
     if persistent:
         return "resource", persistent
-    if not words:
-        return "job", ""
-    name = Path(words[0]).name
-    if name in {"npm", "pnpm", "yarn"}:
-        tail = words[1:]
-        if tail and tail[0] in {"run", "run-script"}:
-            tail = tail[1:]
-        if tail and tail[0] in {"dev", "start"}:
-            # Distinct arguments (ports, host, etc.) are distinct resources.
-            return "resource", "script:" + shlex.join(tail)
-    if name == "vite" and (len(words) == 1 or words[1].startswith("-")):
-        return "resource", shlex.join(words)
     return "job", ""
 
 
@@ -1017,6 +1014,8 @@ def rewritten_response(payload, updated, agent, context=""):
 
 
 def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
+    from queue_deadlines import WAIT_SECONDS, GUIDANCE, managed_input
+
     if payload.get("hook_event_name") != "PreToolUse" or payload.get(
         "tool_name"
     ) not in {"Bash", "exec_command", "shell_command"}:
@@ -1033,14 +1032,24 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
                 "permissionDecisionReason": POLL_GUIDANCE,
             }
         }
-    kind, resource = classify_shell(command)
-    from inspection import guarded_shell, spans
+    cwd = original.get("workdir") or original.get("cwd") or payload.get("cwd")
+    from demand_policy import classify
+    import time
+    started = time.monotonic()
+    decision = classify(command, cwd if isinstance(cwd, str) else None)
+    from analytics_events import emit
+    emit('classification', source='hook', agent=agent, demand=decision.kind,
+         demand_reason=decision.reason, confidence=decision.confidence,
+         classifier_version=1, dependency_count=decision.dependency_count,
+         classifier_ms=(time.monotonic() - started) * 1000, workload=decision.fingerprint)
+    resource = persistent_shell(command) if decision.kind == "heavy" else ""
+    kind = "light" if decision.kind == "light" else "resource" if resource else "job"
+    from inspection import spans
 
     from session_identity import key, bind_runner, scope_waits
 
     session_key = key(payload)
-    cwd = original.get("workdir") or original.get("cwd") or payload.get("cwd")
-    guarded = guarded_shell(command, executable, session_key, cwd if isinstance(cwd, str) else None) if kind == "job" else None
+    guarded = None  # Native calls preserve the host's command and execution mode.
     try:
         wrapped = shlex.split(normalized_lines(command))
     except ValueError:
@@ -1057,9 +1066,12 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
     )
     if already_wrapped:
         bound = bind_runner(wrapped, session_key)
-        if bound is not None:
-            updated = {**original, "command": shlex.join(bound)}
+        if bound is not None or wrapped[1] == "run":
+            updated = managed_input(original, agent) if wrapped[1] == "run" else dict(original)
+            updated["command"] = shlex.join(bound) if bound is not None else command
             updated.pop("cmd", None)
+            if updated == original:
+                return {}
             return rewritten_response(payload, updated, agent)
     control = simple_words(command)
     if (
@@ -1096,6 +1108,30 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
             updated.pop("cmd", None)
             return rewritten_response(payload, updated, agent)
     if kind == "light" or already_wrapped:
+        from native_observer import available
+        native_shell = original.get("shell") or (os.environ.get("SHELL", "/bin/bash") if agent == "codex" else "/bin/bash")
+        observable_shell = (isinstance(native_shell, str) and native_shell in {'/bin/bash', '/bin/sh', '/bin/dash'}
+                            and not original.get("login", agent == "codex")
+                            and not any(os.environ.get(k) for k in ('BASH_ENV', 'ENV')))
+        # Ordinary calls stay byte-for-byte native. Unfamiliar calls can be
+        # observed by an exec-only shim; never reserve memory or force background.
+        # A Codex host requiring a permission rewrite keeps its original request.
+        if (kind == "light" and not already_wrapped and decision.confidence == "unknown"
+                and (agent != "codex" or payload.get("permission_mode") == "bypassPermissions")
+                and observable_shell and available()):
+            shell = original.get("shell") or (os.environ.get("SHELL", "/bin/bash") if agent == "codex" else "/bin/bash")
+            if not isinstance(shell, str) or not Path(shell).is_absolute():
+                shell = "/bin/bash"
+            args = [executable, "_native", "--fingerprint", decision.fingerprint,
+                    "--session-key", session_key, "--shell", shell]
+            if original.get("login", agent == "codex"):
+                args.append("--login")
+            if isinstance(cwd, str):
+                args += ["--cwd", cwd]
+            args += ["--shell-command", command]
+            updated = {**original, "command": shlex.join(args)}
+            updated.pop("cmd", None)
+            return rewritten_response(payload, updated, agent)
         return {}
     default_shell = (
         os.environ.get("SHELL", "/bin/bash") if agent == "codex" else "/bin/bash"
@@ -1111,11 +1147,7 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
         args += ["--resource", resource]
     if isinstance(cwd, str):
         args += ["--cwd", cwd]
-    timeout = original.get("timeout")
-    if agent == "claude":
-        args.append("--wait-forever")
-    elif isinstance(timeout, (int, float)) and timeout > 0:
-        args += ["--wait", str(max(1, int(timeout / 1000) - 5))]
+    args += ["--wait", str(WAIT_SECONDS)]
     if isinstance(payload.get("session_id"), str) and payload["session_id"]:
         args += [
             "--session-key",
@@ -1126,9 +1158,7 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
         if isinstance(value, str) and 0 < len(value) <= 256:
             args += [flag, value]
     args += ["--shell-command", command]
-    updated = dict(original)
-    if agent == "claude" and not guarded:
-        updated["run_in_background"] = True
+    updated = dict(original) if guarded else managed_input(original, agent)
     updated["command"] = guarded or shlex.join(args)
     # Codex's hook schema uses command even when its exec tool uses cmd.
     updated.pop("cmd", None)
@@ -1142,6 +1172,8 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
             "If Stop has blocked ending the turn, use that blocking wait instead of trying to finish for a notification. "
             "Do not create Bash sleep loops or drain ticks to wait. Do not submit duplicates, stop because it is queued, or bypass memcap. "
             "Read the final output and exit status before continuing dependent work."
+            + " "
+            + GUIDANCE
             + " "
             + PERFORMANCE_GUIDANCE
         )

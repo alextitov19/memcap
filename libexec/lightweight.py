@@ -114,8 +114,89 @@ def sed_command(args):
     )
 
 
+def finite_diagnostic(name, args):
+    if name == 'launchctl':
+        # Read-only finite service diagnostics; never bootstrap, kickstart,
+        # debug, attach or a command whose arguments can execute another tool.
+        return (len(args) == 2 and args[0] in {'print', 'print-disabled'}
+                and bool(re.fullmatch(r'(?:system|(?:gui|user)/[0-9]+)(?:/[A-Za-z0-9_.-]+)?', args[1])))
+    if name == "id":
+        return all(a in {"-u", "-g", "-G", "-n", "-r", "-un", "-gn"} for a in args)
+    if name == "vm_stat":
+        return not args  # An interval argument turns this into a persistent monitor.
+    if name == "sysctl":
+        keys = [a for a in args if a != "-n"]
+        return bool(keys) and all(a in {"kern.memorystatus_vm_pressure_level", "kern.boottime", "hw.memsize", "vm.swapusage"} for a in keys)
+    if name == "zprint":
+        return all(a in {"-t", "-w", "data.kalloc.1024", "data_shared.kalloc.1024"} for a in args)
+    if name == "ioreg":
+        return args == ["-r", "-c", "IOAccelerator", "-l", "-w", "0"]
+    if name == "top":
+        options = {}
+        if len(args) % 2:
+            return False
+        for flag, value in zip(args[::2], args[1::2]):
+            if flag not in {"-l", "-n", "-o", "-stats"} or flag in options:
+                return False
+            options[flag] = value
+        if not options.get("-l", "").isdigit() or not 1 <= int(options["-l"]) <= 3:
+            return False
+        if not options.get("-n", "").isdigit() or not 1 <= int(options["-n"]) <= 100:
+            return False
+        fields = {"pid", "command", "cpu", "mem", "cmprs", "threads", "state", "time", "ppid"}
+        return options.get("-o", "mem") in fields and all(v in fields for v in options.get("-stats", "pid,command,mem").split(","))
+    return None
+
+
+def github_control(args):
+    if args[:2] == ["repo", "view"]:
+        return not any(a in {"-w", "--web"} or a.startswith("--web=") for a in args[2:])
+    edit = len(args) >= 2 and args[0] in {"pr", "issue"} and args[1] == "edit"
+    release = args[:2] == ["release", "create"]
+    if not edit and not release:
+        return None
+    values = {"--repo", "-R", "--title", "-t"}
+    toggles = set()
+    required = {"--body", "-b", "--body-file", "-F", "--title", "-t"}
+    if edit:
+        values |= required
+    else:
+        values |= {"--notes", "-n", "--notes-file", "-F", "--target", "--notes-start-tag"}
+        toggles = {"--draft", "-d", "--prerelease", "-p", "--verify-tag", "--fail-on-no-commits", "--generate-notes", "--notes-from-tag", "--latest"}
+        required = {"--notes", "-n", "--notes-file", "-F", "--generate-notes", "--notes-from-tag"}
+    found, positional, i = set(), 0, 2
+    while i < len(args):
+        arg = args[i]
+        flag, equals, value = arg.partition("=")
+        if flag in values:
+            if not equals:
+                i += 1
+                if i >= len(args):
+                    return False
+                value = args[i]
+            if flag in {"--body-file", "--notes-file", "-F"} and value == "-":
+                return False
+            found.add(flag)
+        elif flag in toggles and (not equals or value in {"true", "false"}):
+            if not equals or value == "true":
+                found.add(flag)
+        elif not arg.startswith("-"):
+            positional += 1
+        else:
+            return False
+        i += 1
+    return positional <= 1 and (not release or positional == 1) and bool(found & required)
+
+
 def extra_family(name, args):
     """Return None for families handled by the older classifier."""
+    diagnostic = finite_diagnostic(name, args)
+    if diagnostic is not None:
+        return diagnostic
+    if name == "gh":
+        control = github_control(args)
+        if control is not None:
+            return control
     if name == "command":
         return len(args) >= 2 and args[0] in {"-v", "-V"} and all(not a.startswith("-") for a in args[1:])
     if name == "unzip":

@@ -154,6 +154,9 @@ supervisor. It requires fresh PID start identity, ownership and group membership
 and still excludes agent CLIs and memcap ancestry. Never use it for pressure
 cleanup. Keep test cancellation dry-run gated. The queue behavioral suite
 (`python3 tests/test_scheduler.py`) also runs through Bats.
+After launch, a transient registry lock timeout must retain supervision and retry
+without releasing the reservation. Registry corruption remains a distinct error;
+never treat it as contention or infer that an already-started command was denied.
 
 The `boot-timeout` scope is a separate, narrow watchdog deadline for registered
 standalone Apple `simctl boot UUID` attempts older than 180 seconds. Never infer
@@ -165,18 +168,31 @@ to arbitrary command timeouts or simulator-service termination.
 
 ## Queue throughput and hook compatibility
 
-Lightweight classification is a memory policy, never tool authorization. Keep
-routine filesystem families and supported remote API clients out of admission.
-`inspection.py` proves command-substitution producers and validates expanded
-consumer argv before exec; it must preserve output, exit status, quoting and
-single execution. Unknown execution still queues. `text_probe.py` recognizes a
-bounded straight-line Python text language without evaluating code, checks files
-in the actual execution cwd and isolates standard-library imports. Test all of
-these with temporary files, fake fallback recorders and no real remote commands.
-`control_script.py` proves finite shell helpers from their contents, repeats the
-check at execution time, and executes the validated text rather than reopening
-the path. Keep startup settings, dynamic executable names and unknown syntax out
-of this path; preserve positional arguments and guard expanded external argv.
+Allow needed builds up to 24 hours for admission: use `memcap run --wait 86400`
+when specifying a queue deadline. Managed Claude commands need background mode,
+`timeout=86400000`, and a profile `BASH_MAX_TIMEOUT_MS` ceiling at least that high
+(Claude Code 2.1.285+). Queue waiting consumes the outer command timeout too.
+Keep status polls at 60 seconds and lifecycle hook timeouts unchanged. Codex
+`yield_time_ms` controls a response yield, not the job's lifetime. Do not abandon
+or duplicate a needed job just because it has waited ten minutes. Read the
+existing task's final output and exit status; respect cancellation and explicit
+shorter runner deadlines. Existing host tasks retain their original deadlines;
+updating memcap cannot revive expired work. Do not end a foreground subagent
+while its required background commands are pending.
+
+Lightweight classification is a memory policy, never tool authorization.
+`demand_policy.py` implements two outcomes: native lightweight execution and
+managed heavyweight execution. Only positive memory-demand evidence queues a
+call. Unknown syntax or execution capability alone is not that evidence. Inspect
+local scripts, package scripts and Git hooks without executing them. Preserve
+original shell text, output, exit status, deadlines and single execution. Tests
+must pair ordinary commands with heavy workloads using the same wrappers.
+`native_observer.py` can promote exact fingerprints after observing high physical
+footprint; incomplete observations never certify a low peak. Its PID identities
+authorize observation only, never signals or reservations. First-run unknown
+allocations can exceed estimates; neither observation nor admission is a hard cap.
+Legacy inspection modules remain for previously generated wrappers; new hooks
+must not require a proof of harmless execution to keep lightweight work native.
 
 Automatic reservations hold the startup estimate for 30 seconds, then may shrink
 with complete measurements to at least 512 MB or 125% of observed peak usage.
@@ -189,6 +205,10 @@ An intervening stale cached read must not erase a previously complete window.
 Busy/faulty/incomplete samples retain a reduced automatic adaptive allowance too;
 never inflate it back to the original startup request without observed growth.
 Explicit requests, strict policy and orphaned groups keep their existing floors.
+Once a complete adaptive window retires a peak, later gaps must retain the current
+admission peak and allowance rather than reinstate the lifetime learning peak.
+Partial growth and an uncertain owner's floor survive recovery until another
+complete fresh window permits reduction.
 It cannot advance that window or release capacity; the next fresh sample still
 checks the five-second maximum gap before using it. Keep this negative control:
 fresh samples interleaved with stale reads must eventually retire an old peak.
@@ -208,6 +228,11 @@ Pins/claims protect ordinary cleanup, not configured oversized-child enforcement
 supervisor cancellation. Do not weaken these distinctions to clear a queue.
 
 Rotate new admissions across sessions and resource types. The aged-request gate
+and lane preferences must preserve turns across fitting sessions. Prefer a fitting
+session without finite running work before another job from a busy session;
+subagents share their parent's turn. This is admission fairness, not preemption:
+never suspend a running process to pretend its resident memory became available.
+The aged-request gate
 may hold back new work while finite jobs drain, but must not leave smaller jobs
 blocked when no running finite job can free capacity. Never implement rotation by
 suspending builds or terminating another session's active work.
@@ -292,6 +317,13 @@ trigger dev-server cleanup for simulator-only excess or Docker alone over the ca
 The aggregate budget is not a kernel hard cap; never claim it is one.
 
 ## Public agent reports
+
+`memcap trace on` is separate, explicitly owner-enabled local command evidence.
+It records raw commands only in a private bounded trace, never analytics or public
+reports. Do not enable it without owner authorization. `trace clear` disables
+capture and deletes its records. Tests use temporary state and fake commands;
+trace failures must never alter admission, cancellation or workload exit status.
+Do not paste raw trace contents into GitHub issues or release notes.
 
 `report.py` publishes only after explicit reporting consent; memory pause state
 is unrelated and must remain unchanged. Default/EOF setup consent is no. Keep

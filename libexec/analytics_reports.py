@@ -46,6 +46,77 @@ def job_rows(rows):
     return list(jobs.values())
 
 
+def enforcement_state(rows):
+    values = {r.get("paused") for r in rows}
+    if len(values) != 1:
+        return "mixed"
+    return {0: "active", 1: "paused"}.get(next(iter(values), None), "unknown")
+
+
+def delay_breakdown(jobs, by_cohort=False, by_lane=False):
+    groups = {}
+    for job in jobs:
+        observations = [r for r in job.values() if isinstance(r, dict)]
+        end = job.get("completed") or job.get("cancelled") or {}
+        admission = job.get("admitted", {})
+        meta = {**job.get("queued", {}), **end, **admission}
+        key = ((meta.get("build"), meta.get("policy"), enforcement_state(observations))
+               if by_cohort else ({1: "small", 2: "heavy"}.get(meta.get("lane_code"), "unknown"),)
+               if by_lane else (meta.get("family", "unknown"),))
+        group = groups.setdefault(key, dict(jobs=0, waits=[], runtimes=[], amplification=[],
+                                           short_jobs=0, short_jobs_waited_over_runtime=0,
+                                           blocker_observed_ms=collections.Counter()))
+        group["jobs"] += 1
+        wait = admission.get("queue_wait_ms", end.get("queue_wait_ms"))
+        runtime = end.get("runtime_ms")
+        if wait is not None:
+            group["waits"].append(wait)
+        if runtime is not None:
+            group["runtimes"].append(runtime)
+            if 10 <= runtime <= 5000:
+                group["short_jobs"] += 1
+                group["short_jobs_waited_over_runtime"] += int(wait is not None and wait > runtime)
+            if wait is not None and runtime >= 10:
+                group["amplification"].append(1 + wait / runtime)
+        # Blockers are cumulative snapshots; the latest observed value wins.
+        counters = {}
+        for row in sorted(observations, key=lambda r: (r["wall"], r["seq"])):
+            counters.update({k[8:-3]: v for k, v in row.items() if k.startswith("blocked_") and k.endswith("_ms")})
+        group["blocker_observed_ms"].update(counters)
+    result = []
+    for key, group in groups.items():
+        group["queue_wait_ms"] = distribution(group.pop("waits"))
+        group["runtime_ms"] = distribution(group.pop("runtimes"))
+        group["amplification"] = distribution(group["amplification"])
+        group["blocker_observed_ms"] = dict(group["blocker_observed_ms"])
+        group.update(dict(build=key[0], policy=key[1], enforcement_state=key[2]) if by_cohort else dict(lane=key[0]) if by_lane else dict(family=key[0]))
+        result.append(group)
+    return sorted(result, key=lambda r: r["queue_wait_ms"].get("total", 0), reverse=True)
+
+
+def observer_cost(rows):
+    groups = collections.defaultdict(list)
+    for row in rows:
+        if row["event"] == "observer" and "observer_cpu_ms" in row:
+            groups[row["producer"]].append(row)
+    cpu, intervals, count = 0., collections.defaultdict(list), 0
+    for group in groups.values():
+        ordered = sorted(group, key=lambda r: r["wall"])
+        for a, b in zip(ordered, ordered[1:]):
+            elapsed = duration(a, b)
+            delta = b["observer_cpu_ms"] - a["observer_cpu_ms"]
+            if elapsed is not None and 0 < elapsed <= 90000 and delta >= 0:
+                cpu += delta
+                intervals[a["boot"]].append((a["mono"], b["mono"]))
+                count += 1
+    seconds = sum(interval_union(v) for v in intervals.values())
+    return dict(cpu_ms=cpu if count else None, observed_seconds=seconds,
+                one_core_percent=cpu / (seconds * 10) if seconds else None,
+                peak_resident_kb=max((r["observer_peak_kb"] for r in rows if r["event"] == "observer" and "observer_peak_kb" in r), default=None),
+                residency_is_not_footprint=True,
+                scope="Observed in-window collector CPU deltas; excludes probe children, hooks and unobserved intervals.")
+
+
 def summarize(rows, health=None):
     all_jobs = job_rows(rows)
     resources = [j for j in all_jobs if any(isinstance(v, dict) and v.get("persistent") for v in j.values())]
@@ -155,7 +226,11 @@ def summarize(rows, health=None):
         "queue_exposure_seconds": sum(interval_union(v) for v in exposures.values()) if exposures else None,
         "completion_path_wait_seconds": None,
         "worst_waits": sorted(worst, key=lambda r: r["wait_ms"], reverse=True)[:10],
+        "delay_by_family": delay_breakdown(jobs), "cohorts": delay_breakdown(jobs, by_cohort=True),
+        "delay_by_lane": delay_breakdown(jobs, by_lane=True),
+        "delay_interpretation": "Short jobs ran for 10–5000 ms; short runtime does not prove lightweight memory use. Blocker intervals are recorded decisions, not causal attribution.",
         "tool_elapsed_ms": distribution(hook_times),
+        "guard_ms": distribution([r["guard_ms"] for r in rows if "guard_ms" in r]),
         "hook_ms": distribution([r["hook_ms"] for r in rows if "hook_ms" in r]),
         "all_agent_hooks_ms": distribution([r["agent_hooks_ms"] for r in rows if "agent_hooks_ms" in r]),
         "sessions": len(sessions), "turns_with_explicit_ids": len(turns),
@@ -170,18 +245,29 @@ def summarize(rows, health=None):
         "wait_calls": sum(r.get("family") == "wait" and r["event"] == "route" for r in rows),
         "feedback_bytes": sum(r.get("feedback_bytes", 0) for r in rows),
         "routes": dict(route_counts),
+        "classification": dict(
+            decisions=dict(collections.Counter(r.get('demand', 'unknown') for r in rows if r['event'] == 'classification')),
+            reasons=dict(collections.Counter(r.get('demand_reason', 'unknown') for r in rows if r['event'] == 'classification')),
+            duration_ms=distribution([r['classifier_ms'] for r in rows if r['event'] == 'classification' and 'classifier_ms' in r])),
+        "native_memory": dict(
+            observed_ends=sum(r['event'] == 'native_memory' for r in rows),
+            ends_without_samples=sum(r['event'] == 'native_memory' and not r.get('count') for r in rows),
+            sampled_peak_lower_bound_kb=distribution([r['peak_kb'] for r in rows if r['event'] == 'native_memory' and 'peak_kb' in r]),
+            interpretation='Partial process observations, not successful completions or complete peaks. No sample is unknown, never zero. Only high usage can train future admission.'),
         "machine": dict(observed_seconds=health_seconds, red_seconds=red if health_seconds else None,
                         yellow_seconds=yellow if health_seconds else None,
                         paging_observed_seconds=paging_seconds,
                         paging_ge_1MiB_s_seconds=paging if paging_seconds else None,
-                        available_kb=distribution([r["available_kb"] for r in samples if "available_kb" in r])),
+                        available_kb=distribution([r["available_kb"] for r in samples if "available_kb" in r]),
+                        wired_kb=distribution([r["wired_kb"] for r in samples if "wired_kb" in r]),
+                        physical_memory_kb=distribution([r["physical_memory_kb"] for r in samples if "physical_memory_kb" in r]),
+                        kernel_zones={k: distribution([r[k] for r in samples if k in r]) for k in ("kernel_data_1024_inuse_kb", "kernel_data_shared_1024_inuse_kb")},
+                        kernel_zone_interpretation="In-use element bytes in two fixed kernel buckets; not a process owner, complete wired attribution, or proof of a leak."),
         "native_api": dict(requests=sum(r["event"] == "api" for r in rows),
                            input_tokens=sum(r.get("input_tokens", 0) for r in rows) if any("input_tokens" in r for r in rows) else None,
                            output_tokens=sum(r.get("output_tokens", 0) for r in rows) if any("output_tokens" in r for r in rows) else None,
                            api_equivalent_usd=sum(r.get("api_cost_usd", 0) for r in rows) if any("api_cost_usd" in r for r in rows) else None),
-        "observer": dict(cpu_ms=max((r.get("observer_cpu_ms", 0) for r in rows if r["event"] == "observer"), default=None),
-                         peak_resident_kb=max((r.get("observer_peak_kb", 0) for r in rows if r["event"] == "observer"), default=None),
-                         residency_is_not_footprint=True),
+        "observer": observer_cost(rows),
         "actions": [r for r in rows if r["event"] == "action"][-30:],
         "coverage": {**(health or {}), "events": len(rows), "observed_sequence_gaps": gaps,
                      "reported_drops": sum(drops.values()), "tail_loss": "unknown",
@@ -202,7 +288,10 @@ def compare(baseline, candidate):
             end = job.get("completed", {})
             row = {**job.get("admitted", {}), **end}
             if end.get("exit_code") == 0 and "runtime_ms" in row and "queue_wait_ms" in row:
-                result[(row.get("family", "unknown"), row.get("workload"), row.get("model"), row.get("cache_state", "unknown"))].append(row["runtime_ms"] + row["queue_wait_ms"])
+                state = enforcement_state([r for r in job.values() if isinstance(r, dict)])
+                if state == "mixed":
+                    continue
+                result[(row.get("family", "unknown"), row.get("workload"), row.get("model"), row.get("cache_state", "unknown"), state, row.get("workers"))].append(row["runtime_ms"] + row["queue_wait_ms"])
         return result
     left, right = cohorts(baseline), cohorts(candidate)
     matches = []
@@ -216,7 +305,7 @@ def compare(baseline, candidate):
             rng = random.Random(941)
             deltas = sorted(statistics.median(rng.choices(b, k=min(200, len(b)))) - statistics.median(rng.choices(a, k=min(200, len(a)))) for _ in range(200))
             interval = [deltas[5], deltas[194]]
-        matches.append(dict(family=key[0], baseline_n=len(a), candidate_n=len(b), baseline_median_ms=before,
+        matches.append(dict(family=key[0], enforcement_state=key[4], workers=key[5], baseline_n=len(a), candidate_n=len(b), baseline_median_ms=before,
                             candidate_median_ms=after, delta_ms=delta,
                             exploratory_bootstrap_95pct_delta_ms=interval,
                             percent=100 * delta / before if before else None,
@@ -242,8 +331,13 @@ def text_report(report):
              f"Queue wait median: {number(report['queue_wait_ms']['median'], ' ms')}; p95: {number(report['queue_wait_ms']['p95'], ' ms')}; n={report['queue_wait_ms']['n']}.",
              f"Pressure observed: {number(machine['observed_seconds'], ' s')}; red: {number(machine['red_seconds'], ' s')}; yellow: {number(machine['yellow_seconds'], ' s')}.",
              f"Paging at least 1 MiB/s: {number(machine['paging_ge_1MiB_s_seconds'], ' s')}.",
+             f"Wired memory peak: {number(machine['wired_kb']['max'], ' KiB')}; kernel counters are allocation evidence, not process attribution.",
+             f"Guard component p95: {number(report['guard_ms']['p95'], ' ms')}; whole memcap hook timing remains separate.",
+             f"Collector CPU over observed intervals: {number(report['observer']['one_core_percent'], '% of one core')} (probe children excluded).",
              f"Stop attempts: {report['stop_attempts']}; blocks: {report['stop_blocks']}; wait calls: {report['wait_calls']}.",
              f"Routes: {json.dumps(report['routes'], sort_keys=True)}.",
+             f"Memory decisions: {json.dumps(report['classification']['decisions'], sort_keys=True)}; classifier p95={number(report['classification']['duration_ms']['p95'], ' ms')}.",
+             f"Native observation ends: {report['native_memory']['observed_ends']}; unsampled: {report['native_memory']['ends_without_samples']}. Sampled peaks are lower bounds; disappearance is not success.",
              f"Explicit work outcomes: {json.dumps(report['work_items']['outcomes'], sort_keys=True)}.",
              f"Coverage: {quality['events']} events; {quality['legacy_events']} legacy; {quality['reported_drops']} reported drops; {quality['observed_sequence_gaps']} sequence gaps; tail loss unknown.",
              "", "Largest observed waits:"]
@@ -251,6 +345,15 @@ def text_report(report):
         lines.append(f"  {row['job'][:12]}  {row['family']:8}  wait={row['wait_ms']/1000:.2f}s  runtime={number(row['runtime_ms'], ' ms')}  {row['outcome']}")
     if not report["worst_waits"]:
         lines.append("  None observed in retained data.")
+    lines += ["", "Delay by command family (descriptive labels, not memory classifications):"]
+    for group in report["delay_by_family"]:
+        lines.append(f"  {group['family']}: {group['jobs']} jobs; wait={number(group['queue_wait_ms'].get('total'), ' ms')}; {group['short_jobs_waited_over_runtime']}/{group['short_jobs']} short jobs waited longer than they ran.")
+    lines += ["", "Managed admission lanes (historical coverage may be unknown):"]
+    for group in report["delay_by_lane"]:
+        lines.append(f"  {group['lane']}: {group['jobs']} jobs; wait p95={number(group['queue_wait_ms']['p95'], ' ms')}.")
+    lines += ["", "Build/policy/enforcement cohorts:"]
+    for group in report["cohorts"]:
+        lines.append(f"  {group['build'][:12]} / {group['policy'][:12]} / {group['enforcement_state']}: {group['jobs']} jobs; wait p95={number(group['queue_wait_ms']['p95'], ' ms')}.")
     lines += ["", report["interpretation"]]
     return "\n".join(lines)
 

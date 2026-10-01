@@ -99,7 +99,8 @@ class Store:
                         cursor_wall = end
             if not previous or row["wall"] > previous["wall"]:
                 self.last_sample = row
-        for metric in ("queue_wait_ms", "runtime_ms", "hook_ms", "duration_ms", "swap_in_kbps", "swap_out_kbps", "available_kb"):
+        for metric in ("queue_wait_ms", "runtime_ms", "hook_ms", "guard_ms", "duration_ms", "swap_in_kbps", "swap_out_kbps", "available_kb",
+                       "wired_kb", "physical_memory_kb", "kernel_data_1024_inuse_kb", "kernel_data_shared_1024_inuse_kb"):
             if metric not in row or (metric == "queue_wait_ms" and row["event"] == "stalled"):
                 continue
             value = row[metric]
@@ -129,7 +130,22 @@ class Store:
 
     def maintain(self, now=None):
         now = time.time() if now is None else now
-        deleted = self.db.execute("DELETE FROM events WHERE wall<?", (now - RAW_DAYS * 86400,)).rowcount
+        deleted = 0
+        pages = self.db.execute("PRAGMA page_count").fetchone()[0]
+        free = self.db.execute("PRAGMA freelist_count").fetchone()[0]
+        cap = self.db.execute("PRAGMA max_page_count").fetchone()[0]
+        if pages - free >= cap * .9:
+            # The SQLite cap is 65% of the total disk allowance. Waiting for
+            # 80% disk usage can never repair SQLITE_FULL at that earlier cap.
+            # Reuse freed pages; do not raise the cap or unlink live DB/WAL files.
+            count = self.db.execute("SELECT count(*) FROM events").fetchone()[0]
+            batch = min(20000, max(1, (count + 4) // 5))
+            deleted += self.db.execute(
+                "DELETE FROM events WHERE (producer,seq) IN "
+                "(SELECT producer,seq FROM events ORDER BY wall LIMIT ?)",
+                (batch,),
+            ).rowcount
+        deleted += self.db.execute("DELETE FROM events WHERE wall<?", (now - RAW_DAYS * 86400,)).rowcount
         self.db.execute("DELETE FROM hourly WHERE hour<?", (int((now - 365 * 86400) // 3600),))
         # Bound dimension cardinality as well as elapsed retention.
         self.db.execute("""DELETE FROM hourly WHERE (hour,build,policy,family,metric,bucket) IN

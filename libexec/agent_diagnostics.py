@@ -5,6 +5,7 @@ Never persists tool output, changes queue records, boots devices or signals PIDs
 
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,7 @@ import tempfile
 import time
 
 from report import PERFORMANCE_GUIDANCE, PROTECTION_GUIDANCE, MEMORY_GUIDANCE
+from queue_deadlines import GUIDANCE as DEADLINE_GUIDANCE
 
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_GUIDANCE = (
@@ -25,6 +27,9 @@ SESSION_GUIDANCE = (
     "Use memcap wait --session --timeout 60 to wait on this agent process's finite jobs without any job-ID lookup pipeline. Cancel an owned obsolete background task using native task cancellation; never cancel still-needed work or other sessions' tasks. "
     "Poll once per minute while pending; avoid repeated output-file reads and holding messages. Wait for final output and "
     "exit status; continue independent work while waiting. Do not submit duplicates. "
+    "Keep independent reads and status checks in separate tool calls from builds/tests: "
+    "a compound shell containing a workload waits as one managed command, including its inspection prefix. "
+    + DEADLINE_GUIDANCE + " "
     + PROTECTION_GUIDANCE
     + " Respect explicit cancellation. A simulator "
     "boot timeout is not proof of memory starvation or a failed test assertion. "
@@ -33,6 +38,8 @@ SESSION_GUIDANCE = (
     " Docker's VM subtotal alone does not explain a queue delay; use the runner's "
     "admission reason. Adaptive policy uses pressure, physical headroom and staged starts; "
     "its footprint target is soft. Strict policy retains the absolute budget. "
+    "A swap-used warning is diagnostic, not an admission blocker. Read the job's actual blocker; "
+    "memcap wait counts only its matched scope, not all host jobs. "
     "New commands pick up the installed runner; existing supervisors retain their loaded version until finished. "
     "Do not use memcap off or killall Docker to unblock work. "
     "Inspect docker stats --no-stream and docker buildx ls, and establish ownership "
@@ -399,6 +406,8 @@ def session_guidance(payload, state, token):
     """
     from session_identity import key
 
+    token += ":" + hashlib.sha256(SESSION_GUIDANCE.encode()).hexdigest()[:16]
+
     if not isinstance(payload, dict):
         return ""
     scope = key(payload)
@@ -460,6 +469,8 @@ if __name__ == "__main__":
             / "memcap"
         )
         payload = json.load(sys.stdin)
+        from command_trace import hook as trace_hook
+        trace_hook(payload)
         message = (
             session_guidance(payload, state, sys.argv[2])
             if len(sys.argv) == 3 and sys.argv[1] == "--session-token"

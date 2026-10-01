@@ -15,6 +15,7 @@ from functools import lru_cache
 BLOCKERS = ("unknown", "budget", "headroom", "slots", "pressure_or_measurement", "measurement", "fairness", "startup", "stabilizing", "paging", "sampling")
 EVENTS = {"sample", "queued", "admitted", "completed", "cancelled", "stalled", "reservation"}
 FIELDS = {
+    "lane_code",
     "runner_version",
     "job_ref",
     "signal",
@@ -139,12 +140,15 @@ def parse_vm(output: str) -> dict:
     ):
         return {}
     size = int(page[1])
-    return dict(
+    result = dict(
         page_bytes=size,
         swapins=counters["Swapins"],
         swapouts=counters["Swapouts"],
         compressor_kb=counters["Pages occupied by compressor"] * size // 1024,
     )
+    if "Pages wired down" in counters:
+        result["wired_kb"] = counters["Pages wired down"] * size // 1024
+    return result
 
 
 def vm_sample() -> dict:

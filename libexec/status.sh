@@ -415,6 +415,7 @@ mc_render_status() {
     mc_host_pressure
     mc_status_row "host disk available" "$(mc_diag_gb "$MC_HOST_DISK_KB")"
     mc_status_row "host swap used" "$(mc_diag_gb "$MC_HOST_SWAP_KB")"
+    mc_status_row "queue admission" "swap used alone does not block; inspect memcap queue for the recorded blocker"
     mc_status_row "pressure snapshots (private)" "$(mc_state_dir)/pressure/ (latest 12)"
     if [ "$MC_HOST_PRESSURE" = 1 ] || [ "$MC_HOST_FAULT" = 1 ]; then
       mc_status_warn "$MC_HOST_SUMMARY"

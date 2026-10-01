@@ -121,7 +121,7 @@ class LightweightFamiliesTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(classify_shell(command)[0], "light")
 
-    def test_composed_inspection_uses_argument_guard(self):
+    def test_composed_inspection_retains_native_request(self):
         for command in GUARDED:
             with self.subTest(command=command):
                 output = hook_response(
@@ -132,12 +132,10 @@ class LightweightFamiliesTests(unittest.TestCase):
                     },
                     str(ROOT / "bin/memcap"),
                     "claude",
-                )["hookSpecificOutput"]
-                self.assertIn("_inspect", output["updatedInput"]["command"])
-                self.assertNotIn(" run ", output["updatedInput"]["command"])
-                self.assertNotIn("permissionDecision", output)
+                )
+                self.assertEqual(output, {})
 
-    def test_executable_and_unknown_work_stays_managed(self):
+    def test_known_memory_work_stays_managed_without_treating_unknown_as_heavy(self):
         for command in [
             "rg pattern $(npm test)",
             "cat $(python3 helper.py)",
@@ -171,7 +169,10 @@ class LightweightFamiliesTests(unittest.TestCase):
             "unknown-helper status",
         ]:
             with self.subTest(command=command):
-                self.assertNotEqual(classify_shell(command)[0], "light")
+                heavy = {'rg pattern $(npm test)', 'rg x <(npm test)', 'rg x `npm test`',
+                         'rg x $(echo path); npm test', 'rg x $(echo path # )\nnpm test)',
+                         "find . -exec npm test ';'", 'docker compose up', 'docker build .', 'npm test'}
+                self.assertEqual(classify_shell(command)[0] == 'light', command not in heavy)
                 self.assertIsNone(guarded_shell(command, "/memcap"))
 
     def test_real_shell_preserves_expansion_output_status_and_single_execution(self):

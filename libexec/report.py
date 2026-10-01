@@ -58,10 +58,9 @@ PROTECTION_GUIDANCE = (
     "explicitly authorizes work on memcap itself, developing, testing, releasing and installing memcap "
     "is permitted, following its repository AGENTS.md sandboxing rules and running heavy work through "
     "the live queue. That authorization never extends to other tasks. "
-    "Routine file operations, supported remote calls and verified shell combinations/helpers "
-    "run natively or with argument checks, without workload reservations. "
-    "This grants no action permissions. "
-    "Local builds, arbitrary scripts and execution-capable arguments remain managed."
+    "Lightweight and unknown-demand calls run natively; only positive heavyweight evidence queues. "
+    "Inspect local code without executing it; high observed usage can promote future exact workloads. "
+    "Memory classification grants no action permission."
 )
 
 MEMORY_GUIDANCE = (

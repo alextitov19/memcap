@@ -140,7 +140,7 @@ printf '%s\\n' "$VALUE"
         ):
             self.assertIsNone(guarded_shell(unsafe, '/opt/memcap', 'fixture'))
 
-    def test_inspection_extensions_reject_execution_and_unknown_loops(self):
+    def test_legacy_guards_remain_strict_but_memory_admission_requires_evidence(self):
         from inspection import guarded_shell
         for command in (
             "lsof -r 1",
@@ -157,7 +157,9 @@ printf '%s\\n' "$VALUE"
             'rg -l x src | while read PATH; do rg x file; done',
         ):
             with self.subTest(command=command):
-                self.assertEqual(classify_shell(command)[0], "job")
+                heavy = {"awk '{system(\"npm test\")}' input", "awk '/first/,/last/; system(\"npm test\")' input",
+                         'for f in *.py; do npm test; done', 'for f in $(npm test); do cat "$f"; done'}
+                self.assertEqual(classify_shell(command)[0], 'job' if command in heavy else 'light')
                 self.assertIsNone(guarded_shell(command, "/opt/memcap", "fixture"))
 
     def test_guarded_loops_preserve_native_output_exit_and_consumer_argv(self):
@@ -253,7 +255,7 @@ printf '%s\\n' "$VALUE"
                 event = next(row for row in events if row["event"] == "completed")
                 self.assertEqual(event["learning_complete"], expected)
 
-    def test_known_python_servers_are_resources_even_with_exec_and_redirects(self):
+    def test_persistence_does_not_make_a_small_server_memory_heavy(self):
         for command in (
             "python3 -m http.server 4183 --bind 127.0.0.1 --directory /tmp/site",
             "exec python3 -m http.server 4183 --bind 127.0.0.1 --directory /tmp/site > /tmp/server.log 2>&1",
@@ -262,9 +264,13 @@ printf '%s\\n' "$VALUE"
             "cd /tmp/app && exec uv run python manage.py runserver 127.0.0.1:8022 --noreload > /tmp/server.log 2>&1",
         ):
             with self.subTest(command=command):
-                self.assertEqual(classify_shell(command)[0], "resource")
+                expected = 'resource' if 'npm run dev' in command else 'light'
+                self.assertEqual(classify_shell(command)[0], expected)
                 output = hook_response({"hook_event_name": "PreToolUse", "session_id": "fixture", "tool_name": "Bash", "tool_input": {"command": command}}, "/opt/memcap", "claude")
-                self.assertIn("--resource", output["hookSpecificOutput"]["updatedInput"]["command"])
+                if expected == 'resource':
+                    self.assertIn("--resource", output["hookSpecificOutput"]["updatedInput"]["command"])
+                else:
+                    self.assertEqual(output, {})
 
     def test_unknown_prefixes_and_finite_commands_keep_completion_tracking(self):
         for command in (

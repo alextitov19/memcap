@@ -38,7 +38,7 @@ class InspectionExpansionTests(unittest.TestCase):
                 execute.assert_not_called()
                 self.assertEqual(len(fallback), 1)
 
-    def test_reported_glob_search_gets_argument_guard_not_heavy_wrapper(self):
+    def test_reported_glob_search_preserves_native_request(self):
         command = (
             'cd /repo && rg -n "func Store" -A 60 *.go | rg -n "kept|status" | head -30'
         )
@@ -52,10 +52,7 @@ class InspectionExpansionTests(unittest.TestCase):
             str(ROOT / "bin/memcap"),
             "claude",
         )
-        updated = result["hookSpecificOutput"]["updatedInput"]
-        self.assertIn("_inspect", updated["command"])
-        self.assertNotIn(" run ", updated["command"])
-        self.assertFalse(updated.get("run_in_background", False))
+        self.assertEqual(result, {})
 
     def test_malicious_expansion_is_checked_after_globbing_before_execution(self):
         from inspection import guarded_shell

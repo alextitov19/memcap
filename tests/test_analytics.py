@@ -39,6 +39,18 @@ class AnalyticsTests(unittest.TestCase):
                                  boot="d" * 32, wall=1000 + sequence,
                                  mono=100 + sequence)
 
+    def test_native_observations_are_lower_bounds_not_successful_jobs(self):
+        rows = [self.row('classification', demand='light', confidence='unknown', demand_reason='unknown-demand',
+                         classifier_version=1, classifier_ms=2, command='private-command'),
+                self.row('native_memory', 2, count=0, outcome='unknown', measurement_complete=0),
+                self.row('native_memory', 3, count=2, peak_kb=900000, outcome='unknown', measurement_complete=0)]
+        self.assertNotIn('command', rows[0])
+        report = summarize(rows)
+        self.assertEqual(report['classification']['decisions'], {'light': 1})
+        self.assertEqual(report['native_memory']['ends_without_samples'], 1)
+        self.assertEqual(report['native_memory']['sampled_peak_lower_bound_kb']['n'], 1)
+        self.assertEqual(report['jobs'].get('succeeded', 0), 0)
+
     def test_secrets_never_survive_typed_boundary(self):
         row = self.row("hook", session="secret-session", command="SSM-SECRET",
                        prompt="PRIVATE", tool="Bash", phase="PreToolUse", duration_ms=5)
@@ -285,6 +297,78 @@ class AnalyticsTests(unittest.TestCase):
             self.assertGreaterEqual(len(store.rows()), 50)
             self.assertLess(store.health()["disk_bytes"], store.limit)
 
+    def fill_page_budget(self, store):
+        for sequence in range(1, 5001):
+            row = self.row("queued", sequence, job=str(sequence))
+            row["wall"] = time.time()
+            try:
+                store.insert(row)
+                store.db.commit()
+                # Reach the SQLite page cap, not the independent WAL guard.
+                store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.Error as exc:
+                store.db.rollback()
+                self.assertEqual(exc.sqlite_errorcode, sqlite3.SQLITE_FULL)
+                return sequence
+        self.fail("fixture did not reach the page budget")
+
+    def test_page_cap_recovers_before_age_and_row_limits(self):
+        with Store(self.root, limit=1024 * 1024) as store:
+            sequence = self.fill_page_budget(store)
+            before = len(store.rows())
+            cap = store.db.execute("PRAGMA max_page_count").fetchone()[0]
+            self.assertLess(before, 100000)
+            self.assertLess(store.health()["disk_bytes"], store.limit * .8)
+            store.maintain()
+            self.assertGreater(store.health()["evicted_events"], 0)
+            self.assertGreater(len(store.rows()), 0)
+            self.assertLess(len(store.rows()), before)
+            self.assertTrue(store.insert(self.row("queued", sequence + 1, job="new")))
+            store.db.commit()
+            self.assertEqual(store.db.execute("PRAGMA max_page_count").fetchone()[0], cap)
+            self.assertLess(store.health()["disk_bytes"], store.limit)
+
+    def test_collector_recovers_a_full_database_on_startup(self):
+        initialize(self.root)
+        with Store(self.root, limit=1024 * 1024) as store:
+            self.fill_page_budget(store)
+        code = """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import analytics_collector as c
+from analytics_store import Store
+c.Store = lambda directory: Store(directory, limit=1024 * 1024)
+c.host_sample = lambda d, p: ({'pressure': 2, 'available_kb': 123}, {})
+c.kernel_zone_sample = lambda: {}
+c.collect(Path(sys.argv[2]), 0)
+"""
+        # Replay the identical regression against saved pre-fix modules too,
+        # including the real SQLite cap and collector loop.
+        libraries = Path(sys.modules[Store.__module__].__file__).parent
+        env = {**os.environ, "HOME": self.temp.name, "MC_DRY_RUN": "1",
+               "MEMCAP_STATE_HOME": str(Path(self.temp.name) / "state"),
+               "MEMCAP_CONFIG_HOME": str(Path(self.temp.name) / "config")}
+        child = subprocess.Popen([sys.executable, "-c", code, str(libraries), str(self.root)],
+                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 8
+            while not (self.root / "heartbeat.json").exists() and time.monotonic() < deadline:
+                if child.poll() is not None:
+                    self.fail(child.communicate()[1].decode())
+                time.sleep(.05)
+            self.assertTrue((self.root / "heartbeat.json").exists(), "full database prevented heartbeat")
+            heartbeat = json.loads((self.root / "heartbeat.json").read_text())
+            self.assertGreater(heartbeat["storage"]["evicted_events"], 0)
+            self.assertEqual(heartbeat["errors"], 0)
+            from analytics_store import read_rows
+            rows, _ = read_rows(self.root)
+            self.assertTrue(any(r["event"] == "sample" for r in rows))
+            self.assertTrue(any(r["event"] == "observer" for r in rows))
+        finally:
+            child.terminate()
+            child.communicate(timeout=8)
+
     def test_otlp_http_authentication_and_documented_wire_format(self):
         from analytics_otlp import server
         inbox = queue.Queue(maxsize=1)
@@ -332,6 +416,7 @@ faulthandler.dump_traceback_later(7)
 sys.path.insert(0, sys.argv[1])
 import analytics_collector as c
 c.host_sample = lambda d, p: ({'pressure': 2, 'available_kb': 123}, {})
+c.kernel_zone_sample = lambda: {}
 def diagnostic(frame, event, arg):
     if event == 'exception' and frame.f_code.co_filename == c.__file__:
         if isinstance(arg[1], (c.sqlite3.Error, OSError)) and not isinstance(arg[1], BlockingIOError):
@@ -370,6 +455,89 @@ c.collect(__import__('pathlib').Path(sys.argv[2]), 0)
         finally:
             child.terminate()
             child.communicate(timeout=8)
+
+    def test_delay_breakdown_exposes_short_jobs_without_double_counting_blockers(self):
+        rows = [self.row("queued", 1, job="read", family="read", paused=0),
+                self.row("admitted", 2, job="read", family="read", paused=0, queue_wait_ms=120000, blocked_headroom_ms=90000),
+                self.row("completed", 3, job="read", paused=0, runtime_ms=2000, exit_code=0, blocked_headroom_ms=90000),
+                self.row("completed", 4, job="build", family="build", paused=1, runtime_ms=100000, queue_wait_ms=0, exit_code=0),
+                self.row("queued", 5, job="unfinished", family="read", paused=0)]
+        report = summarize(rows)
+        delays = report.get("delay_by_family", [])
+        self.assertTrue(delays, "report must expose command-family bottlenecks")
+        read = next(r for r in delays if r["family"] == "read")
+        self.assertEqual(read["jobs"], 2)
+        self.assertEqual(read["short_jobs_waited_over_runtime"], 1)
+        self.assertEqual(read["blocker_observed_ms"]["headroom"], 90000)
+        self.assertEqual(read["amplification"]["max"], 61)
+        self.assertEqual({c["enforcement_state"] for c in report["cohorts"]}, {"active", "paused"})
+
+    def test_comparison_does_not_mix_paused_active_or_worker_counts(self):
+        baseline = [self.row("completed", i, job=str(i), family="test", paused=0, workers=1,
+                             runtime_ms=1000, queue_wait_ms=0, exit_code=0) for i in range(1, 7)]
+        for change in ({"paused": 1}, {"workers": 4}):
+            candidate = [{**r, **change, "runtime_ms": 10000} for r in baseline]
+            self.assertEqual(compare(baseline, candidate)["verdict"], "insufficient_evidence")
+
+    def test_observer_cost_uses_in_window_deltas_across_restarts(self):
+        first = self.row("observer", 1, observer_cpu_ms=100000)
+        second = {**self.row("observer", 11, observer_cpu_ms=100100)}
+        third = {**self.row("observer", 21, observer_cpu_ms=5), "producer": "e" * 32}
+        fourth = {**self.row("observer", 31, observer_cpu_ms=55), "producer": "e" * 32}
+        report = summarize([first, second, third, fourth])
+        self.assertEqual(report["observer"]["cpu_ms"], 150)
+        self.assertEqual(report["observer"]["observed_seconds"], 20)
+        self.assertAlmostEqual(report["observer"]["one_core_percent"], .75)
+
+    def test_guard_component_and_wired_memory_are_visible_without_inventing_history(self):
+        report = summarize([self.row("route", guard_ms=4), self.row("sample", 2, wired_kb=15000000)])
+        self.assertEqual(report.get("guard_ms", {}).get("median"), 4)
+        self.assertEqual(report["machine"].get("wired_kb", {}).get("max"), 15000000)
+        self.assertIsNone(summarize([])["machine"]["wired_kb"]["max"])
+
+    def test_kernel_zone_parser_ignores_broken_size_counters_and_unrelated_names(self):
+        import analytics_collector as collector
+        parse = getattr(collector, "kernel_zone_sample", None)
+        self.assertIsNotNone(parse, "kernel-zone evidence needs a bounded numeric parser")
+        sample = "data.kalloc.1024 1024 0K 0K 0 0 9370342 0K 0 18014398500111642K\nother 1024 0K 0K 0 0 999\n"
+        with patch.object(collector, "probe", return_value=sample):
+            self.assertEqual(parse(), {"kernel_data_1024_inuse_kb": 9370342})
+        with patch.object(collector, "probe", return_value="permission denied"):
+            self.assertEqual(parse(), {})
+
+    def test_cached_host_observation_still_collects_current_wired_memory(self):
+        import analytics_collector as collector
+        queue_dir = self.root.parent / "queue"
+        queue_dir.mkdir()
+        (queue_dir / "sample.json").write_text(json.dumps({"sample": {
+            "monotonic": time.monotonic(), "pressure": 2, "available_kb": 1000, "fault": False}}))
+        vm = {"wired_kb": 15000000, "compressor_kb": 3000000}
+        with patch("scheduler_metrics.vm_sample", return_value=vm), patch.object(collector, "probe", return_value="25769803776"):
+            sample, _ = collector.host_sample(self.root, {})
+        self.assertEqual(sample.get("wired_kb"), 15000000)
+        self.assertEqual(sample["pressure"], 2)
+
+    def test_today_filters_build_and_enforcement_without_changing_stored_rows(self):
+        import analytics
+        import contextlib
+        import io
+        rows = [{**self.row("completed", i, job=str(i), runtime_ms=1000, queue_wait_ms=5000,
+                           exit_code=0, paused=paused), "wall": time.time(), "build": build}
+                for i, (paused, build) in enumerate(((0, "b" * 64), (1, "b" * 64), (0, "c" * 64)), 1)]
+        output = io.StringIO()
+        with patch.object(analytics, "read_rows", return_value=(rows, {})), contextlib.redirect_stdout(output):
+            self.assertEqual(analytics.main(["today", "--json", "--build", "bbbbbbbb", "--enforcement", "active"]), 0)
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["jobs"]["succeeded"], 1)
+        self.assertEqual(report["selection"]["enforcement"], "active")
+        self.assertEqual(len(rows), 3)
+
+    def test_wired_page_units_are_preserved_and_missing_counter_is_unknown(self):
+        from scheduler_metrics import parse_vm
+        for page in (4096, 16384):
+            text = f"Mach Virtual Memory Statistics: (page size of {page} bytes)\nSwapins: 1.\nSwapouts: 2.\nPages occupied by compressor: 3.\nPages wired down: 4.\n"
+            self.assertEqual(parse_vm(text)["wired_kb"], page * 4 // 1024)
+            self.assertNotIn("wired_kb", parse_vm(text.split("Pages wired down:")[0]))
 
 
 if __name__ == "__main__":

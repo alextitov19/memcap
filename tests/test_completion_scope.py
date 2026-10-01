@@ -117,7 +117,7 @@ class CompletionScopeTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(classify_shell(command)[0], "light")
 
-    def test_unknown_json_execution_and_remote_mutation_remain_managed(self):
+    def test_only_positive_allocation_and_local_workloads_queue(self):
         for command in ["jq '{jobs: [range(1000000000)]}' state.json",
                         "jq '[0, recurse, 0]' state.json",
                         "jq 'select(true, recurse, false)' state.json",
@@ -130,7 +130,8 @@ class CompletionScopeTests(unittest.TestCase):
                         "git -c core.sshCommand=local-program ls-remote origin",
                         "gh release view --web",
                         "memcap run -- npm test; python3 build.py"]:
-            self.assertEqual(classify_shell(command)[0], "job")
+            expected = 'job' if command in {"jq '{jobs: [range(1000000000)]}' state.json", "memcap run -- npm test; python3 build.py"} else 'light'
+            self.assertEqual(classify_shell(command)[0], expected)
 
     def test_helper_is_checked_in_tool_workdir(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -138,9 +139,10 @@ class CompletionScopeTests(unittest.TestCase):
             payload = self.payload("bash remote.sh")
             payload["tool_input"]["workdir"] = tmp
             output = hook_response(payload, "/opt/memcap", "codex")
-            command = output["hookSpecificOutput"]["updatedInput"]["command"]
-            self.assertIn("_inspect", command)
-            self.assertNotIn("--shell-command", command)
+            self.assertEqual(output, {})
+            (Path(tmp) / "remote.sh").write_text("go test ./...\n")
+            output = hook_response(payload, "/opt/memcap", "codex")
+            self.assertIn(' run ', output['hookSpecificOutput']['updatedInput']['command'])
 
     def test_remote_fallback_environment_values_are_guarded(self):
         for command in [
@@ -149,9 +151,7 @@ class CompletionScopeTests(unittest.TestCase):
         ]:
             with self.subTest(command=command):
                 output = hook_response(self.payload(command), "/opt/memcap", "claude")
-                updated = output["hookSpecificOutput"]["updatedInput"]
-                self.assertIn("_inspect", updated["command"])
-                self.assertNotIn("run_in_background", updated)
+                self.assertEqual(output, {})
 
     def test_remote_fallback_cannot_execute_local_code(self):
         for command in [
@@ -177,8 +177,8 @@ class CompletionScopeTests(unittest.TestCase):
             command = 'curl -H "Authorization: ${API_KEY:-$FALLBACK_KEY}" https://example.invalid'
             payload = self.payload(command)
             output = hook_response(payload, str(root / "bin/memcap"), "claude")
-            guarded = output["hookSpecificOutput"]["updatedInput"]["command"]
-            self.assertIn("_inspect", guarded)
+            self.assertEqual(output, {})
+            guarded = command
             result = subprocess.run(["/bin/bash", "-c", guarded], env=env, capture_output=True, text=True, timeout=15)
             self.assertEqual(result.returncode, 7, result.stderr)
             self.assertEqual(result.stdout, "-H\nAuthorization: value with spaces\nhttps://example.invalid\n")

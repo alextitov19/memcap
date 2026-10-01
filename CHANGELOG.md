@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.21.0 — 2026-09-30
+
+- Replace proof-of-safe-execution admission with binary memory-demand routing.
+  Lightweight and unfamiliar calls without positive heavyweight evidence execute
+  natively; known builds, tests and memory-intensive work enter the shared queue.
+  Inspect local helpers, package scripts and Git hooks without executing them.
+  Preserve tool permission checks and original native execution settings.
+- Observe unfamiliar native work through the analytics collector without queue
+  reservations or signal authority. Identity-checked high physical footprint can
+  promote future exact workloads; incomplete samples cannot certify low memory.
+  First-run unknown allocations remain a limitation, not a hard memory guarantee.
+- Add `memcap classify` explanations and labeled offline replay. Record decision
+  reasons, classifier cost and partial native-memory coverage in local analytics.
+- Rotate fitting heavy jobs across parent sessions, preferring sessions without
+  finite running work. Subagents do not receive extra turns. New managed work uses
+  one heavy queue; legacy lane records remain compatible during upgrades.
+- Keep retired adaptive peaks from reappearing after sampling gaps. Retain
+  supervision and reservations across transient registry-lock contention.
+- Allow needed managed commands up to 24 hours for admission and execution;
+  update selected Claude timeout ceilings and session guidance transactionally.
+- Recognize more finite diagnostics and noninteractive GitHub operations as
+  lightweight. Clarify that wait output counts only the requested wait scope.
+- Add temporary owner-enabled local command tracing, including exact commands,
+  queue decisions and outcomes. Keep trace data separate from public reporting,
+  expire capture after 24 hours, bound storage and provide explicit deletion.
+- Recover analytics recording at its SQLite page cap through bounded retention
+  before writes, and update heartbeat health even after a write failure. Add
+  per-lane delay reporting; unavailable historical observations remain unknown.
+
+See [local validation](docs/v0.21-validation.md) and [memory routing](docs/demand-classifier.md).
+CI and publication status are recorded on the release pull request.
+
 ## v0.20.0 — 2026-09-30
 
 - Add opt-in, local performance analytics with bounded SQLite retention, private

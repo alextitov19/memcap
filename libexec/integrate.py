@@ -23,6 +23,7 @@ import tempfile
 import uuid
 
 from report import PERFORMANCE_GUIDANCE, PROTECTION_GUIDANCE, MEMORY_GUIDANCE
+from queue_deadlines import GUIDANCE as DEADLINE_GUIDANCE, TOOL_TIMEOUT_MS
 
 SCHEMA = 1
 BEGIN = "<!-- memcap:begin -->"
@@ -48,6 +49,8 @@ for unmanaged background work, not repeated waits on an empty memcap registry.
 Pause/resume guidance refreshes at the next tool call without a session restart.
 Old queue supervisors keep their loaded version until their tasks finish. New
 commands use the updated installed runner; do not duplicate old pending work.
+
+{DEADLINE_GUIDANCE}
 
 Await native completion notifications without polling when supported. Otherwise wait
 on an existing queued task with TaskOutput block=true timeout=60000 or a
@@ -89,6 +92,18 @@ memcap's current configuration and hook feedback, not hardcoded values here.
 
 class IntegrationError(Exception):
     pass
+
+
+def managed_timeouts(data):
+    env = data.get("env", {})
+    if not isinstance(env, dict):
+        raise IntegrationError("env must be an object; refusing to replace it")
+    ceiling = env.get("BASH_MAX_TIMEOUT_MS", "0")
+    if not isinstance(ceiling, str) or not ceiling.isascii() or not ceiling.isdigit() or len(ceiling) > 15:
+        raise IntegrationError("BASH_MAX_TIMEOUT_MS must be a numeric string")
+    if int(ceiling) >= TOOL_TIMEOUT_MS:
+        return dict(data)
+    return {**data, "env": {**env, "BASH_MAX_TIMEOUT_MS": str(TOOL_TIMEOUT_MS)}}
 
 
 def unique_object(pairs):
@@ -379,6 +394,8 @@ class Installer:
                 else {}
             )
             merged = merge_hooks(data, self.hooks(agent))
+            if agent == "claude":
+                merged = managed_timeouts(merged)
             config.after = (
                 config.before
                 if merged == data

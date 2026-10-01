@@ -35,7 +35,7 @@ class FeedbackReleaseTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(classify_shell(cmd)[0], "light")
 
-    def test_shell_execution_remains_managed(self):
+    def test_syntax_uncertainty_is_not_heavy_memory_evidence(self):
         for cmd in [
             "rg $'--pre=helper' file",
             'rg $"--pre=helper" file',
@@ -52,7 +52,8 @@ class FeedbackReleaseTests(unittest.TestCase):
             "(cat file)",
         ]:
             with self.subTest(cmd=cmd):
-                self.assertEqual(classify_shell(cmd)[0], "job")
+                expected = 'job' if cmd in {'pgrep node; npm test', 'memcap wait --session --timeout "60">/dev/null; npm test'} else 'light'
+                self.assertEqual(classify_shell(cmd)[0], expected)
 
     def test_same_sample_membership_growth_increases_window_peak(self):
         job = self.job()

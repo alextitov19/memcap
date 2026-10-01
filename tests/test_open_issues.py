@@ -43,7 +43,7 @@ class OpenIssueTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(classify_shell(command)[0], 'light')
 
-    def test_unknown_execution_and_unbounded_wrappers_still_queue(self):
+    def test_positive_workloads_and_large_allocations_queue(self):
         for command in (
             'AWS_RETRY_MODE=$(npm test) aws ssm send-command',
             'AWS_MAX_ATTEMPTS=999999999 aws ssm send-command',
@@ -60,7 +60,9 @@ class OpenIssueTests(unittest.TestCase):
             "jq '[range(1000000000)] | group_by(.)' input.json",
         ):
             with self.subTest(command=command):
-                self.assertEqual(classify_shell(command)[0], 'job')
+                heavy = {'AWS_RETRY_MODE=$(npm test) aws ssm send-command', 'command npm test',
+                         'command -p npm test', "jq '[range(1000000000)] | group_by(.)' input.json"}
+                self.assertEqual(classify_shell(command)[0], 'job' if command in heavy else 'light')
                 self.assertIsNone(guarded_shell(command, '/opt/memcap', 'fixture'))
 
     def environment(self, directory):
@@ -175,7 +177,7 @@ class OpenIssueTests(unittest.TestCase):
                     queue.save(data)
                     return SimpleNamespace(poll=lambda: result)
                 with patch('scheduler.processes',return_value=table),patch.object(queue,'admissible',return_value=(True,'')),\
-                     patch.object(queue,'next_waiter',side_effect=lambda jobs,*args:jobs[0]['id']),\
+                     patch.object(queue,'next_waiter',side_effect=lambda jobs,*args,**kwargs:jobs[0]['id']),\
                      patch.object(queue,'launch',side_effect=launched):
                     self.assertEqual(queue.run(['fixture-job'],wait=1),result if result>=0 else 128-result)
                 learned=json.loads((Path(tmp)/'queue/jobs.json').read_text()).get('estimates',{}).get('fixture',{})
@@ -197,7 +199,7 @@ class OpenIssueTests(unittest.TestCase):
                     queue.save(data)
                     return SimpleNamespace(poll=lambda:0)
                 with patch('scheduler.processes',return_value=table),patch.object(queue,'admissible',return_value=(True,'')),\
-                     patch.object(queue,'next_waiter',side_effect=lambda jobs,*args:jobs[0]['id']),\
+                     patch.object(queue,'next_waiter',side_effect=lambda jobs,*args,**kwargs:jobs[0]['id']),\
                      patch.object(queue,'launch',side_effect=launched):
                     self.assertEqual(queue.run(['fixture-job'],wait=1),0)
             learned=json.loads((Path(tmp)/'queue/jobs.json').read_text())['estimates']
