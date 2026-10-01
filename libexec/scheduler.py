@@ -1491,7 +1491,8 @@ def main():
                 raise ValueError("unsupported agent")
             payload = json.load(sys.stdin)
             started_hook = time.monotonic()
-            result = hook_response(payload, str(ROOT / "bin/memcap"), agent)
+            observation = {}
+            result = hook_response(payload, str(ROOT / "bin/memcap"), agent, observation)
             from analytics_events import emit, hook_fields
             detail = result.get("hookSpecificOutput", {})
             updated = detail.get("updatedInput", {}).get("command", "")
@@ -1500,7 +1501,7 @@ def main():
             except ValueError:
                 wrapper = []
             action_name = wrapper[1] if len(wrapper) > 1 and wrapper[0] in {'memcap', str(ROOT / 'bin/memcap')} else ''
-            route = 'denied' if detail.get('permissionDecision') == 'deny' else {'_inspect': 'guarded', 'run': 'managed'}.get(action_name, 'native')
+            route = 'denied' if detail.get('permissionDecision') == 'deny' else 'guarded' if action_name == '_inspect' else observation.get('route', 'native')
             from command_trace import hook as trace_hook
             trace_hook(payload, route)
             emit("route", **hook_fields(payload), agent=agent, route=route,

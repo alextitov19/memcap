@@ -1040,7 +1040,7 @@ def rewritten_response(payload, updated, agent, context=""):
     return {"hookSpecificOutput": result}
 
 
-def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
+def hook_response(payload: dict, executable: str, agent: str = "codex", observation=None) -> dict:
     from queue_deadlines import WAIT_SECONDS, GUIDANCE, managed_input
 
     if payload.get("hook_event_name") != "PreToolUse" or payload.get(
@@ -1071,6 +1071,8 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
          classifier_ms=(time.monotonic() - started) * 1000, workload=decision.fingerprint)
     resource = persistent_shell(command) if decision.kind == "heavy" else ""
     kind = "light" if decision.kind == "light" else "resource" if resource else "job"
+    if observation is not None:
+        observation['route'] = 'native' if kind == 'light' else 'managed'
     from inspection import spans
 
     from session_identity import key, bind_runner_text, scope_waits
@@ -1096,6 +1098,8 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
         environment_run = wrapped[1:3] == ['environment', 'run']
         if bound is not None or wrapped[1] == "run" or environment_run:
             explicit_policy = any(w in {'--memory', '--resource'} or w.startswith(('--memory=', '--resource=')) for w in wrapped[2:wrapped.index('--') if '--' in wrapped else len(wrapped)])
+            if observation is not None and (environment_run or explicit_policy):
+                observation['route'] = 'managed'
             updated = managed_input(original, agent) if environment_run or (wrapped[1] == "run" and (kind != "light" or explicit_policy)) else dict(original)
             updated["command"] = bound if bound is not None else command
             updated.pop("cmd", None)

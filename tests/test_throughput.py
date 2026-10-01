@@ -171,6 +171,17 @@ class ThroughputTests(unittest.TestCase):
         self.assertIn('environment run --session-key ', result['command'])
         self.assertIn('--memory 12 --compose fixture.yml -- go test ./...', result['command'])
 
+    def test_route_telemetry_reports_actual_wrapper_policy_without_double_counting(self):
+        from scheduler_policy import hook_response
+        for command, expected in [('memcap run -- git status', 'native'), ('memcap run --memory 1 -- git status', 'managed'), ('memcap run -- go test ./pkg', 'managed')]:
+            observation = {}
+            hook_response(dict(hook_event_name='PreToolUse', tool_name='Bash', cwd=str(self.root), tool_input={'command': command}),
+                          '/bin/memcap', 'claude', observation)
+            self.assertEqual(observation['route'], expected)
+        report = summarize([self.row('route', 1, source='hook', route='native'), self.row('route', 2, source='scheduler', route='native')])
+        self.assertEqual(report['routes'], {'native': 1})
+        self.assertEqual(report['runner_routes'], {'native': 1})
+
 
 if __name__ == '__main__':
     unittest.main()

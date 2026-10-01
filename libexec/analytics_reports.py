@@ -230,7 +230,7 @@ def summarize(rows, health=None, now=None, include_monitoring=False):
         producers[row["producer"]].add(row["seq"])
         drops[row["producer"]] = max(drops[row["producer"]], row.get("producer_dropped", 0))
     gaps = sum(max(v) - min(v) + 1 - len(v) for v in producers.values())
-    route_counts = collections.Counter(r.get("route", "unknown") for r in rows if r["event"] == "route")
+    route_counts = collections.Counter(r.get("route", "unknown") for r in rows if r["event"] == "route" and r.get('source') != 'scheduler')
     native_operations = {(r.get('session'), r.get('operation')) for r in rows if r['event'] == 'route' and r.get('route') == 'native' and r.get('operation')}
     native_durations = [duration(hook_starts.get((r.get('session'), r.get('operation'))), r) for r in rows
                         if r['event'] == 'hook' and r.get('phase') in {'PostToolUse', 'PostToolUseFailure'}
@@ -269,6 +269,7 @@ def summarize(rows, health=None, now=None, include_monitoring=False):
         "wait_calls": sum(r.get("family") == "wait" and r["event"] == "route" for r in rows),
         "feedback_bytes": sum(r.get("feedback_bytes", 0) for r in rows),
         "routes": dict(route_counts),
+        "runner_routes": dict(collections.Counter(r.get('route', 'unknown') for r in rows if r['event'] == 'route' and r.get('source') == 'scheduler')),
         "classification": dict(
             decisions=dict(collections.Counter(r.get('demand', 'unknown') for r in rows if r['event'] == 'classification')),
             reasons=dict(collections.Counter(r.get('demand_reason', 'unknown') for r in rows if r['event'] == 'classification')),
