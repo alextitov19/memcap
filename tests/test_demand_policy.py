@@ -56,13 +56,15 @@ class DemandTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.decision(command).kind, 'heavy')
 
-    def test_django_server_and_test_launches_are_heavy_but_checks_remain_native(self):
-        for command in ['uv run python manage.py runserver 127.0.0.1:8022 --noreload',
+    def test_django_tests_are_heavy_but_persistence_and_checks_remain_native(self):
+        for command in ['uv run python manage.py test app.tests',
                         'python3 manage.py test app.tests',
-                        'python3 -m django runserver', 'python3 -m django test']:
+                        'python3 -m django test']:
             self.assertEqual(self.decision(command).kind, 'heavy', command)
         for command in ['python manage.py check', 'python manage.py migrate --check',
-                        'python -m django --version', 'cat manage.py']:
+                        'python -m django --version', 'cat manage.py',
+                        'uv run python manage.py runserver 127.0.0.1:8022 --noreload',
+                        'python3 -m django runserver']:
             self.assertEqual(self.decision(command).kind, 'light', command)
 
     def test_local_script_contents_and_changes_drive_decision(self):

@@ -12,8 +12,8 @@
 - Retain pending commands through transient process-identity probe and registry
   contention failures, respecting their admission deadlines and cancellation.
   Corrupt registries still fail explicitly; no work starts without fresh identities.
-- Recognize Django server and test launches through Python/uv wrappers as heavy;
-  ordinary Django checks and metadata remain native.
+- Recognize Django test launches through Python/uv wrappers as heavy; persistence
+  alone does not make development servers heavy. Checks and metadata remain native.
 - Include the runtime worker controller in build fingerprints and separate its
   workload estimates from earlier uncapped launches. Worker telemetry describes
   allocated concurrency, not universal enforcement across arbitrary descendants.
