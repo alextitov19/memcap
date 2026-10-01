@@ -28,7 +28,7 @@ SESSION_GUIDANCE = (
     "Poll once per minute while pending; avoid repeated output-file reads and holding messages. Wait for final output and "
     "exit status; continue independent work while waiting. Do not submit duplicates. "
     "Keep independent reads and status checks in separate tool calls from builds/tests: "
-    "a compound shell containing a workload waits as one managed command, including its inspection prefix. "
+    "supported literal sequential stages are admitted separately; complex shell syntax still waits as one managed command, including its inspection prefix. "
     + DEADLINE_GUIDANCE + " "
     + PROTECTION_GUIDANCE
     + " Respect explicit cancellation. A simulator "

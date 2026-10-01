@@ -184,7 +184,10 @@ def main(argv=None):
     if args.action == "today":
         local = time.localtime()
         midnight = time.mktime((local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1))
-        rows = [r for r in rows if r["wall"] >= midnight]
+        # Include pre-midnight endpoints of jobs observed today, so a waiter
+        # crossing midnight does not lose its age or its eventual paired result.
+        current_jobs = {r['job'] for r in rows if r['wall'] >= midnight and r.get('job')}
+        rows = [r for r in rows if r["wall"] >= midnight or r.get('job') in current_jobs]
         if args.build:
             import re
             if not re.fullmatch(r"[a-f0-9]{8,64}", args.build):
@@ -195,7 +198,7 @@ def main(argv=None):
             rows = [r for r in rows if r["build"] in matches]
         if args.enforcement != "all":
             rows = [r for r in rows if r.get("paused") == int(args.enforcement == "paused")]
-        result = summarize(rows, health)
+        result = summarize(rows, health, now=time.time())
         result["selection"] = dict(build=args.build, enforcement=args.enforcement, since=midnight)
         if not args.json:
             print(text_report(result))

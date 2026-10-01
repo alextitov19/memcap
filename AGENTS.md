@@ -137,6 +137,15 @@ wrong reason.** Concretely —
 Every kill routes through `mc_kill_pids`. If you are adding a code path that
 terminates a process and it does not go through that function, that is the bug.
 
+Disposable Compose environments reserve the stack plus workload before startup.
+`environments.py` records a private unique project and immutable container IDs
+before starting services; it never stops containers itself. The `environment`
+scope in `mc_kill_pids` delegates only to the fresh-identity shell bridge and must
+never send host PID signals. Preserve local endpoint binding, pins, live claims,
+pause, dry-run, continuous orphan grace and parent-lease budget verification.
+Existing untracked stacks are not adopted. Do not delete volumes or restart
+Docker Desktop. Fake Docker/identity fixtures are mandatory in environment tests.
+
 The `idle-gc` exception requires a fresh lifecycle collector authorization, not
 just low CPU or a live-agent ownership guess. Keep the default `GC_MODE=observe`,
 all tests dry-run, and the session/subagent, PID identity, network and active-job

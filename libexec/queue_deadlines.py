@@ -3,6 +3,15 @@
 WAIT_SECONDS = 86400
 TOOL_TIMEOUT_MS = WAIT_SECONDS * 1000
 GUIDANCE = (
+    "Memcap shares physical memory among all Claude and Codex sessions. Reserve an entire disposable test environment before bringing it up: "
+    "memcap environment run --memory TOTAL_GIB --compose compose.yaml -- TEST_COMMAND. "
+    "TOTAL_GIB includes Docker services plus the test/build process. Prepare images separately. "
+    "This waits before starting the stack, runs the workload within the same admission, then stops its uniquely owned containers without deleting volumes. "
+    "Do not start a large stack and then submit a separate queued test that depends on it: the stack can block its own test and other sessions. "
+    "Reuse shared resources with explicit ownership; do not stop another session's stack. Pin or claim a disposable environment before sharing it. "
+    "Large requests stay pending while verified finished-session resources are cleaned up. If the environment plus workload cannot fit, reduce the actual environment or report that capacity requirement; do not understate its reservation. "
+    "Prefer native task completion notifications. If the host can resume on background completion, one memcap wait JOB_ID --until-complete may replace repeated status calls; it is observation only, not the workload's result. "
+    "Hosts and Stop hooks that cannot resume must retain their bounded 60-second blocking fallback. "
     "Allow needed managed jobs up to 24 hours: use memcap run --wait 86400 when "
     "specifying admission patience. Managed Claude commands use background mode "
     "and timeout=86400000; selected profiles need BASH_MAX_TIMEOUT_MS at least "

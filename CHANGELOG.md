@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.22.0 — 2026-10-01
+
+- Reclassify automatic and explicit wrappers without memory/resource overrides;
+  ordinary reads, remote calls and cleanup retain native execution. Separate
+  supported literal shell stages so preparation does not wait behind a build.
+- Preserve original child glob expansion when binding wrappers to agent scopes;
+  avoid passing literal wildcard filenames to tools such as ShellCheck.
+- Condition estimates on source identity and worker allocation. Only complete
+  exact evidence can lower a pending request for a different allocation.
+- Diagnose sustained headroom blocks when no finite managed work can drain;
+  preserve large pending jobs and show their actual capacity requirement.
+- Add disposable Compose environments: reserve the whole stack plus workload
+  before startup, run within one lease, and stop verified owned containers after
+  completion. Recover abandoned environments with identity/grace checks. Pins,
+  live claims, unknown ownership and pause retain protection; volumes survive.
+- Add a long-lived completion observer for notification-capable hosts, retaining
+  bounded waits for legacy hosts and Stop hooks. Update Claude/Codex guidance
+  about combined environment budgets and shared memory.
+- Preserve compact job lifecycle records across raw-sample eviction. Report
+  pending ages, actual admissions, native tool latency and separate monitoring
+  cohorts; expose retention limits instead of hiding missing history.
+
 ## v0.21.1 — 2026-09-30
 
 - Apply managed worker limits at supported Jest, Vitest and Playwright CLI startup,

@@ -277,6 +277,8 @@ class Classifier:
                 return self.shell(args[args.index('--shell-command') + 1], cwd, depth + 1)
             if '--' in args:
                 return self.argv(args[args.index('--') + 1:], cwd, depth + 1)
+        if name == 'memcap' and args[:2] == ['environment', 'run']:
+            return 'container-workload'
         if name == 'jq':
             # Explicit materialization is evidence; unfamiliar/streaming filters are not.
             if any(re.search(r'\[\s*range\(\s*[0-9]{8,}\s*\)\s*\]', a) for a in args):

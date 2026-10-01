@@ -443,6 +443,13 @@ EOF
 # notification on this cannot claim one that never happened.
 mc_kill_pids() {
   local pids reason="$2" scope="${3:-full}" p alive="" idents="" now_ident was_ident analytics_id="$$:$RANDOM:$SECONDS"
+  if [ "$scope" = environment ]; then
+    # Only immutable, privately registered container identities enter this path;
+    # they are not host PIDs and must never reach the ordinary kill command.
+    command -v mc_environment_stop >/dev/null 2>&1 || return 1
+    mc_environment_stop "$1" "${MC_ENVIRONMENT_CALLER:-}"
+    return $?
+  fi
   if ! pids=$(mc_filter_protected "$1" "$scope"); then
     mc_log "$reason: refusing to kill -- the protected pid set is unknown (classification did not run, or ps could not resolve memcap's own ancestry)"
     return 1
@@ -1879,6 +1886,9 @@ mc_watch() {
 
   MC_POLL_RECLAIMED=0
   MC_ORPHAN_RECLAIMED=0
+  if command -v mc_environment_reap >/dev/null 2>&1; then
+    mc_environment_reap
+  fi
   if command -v mc_recover_orphans >/dev/null 2>&1; then
     mc_recover_orphans
   fi

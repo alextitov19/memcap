@@ -26,7 +26,8 @@ import uuid
 from admission import advance, decide
 from queue_deadlines import WAIT_SECONDS
 from scheduler_metrics import append_event, shared_sample, blocker_fields, BLOCKERS
-from workload_estimates import fingerprint, record as record_estimate
+from workload_estimates import fingerprint, record as record_estimate, source_identity
+from throughput import pending_request, capacity_progress, capacity_message
 from workload_members import footprint_members, refresh_footprint_members
 from scheduler_lanes import lane as job_lane, lane_code, candidate as small_candidate, script_index, SMALL_BURST
 
@@ -423,6 +424,7 @@ class Scheduler:
                 worker_control_version=1,
                 node_worker_limit=int(worker_environment(dict(os.environ), workers)['MEMCAP_NODE_WORKERS']),
                 manifests=manifests,
+                sources=source_identity(cwd),
                 cache_state={
                     name: (cwd / name).exists()
                     for name in ("node_modules", "target", ".build", "build")
@@ -856,11 +858,12 @@ class Scheduler:
                     ):
                         key, updated_memory = self.demand(argv, cwd, workers, data)
                         exact = data.get("estimates", {}).get(key, {})
+                        request = pending_request(job, key, updated_memory, exact)
                         job.update(estimate_key=key, estimate_family_key=self.estimate_family_key,
                                    estimate_source=3 if exact else 4 if data.get("estimates", {}).get(self.estimate_family_key) else 2,
                                    estimate_complete_runs=exact.get("complete_runs", 0),
                                    small_candidate=self.small_candidate if job.get('demand_version') != 1 else False, workers=workers,
-                                   memory_kb=max(job["memory_kb"], updated_memory))
+                                   memory_kb=request)
                     job['workers'] = workers
                     memory = job["memory_kb"]
                     active_resource = next(
@@ -992,6 +995,7 @@ class Scheduler:
                         from scheduler_metrics import account_blocker
 
                         account_blocker(job, job["admission"]["reason"], time.monotonic())
+                        capacity_progress(job, data['jobs'], job['admission'], time.monotonic())
                         self.save(data)
                         if wait is not None and time.monotonic() - began >= wait:
                             print(
@@ -1005,10 +1009,10 @@ class Scheduler:
                                       argv=argv, cwd=str(cwd),
                                       wait_seconds=time.monotonic() - began,
                                       admission=job['admission'])
-                            details = ""
+                            details = capacity_message(job)
                             if job["admission"]["reason"] == "headroom":
                                 d = job["admission"]
-                                details = (
+                                details += (
                                     f" Available {d.get('available_kb', 0) / GIB:.2f} GiB; "
                                     f"unused running reservations {d.get('outstanding_kb', 0) / GIB:.2f} GiB; "
                                     f"request {memory / GIB:.2f} GiB; "
@@ -1018,6 +1022,7 @@ class Scheduler:
                                 self.directory,
                                 dict(
                                     event="stalled",
+                                    capacity_stalled=int(bool(job.get('capacity_progress', {}).get('stalled'))),
                                     job_ref=int(ident[:13], 16),
                                     classification_code=job.get("classification_code", 0),
                                     lane_code=lane_code(job),
@@ -1280,6 +1285,7 @@ class Scheduler:
                     worker_control_version=int(workers > 0),
                     node_worker_limit=int(env.get('MEMCAP_NODE_WORKERS', workers)) if workers > 0 else 0,
                     request_kb=job["memory_kb"],
+                    workload=job.get('estimate_key', ''),
                     classification_code=job.get("classification_code", 0),
                     estimate_source=job.get("estimate_source", 0),
                     estimate_complete_runs=job.get("estimate_complete_runs", 0),
@@ -1313,11 +1319,11 @@ class Scheduler:
                 "queue registry is damaged; refusing to discard reservations"
             ) from exc
 
-    def wait_for(self, ident, timeout, session_key=None):
+    def wait_for(self, ident, timeout, session_key=None, until_complete=False):
         if (
             (ident != "--session" and not re.fullmatch(r"[a-f0-9]{8,32}", ident))
             or not math.isfinite(timeout)
-            or not 0 <= timeout <= 60
+            or not 0 <= timeout <= (86400 if until_complete else 60)
         ):
             raise QueueError(
                 "usage: memcap wait JOB_ID [--timeout SECONDS (0..60)]; JOB_ID is a memcap hex ID from memcap queue, not a native tool task ID. Use memcap wait --session --timeout 60 or the native task's completion notification."
@@ -1379,6 +1385,7 @@ class Scheduler:
                                    and j.get('admission', {}).get('reason') in BLOCKERS})
                 explanation = ('Last recorded admission blocker(s): ' + ', '.join(blockers) + '. '
                                if blockers else 'Admission blocker unavailable for this runner. ')
+                explanation += ' '.join(capacity_message(j) for j in live['jobs'])
                 print(
                     f"memcap: {ident} pending ({live['jobs'][0]['status']}); {running} running, {waiting} queued IN THIS WAIT SCOPE (not host totals); oldest current phase {int(oldest)}s. "
                     + explanation +
@@ -1484,7 +1491,8 @@ def main():
                 raise ValueError("unsupported agent")
             payload = json.load(sys.stdin)
             started_hook = time.monotonic()
-            result = hook_response(payload, str(ROOT / "bin/memcap"), agent)
+            observation = {}
+            result = hook_response(payload, str(ROOT / "bin/memcap"), agent, observation)
             from analytics_events import emit, hook_fields
             detail = result.get("hookSpecificOutput", {})
             updated = detail.get("updatedInput", {}).get("command", "")
@@ -1493,7 +1501,7 @@ def main():
             except ValueError:
                 wrapper = []
             action_name = wrapper[1] if len(wrapper) > 1 and wrapper[0] in {'memcap', str(ROOT / 'bin/memcap')} else ''
-            route = 'denied' if detail.get('permissionDecision') == 'deny' else {'_inspect': 'guarded', 'run': 'managed'}.get(action_name, 'native')
+            route = 'denied' if detail.get('permissionDecision') == 'deny' else 'guarded' if action_name == '_inspect' else observation.get('route', 'native')
             from command_trace import hook as trace_hook
             trace_hook(payload, route)
             emit("route", **hook_fields(payload), agent=agent, route=route,
@@ -1517,13 +1525,14 @@ def main():
             action="store_true",
             help="wait on finite jobs owned by this agent process; no lookup pipeline",
         )
-        parser.add_argument("--timeout", type=float, default=60)
+        parser.add_argument("--timeout", type=float, default=None)
+        parser.add_argument("--until-complete", action="store_true", help="one blocking observation up to 24h; use a background task and native completion notification")
         parser.add_argument("--session-key", default=None, help=argparse.SUPPRESS)
         args = parser.parse_args(sys.argv[2:])
         if bool(args.job_id) == args.session:
             parser.error("choose JOB_ID or --session")
         return scheduler.wait_for(
-            "--session" if args.session else args.job_id, args.timeout, args.session_key
+            "--session" if args.session else args.job_id, args.timeout if args.timeout is not None else (86400 if args.until_complete else 60), args.session_key, args.until_complete
         )
     if action == "authorize":
         ids = scheduler.authorize_cancel(
@@ -1575,6 +1584,7 @@ def main():
     parser.add_argument("--session-key", default="", help=argparse.SUPPRESS)
     parser.add_argument("--analytics-operation", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--analytics-turn", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--purpose", choices=('project', 'monitoring'), default='project', help="analytics cohort; never changes admission")
     parser.add_argument(
         "--wait-forever",
         action="store_true",
@@ -1587,6 +1597,7 @@ def main():
     args = parser.parse_args(sys.argv[2:])
     scheduler.classification_code = args.classification_code
     scheduler.analytics_metadata = {k: v for k, v in dict(operation=args.analytics_operation, turn=args.analytics_turn).items() if v}
+    scheduler.analytics_metadata['purpose'] = args.purpose
     argv = args.command[1:] if args.command[:1] == ["--"] else args.command
     if args.shell_command is not None:
         if not (directory.parent / "paused").is_file() and polling_loop(
@@ -1604,18 +1615,30 @@ def main():
     if (directory.parent / "paused").is_file():
         return scheduler.run(argv, args.cwd)
     if (
-        args.session_key
-        and args.shell_command is not None
-        and args.memory is None
+        args.memory is None
         and not args.resource
     ):
-        from demand_policy import classify
+        from command_stages import native_command, split_command, staged_script, stable_shell
         # A cached agent wrapper may have been generated before an upgrade.
         # Recheck its original command using today's classifier before reserving.
         # Explicit user reservations/resources retain their requested policy.
-        if classify(args.shell_command, args.cwd).kind == 'light':
+        if native_command(argv, args.cwd):
+            from analytics_events import emit, family
+            emit('route', source='scheduler', route='native', session=args.session_key,
+                 purpose=args.purpose, family=family(args.shell_command or shlex.join(argv)),
+                 **{k: v for k, v in scheduler.analytics_metadata.items() if k != 'purpose'})
             os.chdir(Path(args.cwd or os.getcwd()).resolve(strict=True))
             os.execvpe(argv[0], argv, os.environ)
+        if args.shell_command is not None and not args.wait_forever and args.wait == WAIT_SECONDS and stable_shell(args.shell, args.login):
+            staged = split_command(args.shell_command, str(ROOT / 'bin/memcap'), args.session_key, args.wait)
+            if staged:
+                os.chdir(Path(args.cwd or os.getcwd()).resolve(strict=True))
+                os.execvpe(args.shell, [args.shell, '-lc' if args.login else '-c', staged], os.environ)
+        if args.shell_command is None and not args.wait_forever and args.wait == WAIT_SECONDS:
+            staged = staged_script(argv, args.cwd, str(ROOT / 'bin/memcap'), args.session_key, args.wait)
+            if staged:
+                os.chdir(Path(args.cwd or os.getcwd()).resolve(strict=True))
+                os.execvpe(staged[0], staged, os.environ)
     return scheduler.run(
         argv,
         args.cwd,

@@ -20,6 +20,7 @@ EVENTS = frozenset(("hook", "route", "queued", "admitted", "completed", "cancell
                     "stalled", "reservation", "sample", "stop_wait", "action",
                     "api", "native_tool", "native_hooks", "work", "observer", "experiment", "claim", "feedback"))
 ENUMS = {
+    "purpose": {"project", "monitoring", "unknown"},
     "demand": {"light", "heavy"},
     "confidence": {"ordinary", "unknown", "evidence"},
     "demand_reason": {"ordinary-command", "unknown-demand", "known-workload", "observed-high-memory",
@@ -33,13 +34,14 @@ ENUMS = {
     "route": {"native", "guarded", "managed", "paused", "denied", "unknown"},
     "family": {"read", "search", "ssm", "remote", "test", "build", "browser", "server", "wait", "unknown"},
     "outcome": {"accepted", "rejected", "abandoned", "cancelled", "failed", "unknown", "started", "completed", "timeout"},
-    "scope": {"full", "sims", "oversized", "scheduled", "idle-gc", "boot-timeout", "poll-cleanup", "orphan-recovery"},
+    "scope": {"full", "sims", "oversized", "scheduled", "idle-gc", "boot-timeout", "poll-cleanup", "orphan-recovery", "environment"},
     "query_source": {"main", "subagent", "auxiliary", "unknown"},
     "tool": {"Bash", "exec_command", "shell_command", "Read", "Grep", "Glob", "Write", "Edit", "Agent", "Task", "TaskOutput", "unknown"},
     "cache_state": {"warm", "cold", "unknown"},
 }
 IDS = {"session", "parent", "turn", "operation", "job", "project", "work", "action", "model", "agent_version", "workload", "delivery", "resource"}
 NUMBERS = {
+    "capacity_stalled", "headroom_deficit_kb", "outstanding_kb", "headroom_kb",
     "worker_control_version", "node_worker_limit",
     "classifier_version", "dependency_count", "classifier_ms",
     "lane_code",
