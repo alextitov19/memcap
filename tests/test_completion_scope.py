@@ -51,7 +51,9 @@ class CompletionScopeTests(unittest.TestCase):
         self.assertEqual(shlex.split(command)[-4:], ["--", "echo", "--session-key", "child-value"])
         payload = self.payload("memcap run -- echo hi # a comment")
         output = hook_response(payload, "/opt/memcap", "claude")
-        self.assertEqual(shlex.split(output["hookSpecificOutput"]["updatedInput"]["command"])[-3:], ["--", "echo", "hi"])
+        # Binding preserves original shell text (including comments and globs).
+        # Parse comments as the executing shell does; they are not child argv.
+        self.assertEqual(shlex.split(output["hookSpecificOutput"]["updatedInput"]["command"], comments=True)[-3:], ["--", "echo", "hi"])
 
     def test_codex_rewrites_follow_native_permission_contract(self):
         for command in ["memcap run -- npm test", "memcap wait --session --timeout 60"]:

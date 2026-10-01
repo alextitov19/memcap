@@ -1,0 +1,47 @@
+"""Admission evidence and explanations. No execution or policy overrides."""
+def pending_request(job, key, updated, exact):
+    """Only complete exact evidence for a NEW allocation can lower a waiter.
+
+    Explicit requests never enter this path. Partial observations and same-key
+    revisions retain their high-water mark; fewer workers alone proves nothing.
+    """
+    if (job.get('elastic') and key != job.get('estimate_key')
+            and type(exact.get('complete_runs')) is int and exact['complete_runs'] >= 3
+            and exact.get('peaks_kb') and updated >= max(exact['peaks_kb']) * 1.25):
+        return updated
+    return max(job['memory_kb'], updated)
+
+
+def capacity_progress(job, jobs, decision, now):
+    """Detect a persistent deficit with no finite managed work to drain.
+
+    This is diagnostic, not permission to start/stop anything. Fresh non-headroom
+    evidence resets the interval; unavailable samples cannot advance it.
+    """
+    finite = any(j.get('status') == 'running' and not j.get('resource') for j in jobs)
+    reason = decision.get('reason')
+    state = job.get('capacity_progress', {})
+    if reason == 'sampling':
+        return state
+    if finite or reason != 'headroom':
+        job.pop('capacity_progress', None)
+        return {}
+    if not state or now - state.get('last', now) > 90:
+        state = dict(since=now, max_available_kb=0)
+    state.update(last=now, max_available_kb=max(state['max_available_kb'], decision.get('available_kb', 0)))
+    state['stalled'] = now - state['since'] >= 120
+    job['capacity_progress'] = state
+    return state
+
+
+def capacity_message(job):
+    if not job.get('capacity_progress', {}).get('stalled'):
+        return ''
+    d = job.get('admission', {})
+    required = d.get('request_kb', job.get('memory_kb', 0)) + d.get('headroom_kb', 0) + d.get('outstanding_kb', 0)
+    return (f" Sustained capacity block: needs {required / 1048576:.2f} GiB available; "
+            f"observed {d.get('available_kb', 0) / 1048576:.2f} GiB. "
+            "No finite managed job is running that can drain. The job remains pending. "
+            "Verified disposable session resources may be retired; shared, pinned or needed resources stay protected. "
+            "Use a measured lower-memory workload configuration or release an owned unneeded resource; "
+            "repeated status calls cannot create capacity.")

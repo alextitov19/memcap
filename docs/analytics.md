@@ -201,3 +201,25 @@ Compare queue delay, successful runtime, prompt/task completion, polling cost,
 red-pressure exposure and paging within matching workload, worker, build, policy
 and pause cohorts. Measure hook and collector overhead separately. Do not claim
 that a paused candidate's zero queue delay proves active admission improvement.
+# Throughput reporting and retention
+
+Finite project jobs and jobs explicitly tagged `memcap run --purpose monitoring`
+are reported separately. Untagged historical monitoring remains unknown. Pending
+jobs show elapsed age even if never admitted; those ages are not mixed into
+completed-job wait percentiles, and historical pending observations do not prove
+current process liveness. The report distinguishes observed jobs from recorded
+admissions. Matched native tool spans and job queue amplification are separate
+from accepted whole-session productivity.
+
+Compact queued/admitted/completed/cancelled/stalled checkpoints survive raw-sample
+eviction. They are bounded to 14 days and 4,096 recent job identities; high-volume
+samples retain the existing byte cap. Coverage reports show the oldest retained
+raw event and checkpoint count. Neither raw retention nor delivery is promised
+complete, and old evicted endpoints cannot be reconstructed automatically.
+
+Use native completion notifications when supported. `memcap wait ID
+--until-complete` provides one blocking observer, up to 24 hours, suitable for a
+host background task. It never reserves RAM or certifies workload success. Keep
+the original task for its final output/status. Legacy hooks and hosts without
+resumable notifications continue using 60-second blocking polls; do not end a
+Stop-blocked turn in the expectation that memcap can resume the host.

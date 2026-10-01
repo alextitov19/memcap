@@ -1073,7 +1073,7 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
     kind = "light" if decision.kind == "light" else "resource" if resource else "job"
     from inspection import spans
 
-    from session_identity import key, bind_runner, scope_waits
+    from session_identity import key, bind_runner_text, scope_waits
 
     session_key = key(payload)
     guarded = None  # Native calls preserve the host's command and execution mode.
@@ -1086,16 +1086,18 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
     already_wrapped = (
         len(wrapped) > 1
         and wrapped[0] in {executable, "memcap"}
-        and wrapped[1] in {"run", "queue", "status", "feedback", "_inspect"}
+        and wrapped[1] in {"run", "queue", "status", "feedback", "_inspect", "environment"}
         and literal_shell(command)
         and not any(part[2] and all(char in "|&;<>" for char in part[2])
                     for part in spans(normalized_lines(command)))
     )
     if already_wrapped:
-        bound = bind_runner(wrapped, session_key)
-        if bound is not None or wrapped[1] == "run":
-            updated = managed_input(original, agent) if wrapped[1] == "run" else dict(original)
-            updated["command"] = shlex.join(bound) if bound is not None else command
+        bound = bind_runner_text(command, session_key)
+        environment_run = wrapped[1:3] == ['environment', 'run']
+        if bound is not None or wrapped[1] == "run" or environment_run:
+            explicit_policy = any(w in {'--memory', '--resource'} or w.startswith(('--memory=', '--resource=')) for w in wrapped[2:wrapped.index('--') if '--' in wrapped else len(wrapped)])
+            updated = managed_input(original, agent) if environment_run or (wrapped[1] == "run" and (kind != "light" or explicit_policy)) else dict(original)
+            updated["command"] = bound if bound is not None else command
             updated.pop("cmd", None)
             if updated == original:
                 return {}
@@ -1123,9 +1125,9 @@ def hook_response(payload: dict, executable: str, agent: str = "codex") -> dict:
                     wait_args.append(control[i])
                     i += 1
             wait_args += ["--session-key", session_key]
-        if wait_args == control:
+        if wait_args == control and '--until-complete' not in control:
             return {}
-        updated = {**original, "command": shlex.join(wait_args)}
+        updated = {**(managed_input(original, agent) if '--until-complete' in control else original), "command": shlex.join(wait_args)}
         updated.pop("cmd", None)
         return rewritten_response(payload, updated, agent)
     if kind == "light":

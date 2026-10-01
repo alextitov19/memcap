@@ -34,7 +34,7 @@ def bind_runner(argv, session_key):
         return None
     values = {"--classification-code", "--resource", "--memory", "--wait",
               "--cwd", "--session-key", "--shell", "--shell-command",
-              "--analytics-operation", "--analytics-turn"}
+              "--analytics-operation", "--analytics-turn", "--purpose", "--compose"}
     flags = {"--wait-forever", "--login"}
     result, i = [*argv[:2], "--session-key", session_key], 2
     while i < len(argv):
@@ -55,6 +55,42 @@ def bind_runner(argv, session_key):
         else:
             return None
     return result
+
+
+def bind_runner_text(command, session_key):
+    """Preserve child quoting/glob expansion while replacing only metadata."""
+    from inspection import spans
+    parts = list(spans(command))
+    try:
+        words = [shlex.split(p[2])[0] for p in parts]
+    except (ValueError, IndexError):
+        return None
+    environment = words[1:3] == ['environment', 'run']
+    bound = bind_runner([words[0], *words[2:]] if environment else words, session_key)
+    if bound is None:
+        return None
+    if bound == ([words[0], *words[2:]] if environment else words):
+        return command
+    # Validate the complete option grammar with bind_runner, but edit original
+    # spans. Re-serializing shlex tokens would turn *.go into a literal filename.
+    end_options_start = 3 if environment else 2
+    edits = [(parts[end_options_start - 1][1], parts[end_options_start - 1][1], ' --session-key ' + shlex.quote(session_key))]
+    i = end_options_start
+    while i < len(words):
+        word = words[i]
+        if word == '--' or not word.startswith('-'):
+            break
+        option, equals, _ = word.partition('=')
+        if option == '--session-key':
+            last = i if equals else i + 1
+            edits.append((parts[i][0], parts[last][1], ''))
+        if option in {'--wait-forever', '--login'} or equals:
+            i += 1
+        else:
+            i += 2
+    for start, end, replacement in sorted(edits, reverse=True):
+        command = command[:start] + replacement + command[end:]
+    return command
 
 
 def scope_waits(command, executable, session_key):

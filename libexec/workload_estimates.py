@@ -4,8 +4,44 @@ import hashlib
 import hmac
 import json
 import math
+import os
+from pathlib import Path
+import time
 
 GIB = 1048576
+
+
+def source_identity(cwd, max_files=4096, max_bytes=8 * 1024 * 1024):
+    """Bounded source identity for estimates that may shrink admission.
+
+    Incomplete enumeration produces a nonreusable key, never a falsely matching
+    low-memory profile. No target imports or commands are executed.
+    """
+    digest, count, size = hashlib.sha256(), 0, 0
+    deadline = time.monotonic() + .15
+    try:
+        for directory, dirs, files in os.walk(cwd, followlinks=False):
+            dirs[:] = sorted(d for d in dirs if d not in {'.git', 'node_modules', 'vendor', 'target', 'build', '.build', '.venv', 'venv', '__pycache__', '.next'})
+            for name in sorted(files):
+                if time.monotonic() > deadline:
+                    raise ValueError('source scan budget')
+                path = Path(directory) / name
+                if path.suffix not in {'.go', '.mod', '.sum', '.py', '.js', '.jsx', '.ts', '.tsx', '.json', '.sh', '.rs', '.toml'}:
+                    continue
+                count += 1
+                if path.is_symlink() or count > max_files:
+                    raise ValueError('incomplete source identity')
+                length = path.stat().st_size
+                size += length
+                if size > max_bytes:
+                    raise ValueError('source byte budget')
+                data = path.read_bytes()
+                if len(data) != length:
+                    raise ValueError('source changed')
+                digest.update(str(path.relative_to(cwd)).encode() + b'\0' + data + b'\0')
+        return digest.hexdigest()
+    except (OSError, ValueError):
+        return 'incomplete-' + os.urandom(16).hex()
 
 
 def estimate(prior_kb: int, peaks_kb: list, complete_runs: int) -> int:

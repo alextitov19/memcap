@@ -117,13 +117,16 @@ def observer_cost(rows):
                 scope="Observed in-window collector CPU deltas; excludes probe children, hooks and unobserved intervals.")
 
 
-def summarize(rows, health=None):
+def summarize(rows, health=None, now=None, include_monitoring=False):
+    # Historical callers use the observation cutoff, never today's wall clock.
+    now = max((r['wall'] for r in rows), default=0) if now is None else now
     all_jobs = job_rows(rows)
+    monitoring = [j for j in all_jobs if any(isinstance(v, dict) and v.get('purpose') == 'monitoring' for v in j.values())]
     resources = [j for j in all_jobs if any(isinstance(v, dict) and v.get("persistent") for v in j.values())]
-    jobs = [j for j in all_jobs if j not in resources]
-    counts = collections.Counter(started=len(jobs), succeeded=0, failed=0, cancelled=0, unfinished=0)
+    jobs = [j for j in all_jobs if j not in resources and (include_monitoring or j not in monitoring)]
+    counts = collections.Counter(observed=len(jobs), started=sum('admitted' in j for j in jobs), succeeded=0, failed=0, cancelled=0, unfinished=0)
     waits, runtimes, amplifications, exposures = [], [], [], collections.defaultdict(list)
-    worst = []
+    worst, pending = [], []
     for job in jobs:
         end = job.get("completed") or job.get("cancelled")
         admission = job.get("admitted", {})
@@ -132,6 +135,16 @@ def summarize(rows, health=None):
             counts[state] += 1
         else:
             counts["unfinished"] += 1
+            if not admission:
+                observed = job.get('stalled') or job.get('queued')
+                if observed:
+                    age = observed.get('queue_wait_ms')
+                    if age is None and job.get('queued'):
+                        age = max(0, now - job['queued']['wall']) * 1000
+                    elif age is not None:
+                        age += max(0, now - observed['wall']) * 1000
+                    pending.append(dict(job=job['job'], age_ms=age, last_observed_wall=observed['wall'],
+                                        capacity_stalled=observed.get('capacity_stalled', 0)))
         wait = admission.get("queue_wait_ms", (end or {}).get("queue_wait_ms"))
         runtime = (end or {}).get("runtime_ms")
         if wait is not None:
@@ -218,8 +231,19 @@ def summarize(rows, health=None):
         drops[row["producer"]] = max(drops[row["producer"]], row.get("producer_dropped", 0))
     gaps = sum(max(v) - min(v) + 1 - len(v) for v in producers.values())
     route_counts = collections.Counter(r.get("route", "unknown") for r in rows if r["event"] == "route")
+    native_operations = {(r.get('session'), r.get('operation')) for r in rows if r['event'] == 'route' and r.get('route') == 'native' and r.get('operation')}
+    native_durations = [duration(hook_starts.get((r.get('session'), r.get('operation'))), r) for r in rows
+                        if r['event'] == 'hook' and r.get('phase') in {'PostToolUse', 'PostToolUseFailure'}
+                        and (r.get('session'), r.get('operation')) in native_operations]
     return {
         "jobs": dict(counts), "queue_wait_ms": distribution(waits), "runtime_ms": distribution(runtimes),
+        "pending": dict(observed=len(pending), age_ms=distribution([p['age_ms'] for p in pending if p['age_ms'] is not None]),
+                        jobs=sorted(pending, key=lambda p: p['age_ms'] or 0, reverse=True),
+                        interpretation="No recorded admission/end; ages at report cutoff, not proof of current liveness. Excluded from completed wait percentiles."),
+        "monitoring_jobs": dict(observed=len(monitoring), completed=sum('completed' in j for j in monitoring),
+                                runtime_ms=distribution([j['completed']['runtime_ms'] for j in monitoring if 'runtime_ms' in j.get('completed', {})])),
+        "job_scope": "All finite jobs" if include_monitoring else "Finite project jobs; explicitly tagged monitoring excluded. Untagged historical jobs may include monitoring.",
+        "native_tool_elapsed_ms": distribution([value for value in native_durations if value is not None]),
         "persistent_resources": dict(observed=len(resources), reuse_claims=sum("claim" in j for j in resources)),
         "queue_amplification_min_runtime_10ms": distribution(amplifications),
         "job_wait_seconds": sum(waits) / 1000,
@@ -283,6 +307,8 @@ def compare(baseline, candidate):
     def cohorts(rows):
         result = collections.defaultdict(list)
         for job in job_rows(rows):
+            if any(isinstance(v, dict) and v.get('purpose') == 'monitoring' for v in job.values()):
+                continue
             if any(isinstance(v, dict) and v.get("persistent") for v in job.values()):
                 continue
             end = job.get("completed", {})
@@ -325,6 +351,9 @@ def text_report(report):
     quality = report["coverage"]
     lines = ["memcap · local performance", "",
              f"Jobs: {jobs['succeeded']} succeeded, {jobs['failed']} failed, {jobs['cancelled']} cancelled, {jobs['unfinished']} unfinished.",
+             f"Pending without a recorded start: {report['pending']['observed']}; oldest age: {number(report['pending']['age_ms']['max'], ' ms')} (liveness unverified).",
+             f"Monitoring jobs excluded: {report['monitoring_jobs']['observed']}. {report['job_scope']}",
+             f"Raw history oldest timestamp: {quality.get('raw_oldest_wall', 'unknown')}; retained lifecycle checkpoints: {quality.get('job_checkpoints', 0)}.",
              f"Sessions observed: {report['sessions']}; matched tool spans: {quality['matched_tool_spans']}.",
              f"Job-wait total: {number(report['job_wait_seconds'], ' s')}; queue exposure: {number(report['queue_exposure_seconds'], ' s')}.",
              "Completion-path wait: unknown unless dependency links establish it.",
@@ -375,7 +404,9 @@ def html_report(report, rows):
     def number(value, unit=""):
         return "Unknown" if value is None else f"{value:,.2f}{unit}"
     jobs = report["jobs"]
-    metrics = (("Completed jobs", str(jobs["succeeded"])), ("Unfinished jobs", str(jobs["unfinished"])),
+    metrics = (("Successful project jobs", str(jobs["succeeded"])), ("Pending without start", str(report['pending']['observed'])),
+               ("Oldest pending age", number(report['pending']['age_ms']['max'] / 1000 if report['pending']['age_ms']['max'] is not None else None, ' s')),
+               ("Monitoring jobs excluded", str(report['monitoring_jobs']['observed'])),
                ("Queue exposure", number(report["queue_exposure_seconds"], " s")),
                ("Red pressure observed", number(report["machine"]["red_seconds"], " s")))
     stats = ''.join('<div><dt>' + label + '</dt><dd>' + value + '</dd></div>' for label, value in metrics)

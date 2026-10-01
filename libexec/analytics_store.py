@@ -21,6 +21,10 @@ CREATE INDEX IF NOT EXISTS events_session ON events(session, wall);
 CREATE INDEX IF NOT EXISTS events_job ON events(job, wall);
 CREATE UNIQUE INDEX IF NOT EXISTS events_delivery ON events(delivery) WHERE delivery IS NOT NULL;
 CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS job_events (
+  job TEXT NOT NULL, event TEXT NOT NULL, wall REAL NOT NULL, data TEXT NOT NULL,
+  PRIMARY KEY(job,event)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS hourly (
   hour INTEGER NOT NULL, build TEXT NOT NULL, policy TEXT NOT NULL,
   family TEXT NOT NULL, metric TEXT NOT NULL, bucket INTEGER NOT NULL,
@@ -87,6 +91,13 @@ class Store:
         cursor = self.db.execute("INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (*values, json.dumps(row, separators=(",", ":")), row.get("delivery")))
         if cursor.rowcount == 0:
             return False
+        if row.get("job") and row["event"] in {"queued", "admitted", "completed", "cancelled", "stalled", "claim"}:
+            # Small lifecycle checkpoints survive eviction of high-rate samples.
+            # One row per job/phase; a stalled job never creates an unbounded log.
+            self.db.execute("""INSERT INTO job_events VALUES (?,?,?,?)
+                ON CONFLICT(job,event) DO UPDATE SET wall=excluded.wall,data=excluded.data
+                WHERE excluded.wall>=job_events.wall""",
+                (row["job"], row["event"], row["wall"], json.dumps(row, separators=(",", ":"))))
         if row["event"] == "sample":
             previous = self.last_sample
             if previous and previous["boot"] == row["boot"] and row["boot"] != "0" * 32:
@@ -130,6 +141,8 @@ class Store:
 
     def maintain(self, now=None):
         now = time.time() if now is None else now
+        self.db.execute("DELETE FROM job_events WHERE job IN (SELECT job FROM job_events GROUP BY job HAVING max(wall)<?)", (now - RAW_DAYS * 86400,))
+        self.db.execute("DELETE FROM job_events WHERE job IN (SELECT job FROM job_events GROUP BY job ORDER BY max(wall) DESC LIMIT -1 OFFSET 4096)")
         deleted = 0
         pages = self.db.execute("PRAGMA page_count").fetchone()[0]
         free = self.db.execute("PRAGMA freelist_count").fetchone()[0]
@@ -176,8 +189,15 @@ def read_rows(directory, since=0, limit=100000):
         rows = [json.loads(r[0]) for r in db.execute("SELECT data FROM events WHERE wall>=? ORDER BY wall DESC LIMIT ?", (since, limit))]
         health = dict(db.execute("SELECT name,value FROM counters"))
         health.update(retained_events=db.execute("SELECT count(*) FROM events").fetchone()[0],
-                      query_limit=limit, possibly_truncated=len(rows) == limit)
-        return list(reversed(rows)), health
+                      query_limit=limit, possibly_truncated=len(rows) == limit,
+                      raw_oldest_wall=db.execute("SELECT min(wall) FROM events").fetchone()[0])
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='job_events'").fetchone():
+            checkpoints = [json.loads(r[0]) for r in db.execute(
+                "SELECT data FROM job_events WHERE job IN (SELECT job FROM job_events WHERE wall>=?)", (since,))]
+            merged = {(r['producer'], r['seq']): r for r in rows + checkpoints}
+            rows = list(merged.values())
+            health['job_checkpoints'] = len(checkpoints)
+        return sorted(rows, key=lambda r: (r['wall'], r['seq'])), health
     finally:
         db.close()
 

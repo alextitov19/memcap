@@ -423,6 +423,27 @@ memcap queue --json
 memcap wait --session --timeout 60
 ```
 
+For disposable Docker test stacks, reserve the environment and workload together:
+
+```bash
+memcap environment run --memory 12 --compose compose.test.yaml -- go test ./integration
+```
+
+The estimate includes services plus test workers. Memcap waits **before** starting
+the stack, runs the test within the same admission, then stops its uniquely owned
+containers without deleting volumes. This prevents a stack from holding the
+memory its own queued tests need. Existing shared stacks are not automatically
+adopted. Claims, pins, pause and verified ownership protect resources still needed
+by another session. See [disposable environments](docs/environments.md).
+
+Ordinary commands wrapped in `memcap run` now retain native execution unless an
+explicit `--memory` or `--resource` requests admission. Supported literal sequential
+shell stages are admitted separately; complex shell syntax retains whole-command
+admission. Original child quoting and wildcard expansion survive session binding.
+For a host that resumes on background completion, `memcap wait JOB_ID
+--until-complete` replaces repeated status calls with one observer. Hosts without
+that capability retain the existing 60-second blocking fallback.
+
 The watchdog now recovers observation of abandoned registered groups. Queue output
 shows requested/effective memory, the age of the last measurement, watchdog
 ownership and cleanup blockers. Recovery requires unchanged process identities and
