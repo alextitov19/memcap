@@ -49,7 +49,10 @@ class ProductivityTests(unittest.TestCase):
             "aws s3 sync s3://fixture .",
         ):
             with self.subTest(command=command):
-                self.assertEqual(classify_shell(command)[0], "job")
+                native = {'aws --unknown=fixture ssm get-parameter --name /fixture',
+                          'aws --cli-read-timeout=garbage ssm get-parameter --name /fixture',
+                          'aws ssm start-session --target fixture', 'aws s3 sync s3://fixture .'}
+                self.assertEqual(classify_shell(command)[0], 'light' if command in native else 'job')
                 self.assertIsNone(guarded_shell(command, "/opt/memcap", "fixture"))
 
     def test_guarded_parameter_read_executes_once_without_reservation(self):
@@ -127,7 +130,7 @@ aws --profile=fixture ssm get-parameters-by-path --path "$PARAM_ROOT" --query 'P
                         expected,
                     )
 
-    def test_unknown_execution_stays_managed(self):
+    def test_execution_uncertainty_does_not_establish_memory_demand(self):
         for command in [
             "LC_ALL=C npm test",
             "for f in .env; do [ -f $f ] && { npm test; }; done",
@@ -161,7 +164,19 @@ aws --profile=fixture ssm get-parameters-by-path --path "$PARAM_ROOT" --query 'P
             "memcap wait --session; npm test",
         ]:
             with self.subTest(command=command):
-                self.assertEqual(classify_shell(command)[0], "job")
+                heavy = {
+                    'LC_ALL=C npm test',
+                    'for f in .env; do [ -f $f ] && { npm test; }; done',
+                    'for f in .env; do [ -f $f ] && { echo "$(npm test)"; }; done',
+                    'env -S "npm test"',
+                    'aws ssm get-command-invocation --command-id "$(cat /tmp/id; npm test)"',
+                    "cat file | sed -n '/pattern/,$p;e npm test'",
+                    'cat file\nnpm test', 'cat file # note\nnpm test',
+                    "echo # '\nnpm test\n# '", "echo ''#literal && npm test",
+                    'echo ""#literal && npm test', 'cat file\n$(npm test)',
+                    'cat file &\nnpm test', 'memcap wait --session; npm test',
+                }
+                self.assertEqual(classify_shell(command)[0], 'job' if command in heavy else 'light')
 
     def test_cached_wrapper_reclassifies_before_any_sampling_or_reservation(self):
         root = Path(__file__).resolve().parents[1]
@@ -198,7 +213,6 @@ aws --profile=fixture ssm get-parameters-by-path --path "$PARAM_ROOT" --query 'P
             ["--memory", "2", "--shell-command", "cat file"],
             ["--resource", "server", "--shell-command", "cat file"],
             ["--shell-command", "npm test"],
-            ["--shell", "/tmp/unknown-shell", "--shell-command", "cat file"],
         ]:
             with (
                 self.subTest(options=options),
@@ -237,6 +251,7 @@ aws --profile=fixture ssm get-parameters-by-path --path "$PARAM_ROOT" --query 'P
                     status="waiting",
                     resource="",
                     cancel=False,
+                    admission={'reason': 'headroom'},
                 ),
                 dict(
                     id="fedcba987654",
@@ -270,6 +285,8 @@ aws --profile=fixture ssm get-parameters-by-path --path "$PARAM_ROOT" --query 'P
                     ["abcdef123456"],
                 )
             self.assertIn("pending (waiting)", output.getvalue())
+            self.assertIn("IN THIS WAIT SCOPE (not host totals)", output.getvalue())
+            self.assertIn('Last recorded admission blocker(s): headroom', output.getvalue())
             self.assertEqual(path.read_bytes(), before)
             self.assertEqual(list(queue.directory.iterdir()), [path])
 

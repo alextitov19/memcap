@@ -630,10 +630,10 @@ class Collector:
         pid, seen = root, set()
         for _ in range(128):
             if pid == str(job.get("owner")):
-                from scheduler_policy import classify_shell
+                from scheduler_policy import persistent_shell
 
                 command = row.get("command")
-                return isinstance(command, str) and classify_shell(command)[0] == "resource"
+                return isinstance(command, str) and bool(persistent_shell(command))
             parent = table.get(pid)
             if not parent or pid in seen:
                 return False

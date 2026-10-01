@@ -21,6 +21,18 @@ mc_load_config || :
 export TOTAL_BUDGET_GB QUEUE_POLICY QUEUE_MAX_JOBS QUEUE_WORKERS QUEUE_HEADROOM_GB QUEUE_MAX_PRESSURE
 
 case "${1:-help}" in
+  classify)
+    shift
+    exec python3 "$LIB/demand_policy.py" "$@"
+    ;;
+  _native)
+    shift
+    exec python3 "$LIB/native_observer.py" "$@"
+    ;;
+  trace)
+    shift
+    exec python3 "$LIB/command_trace.py" "$@"
+    ;;
   analytics)
     shift
     # Policy metadata only. Analytics never validates, adjusts or enforces it.
@@ -225,6 +237,6 @@ case "${1:-help}" in
   # carried no version at all. Both matter when the evidence for a bug is nine
   # days of one machine's actions.log.
   version|--version|-v) echo "memcap $MEMCAP_VERSION" ;;
-  help|--help|-h) echo "memcap $MEMCAP_VERSION — keep AI agents inside a RAM budget"; echo "usage: memcap {init|integrate|doctor|analytics {today|status|doctor|builds|explain|compare|html|work|enable|disable|benchmark|import-legacy}|report {enable|disable|status|CATEGORY} [--dry-run]|status|diagnostics|gc|run [options] -- command|queue [--json]|wait {JOB_ID|--session} [--timeout 60]|feedback|agent-hooks codex|claude [--queue]|watch|clean|profile|docker [apply [--force]]|notify|off|on|service [install|uninstall|status]|uninstall|version}" ;;
+  help|--help|-h) echo "memcap $MEMCAP_VERSION — keep AI agents inside a RAM budget"; echo "usage: memcap {init|integrate|doctor|trace {on|off|status|show|clear}|analytics {today|status|doctor|builds|explain|compare|html|work|enable|disable|benchmark|import-legacy}|report {enable|disable|status|CATEGORY} [--dry-run]|status|diagnostics|gc|run [options] -- command|queue [--json]|wait {JOB_ID|--session} [--timeout 60]|feedback|agent-hooks codex|claude [--queue]|watch|clean|profile|docker [apply [--force]]|notify|off|on|service [install|uninstall|status]|uninstall|version}" ;;
   *) echo "unknown command: $1" >&2; exit 1 ;;
 esac

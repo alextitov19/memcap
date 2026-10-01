@@ -31,6 +31,12 @@ setup() {
   assert_contains "$output" 'OK'
 }
 
+@test "QUEUE: small and heavy lanes share admission and preserve fairness" {
+  run python3 "$MEMCAP_ROOT/tests/test_scheduler_lanes.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}
+
 @test "QUEUE: CLI exposes queue and rejects a missing command" {
   run "$MEMCAP_ROOT/bin/memcap" queue
   [ "$status" = 0 ]
@@ -229,4 +235,24 @@ sample_fixture() {
   run python3 "$MEMCAP_ROOT/tests/test_remaining_issues.py"
   [ "$status" = 0 ]
   assert_contains "$output" 'OK'
+}
+
+@test "QUEUE: long admission waits preserve task deadlines and profile settings" {
+  run python3 "$MEMCAP_ROOT/tests/test_queue_deadlines.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}
+
+@test "QUEUE: temporary local command tracing is private bounded and independent" {
+  run python3 "$MEMCAP_ROOT/tests/test_command_trace.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" 'OK'
+}
+
+@test "QUEUE: memory demand and native observation preserve binary admission" {
+  for suite in demand_policy native_observer; do
+    run python3 "$MEMCAP_ROOT/tests/test_${suite}.py"
+    [ "$status" = 0 ] || return 1
+    assert_contains "$output" 'OK'
+  done
 }

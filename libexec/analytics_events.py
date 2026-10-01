@@ -16,10 +16,16 @@ import stat
 import time
 import uuid
 
-EVENTS = frozenset(("hook", "route", "queued", "admitted", "completed", "cancelled",
+EVENTS = frozenset(("hook", "route", "queued", "admitted", "completed", "cancelled", "native_memory", "classification",
                     "stalled", "reservation", "sample", "stop_wait", "action",
                     "api", "native_tool", "native_hooks", "work", "observer", "experiment", "claim", "feedback"))
 ENUMS = {
+    "demand": {"light", "heavy"},
+    "confidence": {"ordinary", "unknown", "evidence"},
+    "demand_reason": {"ordinary-command", "unknown-demand", "known-workload", "observed-high-memory",
+                      "browser-script", "memory-workload-import", "package-install", "package-workload",
+                      "repository-maintenance", "python-workload", "test-script", "simulator-start",
+                      "container-workload", "git-hook-workload"},
     "source": {"hook", "scheduler", "collector", "claude", "codex", "legacy", "owner", "enforcement", "benchmark"},
     "agent": {"claude", "codex", "unknown"},
     "phase": {"PreToolUse", "PostToolUse", "PostToolUseFailure", "SessionStart", "SessionEnd",
@@ -34,6 +40,9 @@ ENUMS = {
 }
 IDS = {"session", "parent", "turn", "operation", "job", "project", "work", "action", "model", "agent_version", "workload", "delivery", "resource"}
 NUMBERS = {
+    "classifier_version", "dependency_count", "classifier_ms",
+    "lane_code",
+    "wired_kb", "physical_memory_kb", "kernel_data_1024_inuse_kb", "kernel_data_shared_1024_inuse_kb",
     "duration_ms", "hook_ms", "guard_ms", "queue_wait_ms", "runtime_ms", "exit_code", "signal",
     "completion_kind", "pressure", "available_kb", "tracked_kb", "request_kb", "peak_kb",
     "workers", "running", "waiting", "swap_in_kbps", "swap_out_kbps", "compressor_kb",

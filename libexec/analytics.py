@@ -86,6 +86,9 @@ def main(argv=None):
     for action in ("status", "doctor", "today", "builds"):
         p = sub.add_parser(action)
         p.add_argument("--json", action="store_true")
+        if action == "today":
+            p.add_argument("--build", default=None, help="at least eight hex characters from analytics builds")
+            p.add_argument("--enforcement", choices=("all", "active", "paused"), default="all")
     p = sub.add_parser("trends")
     p.add_argument("--days", type=int, choices=range(1, 366), default=30)
     p = sub.add_parser("explain")
@@ -182,7 +185,18 @@ def main(argv=None):
         local = time.localtime()
         midnight = time.mktime((local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1))
         rows = [r for r in rows if r["wall"] >= midnight]
+        if args.build:
+            import re
+            if not re.fullmatch(r"[a-f0-9]{8,64}", args.build):
+                raise ValueError("build must be an 8–64 character hexadecimal prefix")
+            matches = {r["build"] for r in rows if r["build"].startswith(args.build)}
+            if len(matches) > 1:
+                raise ValueError("ambiguous build prefix")
+            rows = [r for r in rows if r["build"] in matches]
+        if args.enforcement != "all":
+            rows = [r for r in rows if r.get("paused") == int(args.enforcement == "paused")]
         result = summarize(rows, health)
+        result["selection"] = dict(build=args.build, enforcement=args.enforcement, since=midnight)
         if not args.json:
             print(text_report(result))
             return 0

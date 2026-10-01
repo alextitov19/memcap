@@ -241,7 +241,7 @@ aws ssm get-command-invocation --command-id "$CMD_ID" --output text
                     or guarded_shell(command, "/opt/memcap", "fixture")
                 )
 
-    def test_execution_and_unbounded_work_remain_managed(self):
+    def test_obvious_workloads_queue_but_duration_and_execution_are_not_memory_evidence(self):
         for command in (
             "benmore tail fixture --follow",
             "benmore build fixture",
@@ -253,7 +253,8 @@ aws ssm get-command-invocation --command-id "$CMD_ID" --output text
             "memcap claim abcdef12; npm test",
         ):
             with self.subTest(command=command):
-                self.assertNotEqual(classify_shell(command)[0], "light")
+                heavy = {"awk 'NR<=40 && system(\"npm test\")' file", 'memcap claim abcdef12; npm test'}
+                self.assertEqual(classify_shell(command)[0] == 'light', command not in heavy)
                 self.assertIsNone(guarded_shell(command, "/opt/memcap", "fixture"))
 
     def test_grouped_reads_and_glob_loop_keep_output(self):

@@ -2,13 +2,15 @@
 
 import json
 import io
-from contextlib import redirect_stderr
+from contextlib import contextmanager, redirect_stderr
+import fcntl
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
+import threading
 import unittest
 from unittest.mock import patch, Mock
 
@@ -407,6 +409,62 @@ class SchedulerTests(unittest.TestCase):
                 q.status()
         self.assertEqual((q.directory / "jobs.json").read_bytes(), original)
 
+    def test_running_child_survives_registry_lock_contention(self):
+        q = self.queue()
+        original_lock, original_launch = q.locked, q.launch
+        acquired = threading.Event()
+        launched = threading.Event()
+        failures, children = [], []
+        output = self.root / "executions"
+
+        def holder():
+            with (q.directory / "lock").open("r+") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                acquired.set()
+                time.sleep(0.25)
+
+        thread = threading.Thread(target=holder)
+
+        def launch(*args):
+            child = original_launch(*args)
+            children.append(child)
+            launched.set()
+            thread.start()
+            return child
+
+        @contextmanager
+        def short_lock():
+            if launched.is_set():
+                self.assertTrue(acquired.wait(2), "fixture never held the lock")
+            try:
+                with original_lock(timeout=0.01) as data:
+                    yield data
+            except self.mod.QueueError as exc:
+                failures.append(str(exc))
+                raise
+
+        try:
+            with patch.object(q, "launch", side_effect=launch), patch.object(q, "locked", short_lock):
+                result = q.run([sys.executable, "-c",
+                                f"from pathlib import Path; Path({str(output)!r}).open('a').write('once\\n')"], wait=5)
+            self.assertEqual(result, 0)
+            self.assertTrue(failures, "fixture did not force a lock timeout")
+            self.assertEqual(output.read_text(), "once\n")
+            self.assertEqual(q.status(), [])
+        finally:
+            if thread.ident is not None:
+                thread.join(timeout=3)
+            for child in children:
+                child.wait(timeout=5)
+
+    def test_registry_corruption_is_not_retried_as_lock_contention(self):
+        q = self.queue()
+        q.directory.mkdir()
+        (q.directory / "jobs.json").write_text("invalid json")
+        with self.assertRaises(self.mod.QueueError):
+            with q.observed_registry(retry=True):
+                self.fail("corrupt registry was accepted")
+
     def test_interrupted_running_identity_query_retains_supervision_for_cancel(self):
         q = self.queue()
         table = {
@@ -547,9 +605,7 @@ class SchedulerTests(unittest.TestCase):
         for command in (
             "echo $(npm test)",
             "cat <(npm test)",
-            "git -c core.pager=evil diff",
             "rg foo && npm test",
-            "python worker.py",
             "npm test",
         ):
             self.assertEqual(self.policy.classify_shell(command)[0], "job")
@@ -617,10 +673,7 @@ class SchedulerTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.policy.classify_shell(command)[0], "light")
         for command in (
-            "docker stats",
             "docker buildx inspect --bootstrap",
-            "docker buildx stop",
-            "xcrun simctl shutdown all",
             "xcrun simctl boot DEVICE",
             "docker ps && npm test",
         ):
@@ -638,7 +691,7 @@ class SchedulerTests(unittest.TestCase):
             "hookSpecificOutput"
         ]
         self.assertTrue(response["updatedInput"]["run_in_background"])
-        self.assertIn("--wait-forever", response["updatedInput"]["command"])
+        self.assertIn("--wait 86400", response["updatedInput"]["command"])
         self.assertIn("TaskOutput", response["additionalContext"])
 
     def test_unlimited_queue_wait_polls_and_eventually_executes_once(self):
@@ -850,7 +903,7 @@ class SchedulerTests(unittest.TestCase):
         sample["tracked_kb"] = 8 * 1048576
         self.assertEqual(q.next_waiter(jobs, "", sample, {}, now=1012), "large")
 
-    def test_lightweight_shell_parsing_keeps_execution_and_heavy_stages_queued(self):
+    def test_lightweight_shell_parsing_queues_positive_heavy_stages(self):
         for command in (
             "rg x file | python worker.py",
             "cat Makefile && make archive",
@@ -868,7 +921,10 @@ class SchedulerTests(unittest.TestCase):
             "cat file\nnpm test",
         ):
             with self.subTest(command=command):
-                self.assertEqual(self.policy.classify_shell(command)[0], "job")
+                native = {'rg x file | python worker.py', 'rg --pre ./expensive x file | head',
+                          'rg x *', 'rg x {--pre,/tmp/worker}', 'rg x ~[worker]',
+                          'gh run view 123 --web', 'memcap off'}
+                self.assertEqual(self.policy.classify_shell(command)[0], 'light' if command in native else 'job')
 
     def test_hook_rewrites_exact_command_without_running_it(self):
         command = "printf '%s' 'a; $(touch /tmp/never)' && npm test"
@@ -885,7 +941,7 @@ class SchedulerTests(unittest.TestCase):
 
         args = shlex.split(updated["command"])
         self.assertIn(command, args)
-        self.assertEqual(updated["timeout"], 120000)
+        self.assertEqual(updated["timeout"], 86400000)
         self.assertIn("--shell-command", args)
 
     def test_hooks_leave_non_shell_calls_and_small_commands_alone(self):

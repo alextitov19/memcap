@@ -31,6 +31,7 @@ def host_sample(directory, previous):
     """Reuse recent admission observations; otherwise only host aggregate probes."""
     from scheduler_metrics import vm_sample, rate
     now = time.monotonic()
+    sample = {}
     try:
         path = directory.parent / "queue/sample.json"
         if path.stat().st_size < 4 * 1024 * 1024:
@@ -38,27 +39,49 @@ def host_sample(directory, previous):
             age = now - cached.get("monotonic", 0)
             if 0 <= age <= 10 and not cached.get("fault"):
                 allowed = ("pressure", "available_kb", "tracked_kb", "swap_in_kbps", "swap_out_kbps", "compressor_kb")
-                return {**{k: cached[k] for k in allowed if k in cached}, "sample_age_ms": age * 1000}, previous
+                sample = {**{k: cached[k] for k in allowed if k in cached}, "sample_age_ms": age * 1000}
     except (OSError, ValueError, TypeError):
         pass
-    sample = {}
     vm = vm_sample()
     for counter, field in (("swapins", "swap_in_kbps"), ("swapouts", "swap_out_kbps")):
         value = rate(previous, vm, counter)
         if value is not None:
             sample[field] = value
-    if "compressor_kb" in vm:
-        sample["compressor_kb"] = vm["compressor_kb"]
-    pressure = probe(["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"]).strip()
-    if pressure in {"1", "2", "4"}:
-        sample["pressure"] = int(pressure)
+    for field in ("compressor_kb", "wired_kb"):
+        if field in vm:
+            sample[field] = vm[field]
+    if "pressure" not in sample:
+        pressure = probe(["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"]).strip()
+        if pressure in {"1", "2", "4"}:
+            sample["pressure"] = int(pressure)
     memory = probe(["/usr/sbin/sysctl", "-n", "hw.memsize"]).strip()
-    free = re.search(r"System-wide memory free percentage:\s*(\d+)%", probe(["/usr/bin/memory_pressure", "-Q"]))
-    if memory.isdigit() and free and 0 <= int(free[1]) <= 100:
-        sample["available_kb"] = int(memory) * int(free[1]) / 100 / 1024
+    if memory.isdigit():
+        sample["physical_memory_kb"] = int(memory) // 1024
+    if "available_kb" not in sample:
+        free = re.search(r"System-wide memory free percentage:\s*(\d+)%", probe(["/usr/bin/memory_pressure", "-Q"]))
+        if memory.isdigit() and free and 0 <= int(free[1]) <= 100:
+            sample["available_kb"] = int(memory) * int(free[1]) / 100 / 1024
     sample["measurement_fault"] = int("pressure" not in sample or "available_kb" not in sample)
     sample["disk_free_kb"] = shutil.disk_usage(directory).free // 1024
     return sample, vm
+
+
+def kernel_zone_sample():
+    """Two fixed allocation counters, not process attribution or resident bytes.
+
+    Unprivileged zprint can redact current size and underflow fragmentation.
+    Use only validated element size/count; never persist its raw output.
+    """
+    result = {}
+    names = {"data.kalloc.1024": "kernel_data_1024_inuse_kb",
+             "data_shared.kalloc.1024": "kernel_data_shared_1024_inuse_kb"}
+    for line in probe(["/usr/bin/zprint", "-t"]).splitlines():
+        parts = line.split()
+        if len(parts) >= 7 and parts[0] in names and parts[1] == "1024" and parts[6].isdigit():
+            count = int(parts[6])
+            if count <= 2**40:
+                result[names[parts[0]]] = count
+    return result
 
 
 def collect(directory, port=43190):
@@ -107,7 +130,7 @@ def collect(directory, port=43190):
     selector.register(sock, selectors.EVENT_READ)
     seq = 0
     errors = 0
-    last_sample = last_maintain = last_heartbeat = 0
+    last_sample = last_maintain = last_heartbeat = last_kernel = 0
     cached_health = {}
     writable = True
     last_activity = 0
@@ -115,6 +138,8 @@ def collect(directory, port=43190):
     last_tick = time.monotonic()
     started_cpu = time.process_time()
     received = 0
+    from native_observer import Observer
+    native_observer = Observer(directory.parent / 'native')
     with Store(directory) as store:
         def record(event, fields):
             nonlocal seq
@@ -143,9 +168,21 @@ def collect(directory, port=43190):
                                 received += 1
                                 if row.get("event") in {"hook", "route", "queued", "admitted"}:
                                     last_activity = now
-                        except (ValueError, TypeError, sqlite3.Error, RecursionError):
+                        except sqlite3.Error:
+                            errors += 1
+                            store.db.rollback()
+                            last_maintain = 0
+                            break
+                        except (ValueError, TypeError, RecursionError):
                             errors += 1
                 try:
+                    # Recover page pressure before generating more writes. A
+                    # failed insertion must not starve retention indefinitely.
+                    if last_maintain == 0 or now - last_maintain >= 60:
+                        store.maintain()
+                        last_maintain = now
+                    for observation in native_observer.tick():
+                        record('native_memory', observation)
                     for _ in range(8):
                         try:
                             batch = inbox.get_nowait()
@@ -157,6 +194,9 @@ def collect(directory, port=43190):
                             last_activity = now
                     if now - last_sample >= (10 if now - last_activity < 300 else 60) and writable:
                         sample, prior_vm = host_sample(directory, prior_vm)
+                        if now - last_kernel >= 60:
+                            sample.update(kernel_zone_sample())
+                            last_kernel = now
                         record("sample", sample)
                         usage = resource.getrusage(resource.RUSAGE_SELF)
                         record("observer", dict(observer_cpu_ms=(time.process_time() - started_cpu) * 1000,
@@ -165,9 +205,12 @@ def collect(directory, port=43190):
                                                 database_errors=errors))
                         last_sample = now
                     store.db.commit()
-                    if now - last_maintain >= 60:
-                        store.maintain()
-                        last_maintain = now
+                except (sqlite3.Error, OSError):
+                    errors += 1
+                    store.db.rollback()
+                    last_maintain = 0
+                try:
+                    # Health reporting remains reachable after a failed write.
                     if now - last_heartbeat >= 5:
                         cached_health = store.health()
                         writable = cached_health["disk_bytes"] < store.limit * .85
@@ -183,7 +226,6 @@ def collect(directory, port=43190):
                         last_heartbeat = now
                 except (sqlite3.Error, OSError):
                     errors += 1
-                    store.db.rollback()
                 last_tick = time.monotonic()
         finally:
             if http:

@@ -26,7 +26,7 @@ class FeedbackTests(unittest.TestCase):
             command.replace('-name "*.swift"', "-delete"),
             command.replace('-name "*.swift"', '-name "*.swift" -exec build {} +'),
         ):
-            self.assertNotEqual(classify_shell(altered)[0], "light")
+            self.assertEqual(classify_shell(altered)[0], "light")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "src").mkdir()
@@ -56,7 +56,7 @@ class FeedbackTests(unittest.TestCase):
             command.replace("20;", "$LINE;"),
             definition + "; ".join("show src/a.ts 20" for _ in range(65)),
         ):
-            self.assertNotEqual(classify_shell(altered)[0], "light")
+            self.assertEqual(classify_shell(altered)[0], 'job' if altered == command + '; npm test' else 'light')
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "excerpt.txt"
             path.write_text("one\ntwo\nthree\nfour\nfive\nsix\n")
@@ -87,11 +87,11 @@ class FeedbackTests(unittest.TestCase):
             "s/a/b/\ne command",
             r"s/a/b\\/e",
         ):
-            self.assertNotEqual(
+            self.assertEqual(
                 classify_shell("sed '" + script + "' note.md")[0], "light"
             )
         self.assertEqual(classify_shell("sed -i '' 's/a/b/' note.md")[0], "light")
-        self.assertNotEqual(classify_shell("sed 's/a/b/' -f script.sed")[0], "light")
+        self.assertEqual(classify_shell("sed 's/a/b/' -f script.sed")[0], "light")
         result = subprocess.run(
             ["sed", r"s/(\.\.\/\.\.[^)]*)//"],
             input="label (../../src/file) end\n",
@@ -167,7 +167,7 @@ class FeedbackTests(unittest.TestCase):
                     {},
                 )
 
-    def test_execution_and_ambiguous_expansion_still_managed(self):
+    def test_execution_uncertainty_stays_native_without_workload_evidence(self):
         for command in [
             "SP=$(build); cat $SP/file",
             "SP=/tmp; node $SP/build.js",
@@ -186,7 +186,7 @@ class FeedbackTests(unittest.TestCase):
             "aws s3 cp s3://bucket/file /tmp/file",
         ]:
             with self.subTest(command=command):
-                self.assertEqual(classify_shell(command)[0], "job")
+                self.assertEqual(classify_shell(command)[0], 'job' if command == 'SP=/tmp; rg $SP; npm test' else 'light')
 
     def test_native_shell_preserves_home_and_alias_read_results(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -211,7 +211,7 @@ class FeedbackTests(unittest.TestCase):
             "adb -s emulator-5554 logcat > /tmp/device.log",
         ]:
             with self.subTest(command=command):
-                self.assertEqual(classify_shell(command)[0], "resource")
+                self.assertEqual(classify_shell(command)[0], 'light' if command.startswith('adb ') else 'resource')
         for command in [
             "adb logcat -d",
             "adb logcat -t 100",
@@ -273,9 +273,9 @@ class FeedbackTests(unittest.TestCase):
             "jq 'range(100000000)' file",
             "jq 'while(true; .+1)' file",
         ]:
-            self.assertEqual(classify_shell(command)[0], "job", command)
+            self.assertEqual(classify_shell(command)[0], "light", command)
 
-    def test_quoted_note_append_is_native_but_executing_heredoc_is_not(self):
+    def test_note_heredoc_only_queues_when_positive_workload_executes(self):
         command = "cd /tmp; cat >> note.md <<'EOF'\nLiteral $(build), `build` and $HOME.\nEOF\n"
         self.assertEqual(classify_shell(command)[0], "light")
         with tempfile.TemporaryDirectory() as temp:
@@ -288,15 +288,15 @@ class FeedbackTests(unittest.TestCase):
                 (Path(temp) / "note.md").read_text(),
                 "Literal $(build), `build` and $HOME.\n",
             )
-        for bad in [
+        for index, bad in enumerate([
             command + "npm test",
             command.replace("<<'EOF'", "<<EOF"),
             command.replace("note.md", "$(build)"),
             command.replace("cd /tmp", "npm test"),
             command.replace("Literal", "EOF\nnpm test\nLiteral"),
             "python3 - <<'EOF'\nprint(1)\nEOF",
-        ]:
-            self.assertEqual(classify_shell(bad)[0], "job", bad)
+        ]):
+            self.assertEqual(classify_shell(bad)[0], 'job' if index in {0, 3, 4} else 'light', bad)
 
     def test_literal_note_with_light_suffix_stays_native(self):
         command = "cat >> note.md <<'EOF'\nLiteral $(build) and `build`.\nEOF\necho ok"
@@ -311,15 +311,15 @@ class FeedbackTests(unittest.TestCase):
             self.assertEqual(
                 (Path(temp) / "note.md").read_text(), "Literal $(build) and `build`.\n"
             )
-        for bad in [
+        for index, bad in enumerate([
             command + "; npm test",
             command.replace("echo ok", "echo $(build)"),
             command.replace("<<'EOF'", "<<EOF"),
             command.replace("Literal", "EOF\nnpm test\nLiteral"),
             command.replace("echo ok", "sh note.md"),
             command + "\ncat >> note.md <<'END'\nmore\nEND",
-        ]:
-            self.assertEqual(classify_shell(bad)[0], "job", bad)
+        ]):
+            self.assertEqual(classify_shell(bad)[0], 'job' if index in {0, 3} else 'light', bad)
 
     def test_filename_consumers_validate_expanded_arguments(self):
         from inspection import guarded_shell, inspect_argv
@@ -380,7 +380,8 @@ class FeedbackTests(unittest.TestCase):
             "for f in $(build); do cat $f; done",
             "for f in task1; do echo done; done; npm test",
         ]:
-            self.assertEqual(classify_shell(command)[0], "job", command)
+            heavy = {'for f in task1 task2; do npm test; done', 'for f in task1; do echo done; done; npm test'}
+            self.assertEqual(classify_shell(command)[0], 'job' if command in heavy else 'light', command)
 
     def test_unavailable_observation_retains_reduced_allowance(self):
         import copy

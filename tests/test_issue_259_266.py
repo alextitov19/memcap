@@ -11,10 +11,38 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "libexec"))
 from inspection import guarded_shell, inspect_argv
 from session_identity import identity_key
-from scheduler_policy import hook_response
+from scheduler_policy import hook_response, classify_shell
 
 
 class OpenIssueTests(unittest.TestCase):
+    def test_finite_diagnostics_and_noninteractive_github_controls_stay_native(self):
+        for command in (
+            "gh pr edit 123 --body-file /tmp/notes.md",
+            "gh release create v1.2.3 --title Release --notes-file /tmp/notes.md --target abc123",
+            "rg -n needle README.md | head -25 && id -u && gh repo view --json defaultBranchRef",
+            "top -l 1 -n 15 -o mem -stats pid,command,mem,cmprs",
+            "vm_stat", "sysctl kern.memorystatus_vm_pressure_level kern.boottime hw.memsize",
+            "zprint -t -w", "zprint data.kalloc.1024",
+            "ioreg -r -c IOAccelerator -l -w 0",
+            "launchctl print gui/501/com.memcap.analytics",
+            "launchctl print-disabled gui/501",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(classify_shell(command)[0], "light")
+
+    def test_diagnostic_and_remote_calls_queue_only_positive_workloads(self):
+        for command in ("top", "top -l 0", "top -l 999999", "vm_stat 1",
+                        "sysctl -w kern.maxproc=99999", "sysctl kern.maxproc=99999",
+                        "gh pr edit 123", "gh pr edit 123 --editor",
+                        "gh release create v1", "gh repo clone owner/project", "gh repo view --web",
+                        "ioreg -r -c Unknown", "zprint -d", "zprint -t; npm test",
+                        "launchctl kickstart -k gui/501/com.example",
+                        "launchctl debug gui/501/com.example -- /bin/sh",
+                        "launchctl print gui/501/com.example; npm test"):
+            with self.subTest(command=command):
+                expected = 'job' if command in {'zprint -t; npm test', 'launchctl print gui/501/com.example; npm test'} else 'light'
+                self.assertEqual(classify_shell(command)[0], expected)
+
     def test_shell_options_do_not_queue_supported_inspection(self):
         for body in (
             "cat README.md", "rg -n fixture README.md", "git status --short",
@@ -27,10 +55,12 @@ class OpenIssueTests(unittest.TestCase):
                 for agent, tool, field in (("claude", "Bash", "command"), ("codex", "exec_command", "cmd")):
                     response = hook_response(dict(hook_event_name="PreToolUse", session_id="parent", agent_id="child", permission_mode="bypassPermissions",
                         tool_name=tool, tool_input={field: "set -e; " + body}), str(ROOT / "bin/memcap"), agent)
-                    updated = response["hookSpecificOutput"]["updatedInput"]
-                    self.assertIn("_inspect", updated["command"])
-                    self.assertNotIn("--shell-command", updated["command"])
-                    self.assertNotIn("run_in_background", updated)
+                    if body.startswith('memcap wait'):
+                        updated = response["hookSpecificOutput"]["updatedInput"]
+                        self.assertIn('--session-key', updated['command'])
+                        self.assertNotIn('run_in_background', updated)
+                    else:
+                        self.assertEqual(response, {})
 
     def test_shell_options_do_not_hide_execution(self):
         for body in ("npm test", "rg --pre worker fixture file", "aws ssm start-session --target fixture",

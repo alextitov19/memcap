@@ -101,6 +101,21 @@ class IntegrateTests(unittest.TestCase):
         self.assertIn("never extends to other tasks", text)
         self.assertNotIn("to escape the queue", text)
 
+    def test_managed_deadline_ceiling_preserves_native_defaults_and_unrelated_env(self):
+        self.config.write_text(json.dumps({'env': {'KEEP': 'fixture', 'BASH_DEFAULT_TIMEOUT_MS': '120000'}}))
+        self.install()
+        env = json.loads(self.config.read_text())['env']
+        self.assertEqual(env['BASH_MAX_TIMEOUT_MS'], '86400000')
+        self.assertEqual(env['BASH_DEFAULT_TIMEOUT_MS'], '120000')
+        self.assertEqual(env['KEEP'], 'fixture')
+
+    def test_bad_timeout_environment_refuses_all_profile_changes(self):
+        self.config.write_text('{"env": []}')
+        result = self.cli('integrate', '--claude-dir', str(self.profile))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.config.read_text(), '{"env": []}')
+        self.assertFalse((self.profile / 'CLAUDE.md').exists())
+
     def test_repeat_install_changes_nothing_and_makes_no_extra_backups(self):
         self.config.write_text('{"hooks":{}}\n')
         (self.profile / "CLAUDE.md").write_text("# My rules\nKeep this exactly.\n")

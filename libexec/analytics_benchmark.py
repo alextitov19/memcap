@@ -17,7 +17,8 @@ FIXTURES = (
     ("ssm", "aws --region=us-east-1 ssm get-parameter --name fixture --with-decryption", "light"),
     ("compound", "cat fixture.txt && wc -c fixture.txt", "light"),
     ("build", "npm run build", "job"),
-    ("test", "python3 arbitrary.py", "job"),
+    ("test", "python3 -m pytest", "job"),
+    ("unknown", "python3 arbitrary.py", "light"),
 )
 
 

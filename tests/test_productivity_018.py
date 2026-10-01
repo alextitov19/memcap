@@ -23,7 +23,7 @@ class ProductivityTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(classify_shell(command)[0], "light")
 
-    def test_environment_arguments_use_runtime_guard(self):
+    def test_environment_arguments_preserve_native_tool_request(self):
         for command in [
             'curl -s -H "Authorization: $API_TOKEN" https://example.invalid/health',
             'aws ssm get-command-invocation --command-id "$COMMAND_ID"',
@@ -32,12 +32,9 @@ class ProductivityTests(unittest.TestCase):
         ]:
             response = hook_response(dict(hook_event_name="PreToolUse", tool_name="Bash",
                 session_id="parent", tool_input=dict(command=command)), "/opt/memcap", "claude")
-            updated = response["hookSpecificOutput"]["updatedInput"]
-            self.assertIn("_inspect", updated["command"])
-            self.assertNotIn("--shell-command", updated["command"])
-            self.assertNotIn("run_in_background", updated)
+            self.assertEqual(response, {})
 
-    def test_unbounded_jq_and_execution_remain_managed(self):
+    def test_materialized_huge_range_is_heavy_but_unknown_filters_are_not(self):
         for command in [
             "jq '[range(1000000000)]' file.json", "jq 'recurse' file.json",
             '''jq '"\\(range(1000000000))"' file.json''',
@@ -45,7 +42,8 @@ class ProductivityTests(unittest.TestCase):
             "pdftoppm report.pdf image", "rg --pre script pattern .",
         ]:
             with self.subTest(command=command):
-                self.assertEqual(classify_shell(command)[0], "job")
+                expected = 'job' if command == "jq '[range(1000000000)]' file.json" else 'light'
+                self.assertEqual(classify_shell(command)[0], expected)
 
     def test_incomplete_measurements_can_only_raise_history(self):
         row = dict(estimate_kb=1048576, complete_runs=2, peaks_kb=[500000])

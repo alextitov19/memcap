@@ -1,5 +1,16 @@
 # memcap
 
+Temporary command investigation: `memcap trace on` records shell commands seen by
+the installed hooks plus queue requests, blockers and completion statuses locally.
+It also snapshots identity-checked existing queue supervisors. Capture expires
+after 24 hours; three rotating files retain at most 24 MiB. Old files are pruned
+on the next trace access. `memcap trace show` displays the latest 200 records;
+`memcap trace show JOB_ID` filters them to one queued job.
+`memcap trace clear` stops capture and deletes them. Logging is best effort and
+never blocks admission on a busy trace lock. Raw trace data is separate from
+analytics and is never included in public reports. Existing loaded supervisors
+need no cancellation, but only new runners emit subsequent trace transitions.
+
 Local performance analytics can record queue delay, native/paused hook activity,
 unfinished work, pressure/paging observations, and code/policy provenance without
 changing enforcement. Run `memcap analytics enable --service --claude`, then
@@ -246,6 +257,56 @@ pressure is checked again before launch. A queue-lock timeout is a coordination
 failure, not proof of insufficient RAM. `doctor` checks integration health, not
 admission capacity; use the runner's reason. Docker's separate ceiling does not
 by itself explain workload admission.
+
+### Small and heavy admission lanes
+
+Verified reads, searches and supported remote controls (including SSM parameter
+reads) run directly through the installed hooks. Managed work shares one queue
+registry, memory budget, physical headroom checks and global concurrency limit:
+
+- **Small:** automatic adaptive jobs with at least three complete observations of
+  the exact workload and a reservation of at most 1 GiB. Fingerprints include
+  arguments, worker count, executable identity, dependency manifests and known
+  script contents. Explicit memory requests alone do not establish eligibility.
+- **Heavy:** unproven work, recognized builds/tests/mobile/browser commands,
+  persistent resources, legacy jobs, and workloads that grow beyond the small
+  threshold. A lane never grants execution permissions or weakens admission.
+
+Small jobs share the existing global slot limit without another two-job ceiling.
+Fitting sessions without finite running work go first, followed by the least
+recently admitted session. Lane preference breaks ties: after three small
+admissions, the tie preference shifts to heavy work. Subagents share their parent's
+turn. Aged heavy requests retain drain opportunities while finite jobs can
+free capacity. Running work is never suspended or cancelled for lane fairness.
+There is no reserved idle slot: a newly arrived small job still waits if every
+global slot is occupied or physical headroom is insufficient. Verified direct
+operations do not enter either lane. Strict policy retains its existing estimates.
+
+`memcap queue` shows the current lane. `memcap analytics today` reports delays by
+admission lane; older events without lane evidence remain unknown. Existing
+supervisors keep their loaded scheduler until completion; newly submitted jobs
+use the new runner. While old waiters remain, new runners preserve compatible
+lane ordering to avoid selectors waiting on each other. Session-first rotation
+takes effect when those legacy waiters have launched or ended; no job is cancelled
+or duplicated to force adoption. The lane policy itself needs no hook replacement. Run
+`memcap integrate --claude --codex` to install the accompanying timeout guidance
+and Claude command-timeout ceiling, then reload agent sessions. Separate Claude
+profiles are configured separately; Codex hook trust remains user-controlled.
+
+Managed commands default to a 24-hour admission wait (`QUEUE_WAIT_SEC=86400`).
+Claude hooks request background execution with a 24-hour command timeout, and
+integration sets `BASH_MAX_TIMEOUT_MS=86400000` while preserving ordinary command
+defaults. This requires Claude Code 2.1.285 or newer. The outer timeout covers
+both queueing and execution; it does not promise 24 hours for each. Explicit
+`memcap run --wait` values remain authoritative. Codex yield durations and
+60-second status polls are not job deadlines. Hook timeouts remain short.
+
+Keep needed queued work alive and await its final output and exit status; a
+10-minute wait is not a reason to abandon it. Existing supervisors and host tasks
+retain their original deadlines. Installing this update cannot revive an expired
+job or prove an existing agent reloaded its settings. A parent session ending can
+also terminate background work. Restart expired work only after confirming the
+original task ended, to avoid duplicate builds.
 
 ## Agent setup and upgrades (v0.12.0)
 
@@ -501,15 +562,27 @@ instructs the agent to submit the queued command through normal approvals.
 Hook timeouts can fail open in the host agent, so hooks are a guardrail rather
 than a complete enforcement boundary.
 
-Lightweight reads/searches, basic Git inspection, memcap diagnostics and GitHub
-run viewing/watching stay outside the expensive-work queue. Pipelines and chains
-qualify only when every stage is recognized as lightweight; ordinary file
-redirections, quoted search patterns/globs, and directory-prefixed search globs
-are supported. `grep`, `egrep`, and `fgrep` searches are included. Substitutions
-(except numeric `$?`), arbitrary sed scripts, background launches and unknown or
-expensive stages remain queued. Simple npm/pnpm/yarn dev/start and Vite
-launches get resource keys. Shell text, cwd and tool options are preserved.
-Claude's hook sets `run_in_background` and `--wait-forever`: the existing task
+Memory demand has two outcomes. Lightweight commands run natively without a
+reservation, including ordinary Git operations, searches, remote API calls and
+unfamiliar helpers without positive heavyweight evidence. Known builds, tests,
+container starts and simulator starts enter the shared queue. The classifier
+inspects local shell/Python helpers, package scripts and relevant Git hooks
+without executing them. A compound command containing a known workload queues
+as a whole; keep independent inspection in separate calls. Unrecognized syntax
+alone does not queue a command. Memory classification grants no action permission.
+
+`memcap classify --command 'COMMAND' --cwd DIRECTORY` explains a decision without
+running it. When analytics is healthy, unfamiliar native calls may use an exec
+shim so the collector can observe identity-checked physical footprint. Native
+execution retains the original worker settings and task mode. Observations of
+at least 512 MiB promote the exact command/dependency fingerprint for 30 days;
+missing or partial samples never establish that a command is small. First-run
+unknown workloads can still grow quickly. This is not a kernel memory cap.
+
+New managed work uses one heavy queue with session rotation; previous small-lane
+records remain compatible while old supervisors finish. Simple npm/pnpm/yarn
+dev/start and Vite launches get resource keys. Shell text and cwd are preserved.
+Claude's hook sets `run_in_background`, a 24-hour tool timeout and `--wait 86400`: the existing task
 polls automatically and starts once capacity is available. It tells Claude to
 wait with `TaskOutput`, read the final result, and avoid duplicate submissions.
 The generated `Stop` hook uses `memcap feedback --wait` with a 75-second timeout.
@@ -520,7 +593,8 @@ hooks and file reads remain immediate; persistent resources do not hold a
 conversation open.
 The host agent still controls cancellation, session exit and tool deadlines;
 this does not keep an exited Claude process alive. Codex tools retain their
-normal session polling and explicit timeouts. Nested managed commands share a
+normal session polling; an existing managed tool timeout is extended to 24 hours.
+Explicit runner `--wait` deadlines remain intact. Nested managed commands share a
 verified ancestor reservation to avoid slot deadlock.
 
 **Worker controls:** default two. Recognized Jest/Vitest/Playwright test commands,
@@ -549,7 +623,7 @@ QUEUE_WORKERS=2
 QUEUE_JOB_GB=2
 QUEUE_HEADROOM_GB=3
 QUEUE_POLL_SEC=2
-QUEUE_WAIT_SEC=1800
+QUEUE_WAIT_SEC=86400
 QUEUE_MAX_PRESSURE=green
 ```
 
