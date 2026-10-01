@@ -112,7 +112,12 @@ class ThroughputTests(unittest.TestCase):
         from command_stages import staged_script
         script = self.root / 'checks.sh'
         script.write_text('#!/bin/bash\nset -e\ngit status\ngo test ./pkg\n')
-        argv = staged_script(['bash', str(script)], self.root, '/bin/memcap')
+        # Bats versions differ in which helpers they export. This fixture proves
+        # a plain shell; inherited startup code is tested separately below.
+        plain_env = {k: v for k, v in os.environ.items()
+                     if k not in {'BASH_ENV', 'ENV'} and not k.startswith('BASH_FUNC_')}
+        with patch.dict(os.environ, plain_env, clear=True):
+            argv = staged_script(['bash', str(script)], self.root, '/bin/memcap')
         self.assertEqual(argv[:2], ['bash', '-c'])
         self.assertIn('-- go test ./pkg', argv[2])
         script.write_text('echo "multi\nline"\ngo test ./pkg\n')
@@ -122,6 +127,9 @@ class ThroughputTests(unittest.TestCase):
         self.assertFalse(stable_shell('/bin/bash', login=True))
         with patch.dict(os.environ, BASH_ENV='startup.sh'):
             self.assertFalse(stable_shell('/bin/bash'))
+        with patch.dict(os.environ, {**plain_env, 'BASH_FUNC_fixture%%': '() { :; }'}, clear=True):
+            self.assertFalse(stable_shell('/bin/bash'))
+            self.assertIsNone(staged_script(['bash', str(script)], self.root, '/bin/memcap'))
 
     def test_notification_wait_has_background_deadline_but_ordinary_wait_stays_prompt(self):
         from scheduler_policy import hook_response
