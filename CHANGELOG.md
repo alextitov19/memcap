@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.21.1 — 2026-09-30
+
+- Apply managed worker limits at supported Jest, Vitest and Playwright CLI startup,
+  including launches inside compound shells, nested helpers and package scripts.
+  Preserve serial execution, tighter numeric/percentage limits, unrelated Node
+  applications and existing Node options. Lightweight/native execution stays native.
+- Bound adaptive worker allocation by available physical headroom as well as CPU
+  sharing. Retain admission checks and reservation floors; lower concurrency does
+  not imply a proportional memory reduction or authorize extra jobs.
+- Retain pending commands through transient process-identity probe and registry
+  contention failures, respecting their admission deadlines and cancellation.
+  Corrupt registries still fail explicitly; no work starts without fresh identities.
+- Recognize Django test launches through Python/uv wrappers as heavy; persistence
+  alone does not make development servers heavy. Checks and metadata remain native.
+- Include the runtime worker controller in build fingerprints and separate its
+  workload estimates from earlier uncapped launches. Worker telemetry describes
+  allocated concurrency, not universal enforcement across arbitrary descendants.
+
+See [nested worker controls](docs/nested-worker-limits.md). Final validation is
+recorded on the release pull request.
+
 ## v0.21.0 — 2026-09-30
 
 - Replace proof-of-safe-execution admission with binary memory-demand routing.

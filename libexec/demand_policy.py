@@ -345,12 +345,16 @@ class Classifier:
             if args[:1] == ['-m'] and len(args) > 1:
                 if args[1] in {'pytest', 'unittest', 'pip', 'build', 'compileall'}:
                     return 'python-workload'
+                if args[1] == 'django' and args[2:3] == ['test']:
+                    return 'python-workload'
                 if args[1] == 'http.server':
                     return None
             if '-c' in args and args.index('-c') + 1 < len(args):
                 return self.python(args[args.index('-c') + 1], cwd, depth + 1)
             script = next((a for a in args if not a.startswith('-')), None)
             if script:
+                if Path(script).name == 'manage.py' and args[args.index(script)+1:args.index(script)+2] == ['test']:
+                    return 'python-workload'
                 if Path(script).name.startswith('test_'):
                     return 'test-script'
                 return self.script(script, cwd, depth, name)

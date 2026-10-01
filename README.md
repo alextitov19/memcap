@@ -600,8 +600,12 @@ verified ancestor reservation to avoid slot deadlock.
 **Worker controls:** default two. Recognized Jest/Vitest/Playwright test commands,
 simple package scripts calling them, Go builds/tests and Cargo jobs receive
 bounded worker arguments. Lower explicit limits are preserved. Go, Cargo,
-CMake, BLAS/OpenMP and Vitest environment limits reach subprocesses. Arbitrary
-scripts, explicit overrides inside scripts, MCP servers, double-fork/`setsid`
+CMake, BLAS/OpenMP and Vitest environment limits reach subprocesses. A managed
+Node preload also caps recognized Jest/Vitest/Playwright test CLI entrypoints
+inside compound shells and helper scripts, without rewriting the shell text.
+It preserves smaller numeric/percentage limits and Jest serial mode. Unrelated
+Node applications receive no added arguments. See [nested controls](docs/nested-worker-limits.md).
+Programmatic test APIs, children that replace their environment, MCP servers, double-fork/`setsid`
 children, and externally owned simulators/VMs are not universally intercepted
 or contained. This is admission control, not an OS memory limit. Existing
 oversized-job enforcement remains the fallback for individual runaway jobs.

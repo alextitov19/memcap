@@ -876,6 +876,10 @@ def cap_flags(
 ) -> list[str]:
     result: list[str] = []
     limit = workers
+    def limit_value(value):
+        if output in {'--maxWorkers', '--workers', '--minWorkers'} and re.fullmatch(r'[1-9][0-9]?%|100%', str(value)):
+            return max(1, min(workers, (os.cpu_count() or 1) * int(value[:-1]) // 100))
+        return bounded(value, workers)
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -883,15 +887,15 @@ def cap_flags(
             # Insert options before an end-of-options delimiter.
             return result + [f"{output}={limit}"] + argv[i:]
         if arg in flags and i + 1 < len(argv):
-            limit = min(limit, bounded(argv[i + 1], workers))
+            limit = min(limit, limit_value(argv[i + 1]))
             i += 2
             continue
         if any(arg.startswith(f + "=") for f in flags):
-            limit = min(limit, bounded(arg.split("=", 1)[1], workers))
+            limit = min(limit, limit_value(arg.split("=", 1)[1]))
         elif any(
-            len(f) == 2 and arg.startswith(f) and arg[len(f) :].isdigit() for f in flags
+            len(f) == 2 and arg.startswith(f) and re.fullmatch(r'[0-9]+%?', arg[len(f) :]) for f in flags
         ):
-            limit = min(limit, bounded(arg[2:], workers))
+            limit = min(limit, limit_value(arg[2:]))
         else:
             result.append(arg)
         i += 1
@@ -903,16 +907,28 @@ def worker_argv(argv: list[str], cwd: Path, workers: int) -> list[str]:
         return argv
     name = Path(argv[0]).name
     if name in {"vitest", "jest"}:
-        if name == "jest" and any(a in {"--runInBand", "-i"} for a in argv):
-            return argv
-        result = cap_flags(argv, ("--maxWorkers", "-w"), "--maxWorkers", workers)
+        if name == 'jest':
+            options = argv[1:argv.index('--')] if '--' in argv else argv[1:]
+            serial = False
+            flags = {'--runInBand', '--run-in-band', '-i'}
+            for i, arg in enumerate(options):
+                if arg in flags:
+                    serial = options[i + 1:i + 2] != ['false']
+                elif any(arg == flag + '=true' for flag in flags):
+                    serial = True
+                elif any(arg == flag + '=false' for flag in flags) or arg in {'--no-runInBand', '--no-run-in-band', '--no-i'}:
+                    serial = False
+            if serial:
+                return argv
+        flags = ("--maxWorkers", "--max-workers", "-w") if name == 'jest' else ("--maxWorkers", "--max-workers")
+        result = cap_flags(argv, flags, "--maxWorkers", workers)
         if name == "vitest" and any(
-            a == "--minWorkers" or a.startswith("--minWorkers=") for a in result
+            a in {"--minWorkers", "--min-workers"} or a.startswith(("--minWorkers=", "--min-workers=")) for a in result
         ):
             maximum = next(
                 int(a.split("=", 1)[1]) for a in result if a.startswith("--maxWorkers=")
             )
-            result = cap_flags(result, ("--minWorkers",), "--minWorkers", maximum)
+            result = cap_flags(result, ("--minWorkers", "--min-workers"), "--minWorkers", maximum)
         return result
     if name == "playwright" and len(argv) > 1 and argv[1] == "test":
         return cap_flags(argv, ("--workers", "-j"), "--workers", workers)
@@ -977,6 +993,17 @@ def worker_argv(argv: list[str], cwd: Path, workers: int) -> list[str]:
 
 def worker_environment(environ: dict[str, str], workers: int) -> dict[str, str]:
     env = dict(environ)
+    # Reach supported Node test CLIs inside compound shells, absolute executable
+    # paths and package scripts. Never rewrite arbitrary shell text to do this.
+    env['MEMCAP_NODE_WORKERS'] = str(bounded(env.get('MEMCAP_NODE_WORKERS', str(workers)), workers))
+    preload = str(Path(__file__).resolve().with_name('node_workers.cjs'))
+    options = env.get('NODE_OPTIONS', '')
+    try:
+        installed = '--require=' + preload in shlex.split(options)
+    except ValueError:
+        installed = False  # Leave malformed user options for Node to diagnose.
+    if not installed:
+        env['NODE_OPTIONS'] = (options + ' --require=' + json.dumps(preload)).strip()
     for key in (
         "GOMAXPROCS",
         "CARGO_BUILD_JOBS",
