@@ -68,6 +68,17 @@ class NestedWorkers(unittest.TestCase):
         alias.symlink_to(file)
         self.assertIn('--maxWorkers=4', self.execute(alias))
 
+    def test_jest_serial_aliases_booleans_and_end_of_options(self):
+        file = self.cli()
+        for args in [['--run-in-band'], ['--run-in-band=true'], ['-i=true']]:
+            self.assertEqual(self.execute(file, args), args)
+            self.assertEqual(worker_argv(['jest', *args], self.root, 4), ['jest', *args])
+        for args in [['--runInBand', 'false'], ['--runInBand', '--no-runInBand'],
+                     ['--run-in-band=false'], ['--', '--runInBand']]:
+            result = self.execute(file, args)
+            self.assertIn('--maxWorkers=4', result)
+            self.assertIn('--maxWorkers=4', worker_argv(['jest', *args], self.root, 4))
+
     def test_package_identity_and_entrypoint_both_required(self):
         file = self.cli('ordinary-app', 'bin/jest.js')
         self.assertEqual(self.execute(file, ['--maxWorkers=22']), ['--maxWorkers=22'])

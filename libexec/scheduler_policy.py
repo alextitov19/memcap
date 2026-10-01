@@ -907,8 +907,19 @@ def worker_argv(argv: list[str], cwd: Path, workers: int) -> list[str]:
         return argv
     name = Path(argv[0]).name
     if name in {"vitest", "jest"}:
-        if name == "jest" and any(a in {"--runInBand", "-i"} for a in argv):
-            return argv
+        if name == 'jest':
+            options = argv[1:argv.index('--')] if '--' in argv else argv[1:]
+            serial = False
+            flags = {'--runInBand', '--run-in-band', '-i'}
+            for i, arg in enumerate(options):
+                if arg in flags:
+                    serial = options[i + 1:i + 2] != ['false']
+                elif any(arg == flag + '=true' for flag in flags):
+                    serial = True
+                elif any(arg == flag + '=false' for flag in flags) or arg in {'--no-runInBand', '--no-run-in-band', '--no-i'}:
+                    serial = False
+            if serial:
+                return argv
         flags = ("--maxWorkers", "--max-workers", "-w") if name == 'jest' else ("--maxWorkers", "--max-workers")
         result = cap_flags(argv, flags, "--maxWorkers", workers)
         if name == "vitest" and any(

@@ -75,7 +75,18 @@ function apply() {
   const args = process.argv.slice(2);
   const end = args.indexOf('--');
   const options = end < 0 ? args : args.slice(0, end);
-  if (kind === 'jest' && options.some(arg => ['--runInBand', '-i', '--runInBand=true'].includes(arg))) return;
+  if (kind === 'jest') {
+    let serial = false;
+    for (let i = 0; i < options.length; i += 1) {
+      const arg = options[i];
+      const flags = ['--runInBand', '--run-in-band', '-i'];
+      if (flags.includes(arg)) serial = options[i + 1] !== 'false';
+      else if (flags.some(flag => arg === `${flag}=true`)) serial = true;
+      else if (flags.some(flag => arg === `${flag}=false`) ||
+               ['--no-runInBand', '--no-run-in-band', '--no-i'].includes(arg)) serial = false;
+    }
+    if (serial) return;
+  }
   if (kind === 'playwright' && args[0] !== 'test') return;
   const flags = kind === 'playwright' ? ['--workers', '-j'] :
     kind === 'jest' ? ['--maxWorkers', '--max-workers', '-w'] : ['--maxWorkers', '--max-workers'];
