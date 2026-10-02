@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.23.0 — 2026-10-02
+
+- Learn future automatic estimates from fixed-memory jobs using their actual
+  launch worker fingerprint. Fixed reservations remain unchanged; incomplete
+  observations can only raise estimates. Fixed-request tests/scripts/container
+  clients remain upward-only because their external allocations are unknown;
+  only direct Go builds and TypeScript compiler calls can teach lower estimates.
+- Explain automatic sizing versus intentional fixed memory floors in agent
+  guidance and stalled-job notices. Sampling contention retains the last valid
+  headroom explanation instead of printing a false zero.
+- Save private release snapshots with sanitized event archives, checksums,
+  recorded version/build/policy cohorts and immutable baselines. Compare saved
+  snapshots with `analytics release-compare`; unknown coverage remains unknown.
+- Report completed-only wait/amplification, long waits, fixed requests and
+  learning coverage separately from pending and cancelled work. New learning
+  diagnostics distinguish missing processes, sample faults and detached work.
+
 ## v0.22.0 — 2026-10-01
 
 - Reclassify automatic and explicit wrappers without memory/resource overrides;

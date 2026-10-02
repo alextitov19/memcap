@@ -8,6 +8,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent))
 import test_throughput as checks
 import test_environments as environments
+import test_release_evidence as releases
 
 
 def main():
@@ -15,6 +16,11 @@ def main():
     def hide_pending(*args, **kwargs):
         result = original(*args, **kwargs)
         result['pending']['age_ms']['max'] = 0
+        return result
+    launch = releases.Scheduler.launch
+    def forget_fixed_learning(self, argv, cwd, job, data):
+        result = launch(self, argv, cwd, job, data)
+        job['estimate_key'] = ''
         return result
     controls = [
         (checks.ThroughputTests, 'test_pending_all_night_is_visible_and_not_a_started_job',
@@ -25,6 +31,10 @@ def main():
          patch.object(checks, 'native_command', lambda *_: False)),
         (environments.EnvironmentTests, 'test_foreign_label_auto_remove_and_recreated_container_are_not_owned',
          patch.object(environments.e, 'identities', lambda rows, _: {r['Id']: r['Created'] for r in rows})),
+        (releases.ReleaseEvidenceTests, 'test_sampling_notice_preserves_last_valid_headroom',
+         patch.object(releases, 'capacity_message', lambda _: 'observed 0.00 GiB')),
+        (releases.ReleaseEvidenceTests, 'test_fixed_launch_trains_actual_workers_without_changing_floor',
+         patch.object(releases.Scheduler, 'launch', forget_fixed_learning)),
     ]
     for cls, name, mutation in controls:
         output = io.StringIO()
@@ -34,7 +44,7 @@ def main():
             print(output.getvalue())
             raise AssertionError('negative control did not fail at its assertion: ' + name)
         print('Negative control rejected: ' + name)
-    print('4/4 deliberate regressions detected')
+    print('6/6 deliberate regressions detected')
 
 
 if __name__ == '__main__':

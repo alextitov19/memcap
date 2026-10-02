@@ -15,8 +15,11 @@ Local performance analytics can record queue delay, native/paused hook activity,
 unfinished work, pressure/paging observations, and code/policy provenance without
 changing enforcement. Run `memcap analytics enable --service --claude`, then
 `memcap analytics today`. Data stays on your Mac. Existing hooks pick up recording
-on their next invocation; native Claude API/token telemetry applies at session
-startup. See [analytics setup, interpretation, and benchmarks](docs/analytics.md).
+at their next invocation; native Claude API/token telemetry applies at session
+startup. Before upgrading, save an immutable local baseline with
+`memcap analytics snapshot ~/memcap-before --days 1`; compare a later snapshot
+using `memcap analytics release-compare ~/memcap-before ~/memcap-after`.
+See [analytics setup, interpretation, and benchmarks](docs/analytics.md).
 
 [![CI](https://github.com/alextitov19/memcap/actions/workflows/ci.yml/badge.svg)](https://github.com/alextitov19/memcap/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)

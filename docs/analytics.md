@@ -223,3 +223,37 @@ host background task. It never reserves RAM or certifies workload success. Keep
 the original task for its final output/status. Legacy hooks and hosts without
 resumable notifications continue using 60-second blocking polls; do not end a
 Stop-blocked turn in the expectation that memcap can resume the host.
+# Release baselines
+
+Save each observation window outside rolling retention before upgrading:
+
+```sh
+memcap analytics snapshot ~/memcap-before-v0.23.0 --days 1
+# After a comparable day on the new release:
+memcap analytics snapshot ~/memcap-after-v0.23.0 --days 1
+memcap analytics release-compare ~/memcap-before-v0.23.0 ~/memcap-after-v0.23.0
+```
+
+Each new private directory contains `manifest.json` and checksummed,
+sanitized `events.jsonl.gz`. Existing snapshots are never overwritten. Keep
+several releases locally; snapshot archives have no automatic deletion policy.
+Raw commands and tracing keys are excluded. The manifest groups exact build and
+policy hashes and labels a version only when recorded runner metadata identifies
+it; upgrading does not relabel old supervisors. Earlier job endpoints are retained
+for jobs observed in the selected window. Events beyond the cutoff are excluded.
+
+Compare completed-only median/p95 waits, wait/runtime amplification, oldest
+pending age, red-pressure fraction and guard overhead. Counts and learning
+coverage accompany each cohort. Cancelled work and pending ages never enter
+completed percentiles. Missing diagnostics are unknown; p95 requires at least
+20 observations. These are descriptive differences across potentially different
+workloads and host conditions, not proof that a release caused an improvement.
+
+For ordinary builds and tests, omit `--memory` to use automatic sizing. Explicit
+memory is an intentional fixed floor, not an estimate that shrinks after launch.
+Fixed jobs now contribute observations to future automatic estimates. Only direct
+Go builds and TypeScript compiler calls can teach lower estimates from complete
+measurements; tests, scripts, resources and container clients provide upward-only
+evidence because they can allocate outside the measured process tree. Incomplete
+measurements never justify lowering estimates. Disposable Compose
+environments still require a measured stack-plus-workload reservation.

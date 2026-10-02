@@ -20,5 +20,5 @@ setup() {
 @test "THROUGHPUT: negative controls detect disabled fixes" {
   run python3 "$MEMCAP_ROOT/tests/test_throughput_negative.py"
   [ "$status" = 0 ]
-  assert_contains "$output" '4/4 deliberate regressions detected'
+  assert_contains "$output" '6/6 deliberate regressions detected'
 }
