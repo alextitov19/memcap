@@ -1237,7 +1237,7 @@ class Scheduler:
                 # mistake this fixed admission floor for an automatic prior.
                 history = data.setdefault('estimates', {})
                 for key in {job['estimate_key'], job['estimate_family_key']} - {''}:
-                    history.setdefault(key, {'estimate_kb': job['learning_prior_kb']})
+                    history[key] = history.pop(key, {'estimate_kb': job['learning_prior_kb']})
                 while len(history) > 256:
                     del history[next(iter(history))]
                 from throughput import fixed_learning_scope
