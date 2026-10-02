@@ -329,6 +329,7 @@ class Scheduler:
                 # The foreground group finished while attributed work remains.
                 # Its future peak is unknown; never train a lower estimate.
                 job["learning_incomplete"] = True
+                job["learning_detached_samples"] = job.get("learning_detached_samples", 0) + 1
             if not sample.get("fault"):
                 # A verified partial measurement is a lower bound on the peak.
                 # Preserve it for upward-only learning even when siblings were
@@ -340,12 +341,14 @@ class Scheduler:
                 if key and measured > job.get("learned_peak_kb", 0):
                     history = data.setdefault("estimates", {})
                     for learned_key in {key, job.get("estimate_family_key", "")} - {""}:
-                        history[learned_key] = record_estimate(history.pop(learned_key, {"estimate_kb": job["memory_kb"]}), measured, complete=False)
+                        history[learned_key] = record_estimate(history.pop(learned_key, {"estimate_kb": job.get("learning_prior_kb", job["memory_kb"])}), measured, complete=False)
                     job["learned_peak_kb"] = measured
                     while len(history) > 256:
                         del history[next(iter(history))]
             if sample.get("fault") or not all(p in footprints for p in footprint_members(job)):
                 job["learning_incomplete"] = True
+                field = "learning_fault_samples" if sample.get("fault") else "learning_missing_samples"
+                job[field] = job.get(field, 0) + 1
                 continue
             job["sample_count"] = job.get("sample_count", 0) + 1
         if self.policy == "adaptive":
@@ -1077,7 +1080,7 @@ class Scheduler:
                             # position; otherwise frequent expensive work loses
                             # its estimate when unrelated commands fill the cache.
                             history[key] = record_estimate(
-                                history.pop(key, {"estimate_kb": job["memory_kb"]}),
+                                history.pop(key, {"estimate_kb": job.get("learning_prior_kb", job["memory_kb"])}),
                                 job.get("observed_peak_kb", 0),
                                 complete=learning_complete,
                             )
@@ -1094,6 +1097,11 @@ class Scheduler:
                                 runtime_ms=int(max(0, time.monotonic() - job.get("start_monotonic", time.monotonic())) * 1000),
                                 peak_kb=job.get("observed_peak_kb", 0),
                                 learning_complete=int(learning_complete),
+                                learning_samples=job.get("sample_count", 0),
+                                learning_fault_samples=job.get("learning_fault_samples", 0),
+                                learning_missing_samples=job.get("learning_missing_samples", 0),
+                                learning_detached_samples=job.get("learning_detached_samples", 0),
+                                learning_unverified_scope=job.get("learning_unverified_scope", 0),
                                 lane_code=job.get("admission_lane_code", lane_code(job)),
                                 **blocker_fields(job),
                             ),
@@ -1218,9 +1226,19 @@ class Scheduler:
             workers = min(
                 job.get("workers", self.workers), self.allocation(data["jobs"])
             )
+            # A fixed request controls admission, not whether observations are
+            # useful to future automatic runs. Fingerprint only at launch using
+            # the actual worker allocation; never revise this job's fixed floor.
+            if self.policy == "adaptive" and not job.get("elastic", True):
+                job["estimate_key"], job["learning_prior_kb"] = self.demand(argv, cwd, workers, data)
+                job["estimate_family_key"] = self.estimate_family_key
+                from throughput import fixed_learning_scope
+                if not fixed_learning_scope(argv, job.get('resource')):
+                    job['learning_incomplete'] = True
+                    job['learning_unverified_scope'] = 1
             # A smaller final allocation is safe, but do not teach a larger-worker
             # profile using the smaller run's peak.
-            if workers != job.get("workers", workers):
+            elif workers != job.get("workers", workers):
                 if job.get("estimate_key"):
                     job["estimate_key"], _ = self.demand(argv, cwd, workers, data)
                     job["estimate_family_key"] = self.estimate_family_key

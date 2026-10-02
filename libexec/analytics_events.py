@@ -41,6 +41,8 @@ ENUMS = {
 }
 IDS = {"session", "parent", "turn", "operation", "job", "project", "work", "action", "model", "agent_version", "workload", "delivery", "resource"}
 NUMBERS = {
+    "learning_unverified_scope",
+    "learning_samples", "learning_fault_samples", "learning_missing_samples", "learning_detached_samples",
     "capacity_stalled", "headroom_deficit_kb", "outstanding_kb", "headroom_kb",
     "worker_control_version", "node_worker_limit",
     "classifier_version", "dependency_count", "classifier_ms",

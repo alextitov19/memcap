@@ -3,6 +3,9 @@
 WAIT_SECONDS = 86400
 TOOL_TIMEOUT_MS = WAIT_SECONDS * 1000
 GUIDANCE = (
+    "For ordinary builds and tests, use automatic sizing: memcap run --wait 86400 -- COMMAND. "
+    "Omit --memory unless a measured fixed reservation is intentional. A fixed --memory request remains a floor even when observed usage is smaller; "
+    "never invent a large reservation from caution alone or lower a needed reservation to force admission. "
     "Memcap shares physical memory among all Claude and Codex sessions. Reserve an entire disposable test environment before bringing it up: "
     "memcap environment run --memory TOTAL_GIB --compose compose.yaml -- TEST_COMMAND. "
     "TOTAL_GIB includes Docker services plus the test/build process. Prepare images separately. "

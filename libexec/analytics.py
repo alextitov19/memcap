@@ -97,6 +97,12 @@ def main(argv=None):
     p = sub.add_parser("compare")
     p.add_argument("baseline")
     p.add_argument("candidate")
+    p = sub.add_parser("snapshot", help="save private release evidence outside rolling retention")
+    p.add_argument("output", type=Path, help="new directory; existing baselines are never overwritten")
+    p.add_argument("--days", type=int, choices=range(1, 366), default=1)
+    p = sub.add_parser("release-compare", help="compare two saved snapshot directories")
+    p.add_argument("baseline", type=Path)
+    p.add_argument("candidate", type=Path)
     p = sub.add_parser("html")
     p.add_argument("output", type=Path)
     p = sub.add_parser("work")
@@ -123,6 +129,18 @@ def main(argv=None):
     p.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     directory = root()
+    if args.action == "release-compare":
+        from analytics_releases import compare_snapshots
+        print(json.dumps(compare_snapshots(args.baseline, args.candidate), indent=2))
+        return 0
+    if args.action == "snapshot":
+        from analytics_releases import snapshot
+        cutoff = time.time()
+        rows, health = read_rows(directory)
+        result = snapshot(rows, health, args.output, since=cutoff - args.days * 86400, until=cutoff)
+        print(json.dumps(dict(output=str(args.output), events=result['events'],
+                              cohorts=len(result['cohorts']), since=result['since'], until=result['until']), indent=2))
+        return 0
     if args.action == "_signal":
         emit("action", source="enforcement", scope=args.scope, signal=args.signal,
              signal_result=args.result, target_count=args.count, action=args.identity)

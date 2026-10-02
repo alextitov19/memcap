@@ -117,6 +117,36 @@ def observer_cost(rows):
                 scope="Observed in-window collector CPU deltas; excludes probe children, hooks and unobserved intervals.")
 
 
+def completion_evidence(jobs):
+    """Completed finite work only; never mix censored waits into percentiles."""
+    completed = [j for j in jobs if 'completed' in j]
+    waits, amplification = [], []
+    for job in completed:
+        end = job['completed']
+        wait = job.get('admitted', {}).get('queue_wait_ms', end.get('queue_wait_ms'))
+        runtime = end.get('runtime_ms')
+        if wait is not None:
+            waits.append(wait)
+            if runtime is not None and runtime >= 10:
+                amplification.append(1 + wait / runtime)
+    ends = [j['completed'] for j in completed]
+    explicit = [next((r['explicit_memory'] for r in (j.get('admitted', {}), j.get('queued', {}), j['completed'])
+                      if 'explicit_memory' in r), None) for j in completed]
+    return dict(completed=len(completed), queue_wait_ms=distribution(waits),
+                amplification_min_runtime_10ms=distribution(amplification),
+                waited_over_60s=sum(w > 60000 for w in waits),
+                waited_over_10m=sum(w > 600000 for w in waits),
+                explicit_requests=sum(v == 1 for v in explicit), unknown_request_kind=explicit.count(None),
+                learning_complete=sum(r.get('learning_complete') == 1 for r in ends),
+                learning_incomplete=sum(r.get('learning_complete') == 0 for r in ends),
+                learning_unknown=sum('learning_complete' not in r for r in ends),
+                diagnostics_jobs=sum('learning_samples' in r for r in ends),
+                learning_unverified_scope_jobs=sum(r.get('learning_unverified_scope', 0) for r in ends),
+                diagnostic_samples={key: sum(r.get(key, 0) for r in ends) for key in
+                                    ('learning_samples', 'learning_fault_samples', 'learning_missing_samples', 'learning_detached_samples')},
+                interpretation='Completed includes nonzero exits; cancelled and pending jobs are separate. Missing historical learning diagnostics are unknown. Partial peaks cannot justify lower reservations.')
+
+
 def summarize(rows, health=None, now=None, include_monitoring=False):
     # Historical callers use the observation cutoff, never today's wall clock.
     now = max((r['wall'] for r in rows), default=0) if now is None else now
@@ -237,6 +267,7 @@ def summarize(rows, health=None, now=None, include_monitoring=False):
                         and (r.get('session'), r.get('operation')) in native_operations]
     return {
         "jobs": dict(counts), "queue_wait_ms": distribution(waits), "runtime_ms": distribution(runtimes),
+        "completed_evidence": completion_evidence(jobs),
         "pending": dict(observed=len(pending), age_ms=distribution([p['age_ms'] for p in pending if p['age_ms'] is not None]),
                         jobs=sorted(pending, key=lambda p: p['age_ms'] or 0, reverse=True),
                         interpretation="No recorded admission/end; ages at report cutoff, not proof of current liveness. Excluded from completed wait percentiles."),
@@ -359,6 +390,8 @@ def text_report(report):
              f"Job-wait total: {number(report['job_wait_seconds'], ' s')}; queue exposure: {number(report['queue_exposure_seconds'], ' s')}.",
              "Completion-path wait: unknown unless dependency links establish it.",
              f"Queue wait median: {number(report['queue_wait_ms']['median'], ' ms')}; p95: {number(report['queue_wait_ms']['p95'], ' ms')}; n={report['queue_wait_ms']['n']}.",
+             f"Completed jobs only: wait median {number(report['completed_evidence']['queue_wait_ms']['median'], ' ms')}; p95 {number(report['completed_evidence']['queue_wait_ms']['p95'], ' ms')}; {report['completed_evidence']['waited_over_10m']} waited over ten minutes.",
+             f"Completed-job learning: {report['completed_evidence']['learning_complete']} complete, {report['completed_evidence']['learning_incomplete']} incomplete, {report['completed_evidence']['learning_unknown']} unknown; {report['completed_evidence']['explicit_requests']} fixed requests.",
              f"Pressure observed: {number(machine['observed_seconds'], ' s')}; red: {number(machine['red_seconds'], ' s')}; yellow: {number(machine['yellow_seconds'], ' s')}.",
              f"Paging at least 1 MiB/s: {number(machine['paging_ge_1MiB_s_seconds'], ' s')}.",
              f"Wired memory peak: {number(machine['wired_kb']['max'], ' KiB')}; kernel counters are allocation evidence, not process attribution.",

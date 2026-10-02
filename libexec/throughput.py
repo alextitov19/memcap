@@ -1,4 +1,18 @@
 """Admission evidence and explanations. No execution or policy overrides."""
+from pathlib import Path
+
+
+def fixed_learning_scope(argv, resource=False):
+    """Only direct compiler invocations have a known local memory boundary.
+
+    Tests, scripts and container clients may allocate in services outside the
+    observed process tree. Their peaks remain upward-only evidence.
+    """
+    return bool(not resource and argv and
+                (Path(argv[0]).name == 'tsc' or
+                 (Path(argv[0]).name == 'go' and len(argv) > 1 and argv[1] == 'build')))
+
+
 def pending_request(job, key, updated, exact):
     """Only complete exact evidence for a NEW allocation can lower a waiter.
 
@@ -29,6 +43,8 @@ def capacity_progress(job, jobs, decision, now):
     if not state or now - state.get('last', now) > 90:
         state = dict(since=now, max_available_kb=0)
     state.update(last=now, max_available_kb=max(state['max_available_kb'], decision.get('available_kb', 0)))
+    state['decision'] = {key: decision[key] for key in
+                         ('request_kb', 'headroom_kb', 'outstanding_kb', 'available_kb') if key in decision}
     state['stalled'] = now - state['since'] >= 120
     job['capacity_progress'] = state
     return state
@@ -38,10 +54,18 @@ def capacity_message(job):
     if not job.get('capacity_progress', {}).get('stalled'):
         return ''
     d = job.get('admission', {})
+    if d.get('reason') != 'headroom':
+        # Sampling contention is unknown, not a new zero-headroom observation.
+        d = job.get('capacity_progress', {}).get('decision', {})
+    if not d or 'available_kb' not in d:
+        return ' Sustained capacity block recorded; current available memory is unknown. The job remains pending.'
     required = d.get('request_kb', job.get('memory_kb', 0)) + d.get('headroom_kb', 0) + d.get('outstanding_kb', 0)
     return (f" Sustained capacity block: needs {required / 1048576:.2f} GiB available; "
-            f"observed {d.get('available_kb', 0) / 1048576:.2f} GiB. "
+            f"last measured {d['available_kb'] / 1048576:.2f} GiB. "
             "No finite managed job is running that can drain. The job remains pending. "
             "Verified disposable session resources may be retired; shared, pinned or needed resources stay protected. "
             "Use a measured lower-memory workload configuration or release an owned unneeded resource; "
-            "repeated status calls cannot create capacity.")
+            "repeated status calls cannot create capacity."
+            + (" This is a fixed --memory request, not an automatically learned estimate. "
+               "For future ordinary builds/tests, omit --memory to use automatic sizing; "
+               "do not duplicate or understate this pending request." if job.get('elastic') is False else ''))
