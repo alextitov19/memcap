@@ -1232,6 +1232,14 @@ class Scheduler:
             if self.policy == "adaptive" and not job.get("elastic", True):
                 job["estimate_key"], job["learning_prior_kb"] = self.demand(argv, cwd, workers, data)
                 job["estimate_family_key"] = self.estimate_family_key
+                # Older supervisors also observe registered groups. Seed both
+                # profiles before publishing the job so their fallback cannot
+                # mistake this fixed admission floor for an automatic prior.
+                history = data.setdefault('estimates', {})
+                for key in {job['estimate_key'], job['estimate_family_key']} - {''}:
+                    history[key] = history.pop(key, {'estimate_kb': job['learning_prior_kb']})
+                while len(history) > 256:
+                    del history[next(iter(history))]
                 from throughput import fixed_learning_scope
                 if not fixed_learning_scope(argv, job.get('resource')):
                     job['learning_incomplete'] = True
