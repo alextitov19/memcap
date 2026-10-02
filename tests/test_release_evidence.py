@@ -131,6 +131,9 @@ class ReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(job['memory_kb'], 4*GIB)
         self.assertEqual(job['estimate_source'], 1)
         self.assertFalse(job['elastic'])
+        q.observe(data, dict(monotonic=time.monotonic()+.5, footprints={'987654': GIB//4}))
+        self.assertEqual(data['estimates'][expected]['estimate_kb'], GIB)
+        self.assertEqual(job['memory_kb'], 4*GIB)
         q.observe(data, dict(monotonic=time.monotonic()+1, footprints={'987654': 5*GIB}))
         learned = data['estimates'][expected]
         self.assertGreaterEqual(learned['estimate_kb'], 5*GIB*1.25)

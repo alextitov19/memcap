@@ -341,7 +341,7 @@ class Scheduler:
                 if key and measured > job.get("learned_peak_kb", 0):
                     history = data.setdefault("estimates", {})
                     for learned_key in {key, job.get("estimate_family_key", "")} - {""}:
-                        history[learned_key] = record_estimate(history.pop(learned_key, {"estimate_kb": job["memory_kb"]}), measured, complete=False)
+                        history[learned_key] = record_estimate(history.pop(learned_key, {"estimate_kb": job.get("learning_prior_kb", job["memory_kb"])}), measured, complete=False)
                     job["learned_peak_kb"] = measured
                     while len(history) > 256:
                         del history[next(iter(history))]
@@ -1080,7 +1080,7 @@ class Scheduler:
                             # position; otherwise frequent expensive work loses
                             # its estimate when unrelated commands fill the cache.
                             history[key] = record_estimate(
-                                history.pop(key, {"estimate_kb": job["memory_kb"]}),
+                                history.pop(key, {"estimate_kb": job.get("learning_prior_kb", job["memory_kb"])}),
                                 job.get("observed_peak_kb", 0),
                                 complete=learning_complete,
                             )
@@ -1230,7 +1230,7 @@ class Scheduler:
             # useful to future automatic runs. Fingerprint only at launch using
             # the actual worker allocation; never revise this job's fixed floor.
             if self.policy == "adaptive" and not job.get("elastic", True):
-                job["estimate_key"], _ = self.demand(argv, cwd, workers, data)
+                job["estimate_key"], job["learning_prior_kb"] = self.demand(argv, cwd, workers, data)
                 job["estimate_family_key"] = self.estimate_family_key
                 from throughput import fixed_learning_scope
                 if not fixed_learning_scope(argv, job.get('resource')):
