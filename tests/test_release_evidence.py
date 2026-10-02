@@ -131,8 +131,13 @@ class ReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(job['memory_kb'], 4*GIB)
         self.assertEqual(job['estimate_source'], 1)
         self.assertFalse(job['elastic'])
+        # v0.22 observers do not know learning_prior_kb. They must find the
+        # automatic prior already stored rather than default to memory_kb.
+        self.assertEqual(data['estimates'][expected]['estimate_kb'], GIB)
+        prior = job.pop('learning_prior_kb')
         q.observe(data, dict(monotonic=time.monotonic()+.5, footprints={'987654': GIB//4}))
         self.assertEqual(data['estimates'][expected]['estimate_kb'], GIB)
+        job['learning_prior_kb'] = prior
         self.assertEqual(job['memory_kb'], 4*GIB)
         q.observe(data, dict(monotonic=time.monotonic()+1, footprints={'987654': 5*GIB}))
         learned = data['estimates'][expected]
