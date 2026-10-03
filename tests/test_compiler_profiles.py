@@ -128,6 +128,15 @@ class CompilerProfileTests(unittest.TestCase):
         with patch('compiler_profiles.os.walk',side_effect=denied):
             self.assertIsNone(self.profile())
 
+    def test_large_unchanged_config_cannot_dilute_source_growth(self):
+        from compiler_profiles import predict
+        (self.root/'dependency-lock.json').write_text(' ' * 100000)
+        self.train()
+        (self.root/'main.go').write_text('package main\n' + '// expanded\n' * 200)
+        estimate,reason=predict(self.history,self.profile(),GIB,110)
+        self.assertEqual(estimate,GIB)
+        self.assertEqual(reason,5)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -210,3 +210,15 @@ Files: analytics event allowlist, scheduler events, analytics reports/releases,
   completion claim; no PR merge or release until required local and CI checks pass.
   The local workload remains subject to unchanged live admission. Remote CI uses
   the repository's existing macOS sandboxed test workflow and adds no Mac workload.
+- Candidate 8b2a4aa: normal local Bats 649/649 passed; CI run 37151559726 passed
+  both suites and shell checks. A new lockfile-dilution regression added during
+  isolated local validation failed as intended: 512 MiB prediction versus required
+  1 GiB prior after excessive source growth. Isolated result: 648/649, exit 1.
+  This is a real failure; the old candidate is not release-ready despite green CI.
+- Fix: source-envelope bytes now exclude configuration bytes, while total-read
+  bounds still cover both. Compiler context version advances to avoid reusing a
+  development candidate's older envelope semantics. Final validation submitted
+  once as job 99cacb30 / tool session 76507; logs use v0.24.0-validation-final.
+- Bounded probe benchmark: full-host median 835.208 ms (3 samples), owned median
+  41.313 ms (5/5 complete samples). This measures probe scopes on this host, not
+  whole-session productivity. Raw numeric timings are saved privately.

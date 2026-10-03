@@ -65,7 +65,7 @@ def compiler_profile(argv, cwd, workers, env):
             if word.startswith('/') and argv[i-1] not in {'-o', '--outDir', '--outFile'}:
                 return None
         deadline = time.monotonic() + .15
-        size = files = scanned = 0
+        size = source_size = files = scanned = 0
         context_files = {}
         def walk_failed(error):
             raise error
@@ -94,6 +94,7 @@ def compiler_profile(argv, cwd, workers, env):
                     return None
                 if path.suffix in SOURCE_SUFFIXES:
                     files += 1
+                    source_size += len(data)
                 else:
                     if filename.startswith('tsconfig') and re.search(rb'"(?:\.\./|/)',data):
                         return None
@@ -115,12 +116,12 @@ def compiler_profile(argv, cwd, workers, env):
                     context_files['external-goenv'] = hashlib.sha256(config).hexdigest()
         relevant_env = {k:v for k,v in env.items() if k.startswith(('GO', 'CGO_', 'TS_')) or k in
                         {'CC', 'CXX', 'CFLAGS', 'CXXFLAGS', 'LDFLAGS', 'NODE_OPTIONS', 'NODE_ENV'}}
-        description = dict(version=1, argv=original, cwd=str(cwd), workers=workers,
+        description = dict(version=2, argv=original, cwd=str(cwd), workers=workers,
                            executable=str(executable), tool=[info.st_size, info.st_mtime_ns],
                            configs=context_files, env=relevant_env)
         key = hashlib.sha256(json.dumps(description, sort_keys=True).encode()).hexdigest()
         digest = lambda value: hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
-        return dict(key=key, source_bytes=size, source_files=files,
+        return dict(key=key, source_bytes=source_size, source_files=files,
                     family_key=digest([original,str(cwd)]), components={
                         'workers':digest(workers), 'tool':digest([str(executable),info.st_size,info.st_mtime_ns]),
                         'config':digest(context_files), 'env':digest(relevant_env)})
