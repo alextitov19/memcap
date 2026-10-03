@@ -369,13 +369,18 @@ def compare(baseline, candidate):
                 state = enforcement_state([r for r in job.values() if isinstance(r, dict)])
                 if state == "mixed":
                     continue
-                scope = 'compiler_context' if row.get('compiler_context') else 'exact'
-                identity = row.get('compiler_context') or row.get('workload')
-                result[(row.get("family", "unknown"), identity, row.get("model"), row.get("cache_state", "unknown"), state, row.get("workers"), scope)].append(row["runtime_ms"] + row["queue_wait_ms"])
+                # Keep exact matches available when only the new release has
+                # compiler metadata. Context cohorts are additional evidence;
+                # replacing the exact key would silently lose older matches.
+                scopes = [('exact',row.get('workload'))] if row.get('workload') or not row.get('compiler_context') else []
+                if row.get('compiler_context'):
+                    scopes.append(('compiler_context',row['compiler_context']))
+                for scope,identity in scopes:
+                    result[(row.get("family", "unknown"), identity, row.get("model"), row.get("cache_state", "unknown"), state, row.get("workers"), scope)].append(row["runtime_ms"] + row["queue_wait_ms"])
         return result
     left, right = cohorts(baseline), cohorts(candidate)
     matches = []
-    for key in sorted(left.keys() & right.keys(), key=str):
+    for key in sorted(left.keys() & right.keys(), key=lambda key:(key[6]!='exact',str(key))):
         a, b = left[key], right[key]
         before, after = statistics.median(a), statistics.median(b)
         delta = after - before
@@ -395,7 +400,7 @@ def compare(baseline, candidate):
     regression = any(m["regression"] for m in matches)
     return dict(verdict="regression_signal" if regression else "no_regression_signal" if any(min(m["baseline_n"], m["candidate_n"]) >= 5 for m in matches) else "insufficient_evidence",
                 regression=regression, cohorts=matches, baseline=summarize(baseline), candidate=summarize(candidate),
-                causal=False, uncertainty="Observational; unmatched workload, cache, model, concurrency and background conditions can confound differences. No improvement certification.")
+                causal=False, uncertainty="Observational; unmatched workload, cache, model, concurrency and background conditions can confound differences. Exact and compiler-context cohorts can overlap; do not sum their counts. No improvement certification.")
 
 
 def text_report(report):

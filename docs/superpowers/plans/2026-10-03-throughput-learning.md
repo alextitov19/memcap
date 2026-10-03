@@ -222,3 +222,11 @@ Files: analytics event allowlist, scheduler events, analytics reports/releases,
 - Bounded probe benchmark: full-host median 835.208 ms (3 samples), owned median
   41.313 ms (5/5 complete samples). This measures probe scopes on this host, not
   whole-session productivity. Raw numeric timings are saved privately.
+- Before publication, an analytics compatibility case showed that replacing exact
+  keys with compiler-context keys would hide exact matches against older releases.
+  Preserve exact cohorts and add separately labelled exploratory context cohorts;
+  disclose their overlap and keep worker/enforcement scope. A ninth deliberate
+  control removes exact matches and must fail the new cross-version fixture.
+  Ruling: this is part of the final compatibility fix pass; no second reviewer or
+  review cycle. The queued standalone analytics test is superseded by final full
+  validation with the negative control; do not claim a separate pre-fix execution.

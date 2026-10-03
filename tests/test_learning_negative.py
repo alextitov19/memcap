@@ -38,7 +38,13 @@ def main():
             'job_observation.complete_at',lambda state,now:state.get('complete',False))
     rejects(CompilerProfileTests,'test_subdirectory_cannot_certify_unenumerated_parent_module_inputs',
             'compiler_profiles.compiler_profile',lambda *args,**kwargs:{'key':'unchecked-subdirectory'})
-    print('8/8 deliberate learning and sampling regressions detected')
+    from analytics_reports import compare
+    def dropped_exact_matches(*args):
+        result=compare(*args)
+        return {**result,'cohorts':[r for r in result['cohorts'] if r['workload_match']!='exact']}
+    rejects(LearningAnalyticsTests,'test_new_context_metadata_preserves_exact_comparisons_with_old_releases',
+            'test_learning_analytics.compare',dropped_exact_matches)
+    print('9/9 deliberate learning and sampling regressions detected')
 
 
 if __name__=='__main__': main()

@@ -44,7 +44,7 @@ setup() {
 @test "THROUGHPUT: learning and sampling negative controls actually fail" {
   run python3 "$MEMCAP_ROOT/tests/test_learning_negative.py"
   [ "$status" = 0 ]
-  assert_contains "$output" '8/8 deliberate learning and sampling regressions detected'
+  assert_contains "$output" '9/9 deliberate learning and sampling regressions detected'
 }
 
 @test "THROUGHPUT: pending work, lifecycle retention and exact admission evidence" {

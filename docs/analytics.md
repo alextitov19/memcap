@@ -304,3 +304,7 @@ Missing historical fields remain unknown. Lower requests do not prove time saved
 Compare equal workload/worker contexts at comparable available memory, pressure and
 paging; preserve pending/cancelled work and source-build identities. Wired-memory
 growth and kernel-zone counters remain context, not attributed process ownership.
+
+Comparisons retain exact-workload cohorts for older releases and add exploratory
+compiler-context cohorts when both sides have that metadata. These cohorts can
+overlap; do not sum their counts. Worker and enforcement scopes remain separate.

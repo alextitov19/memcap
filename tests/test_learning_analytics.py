@@ -4,7 +4,7 @@ import sys
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'libexec'))
 from analytics_events import make_event
-from analytics_reports import summarize
+from analytics_reports import summarize, compare
 
 
 class LearningAnalyticsTests(unittest.TestCase):
@@ -32,6 +32,31 @@ class LearningAnalyticsTests(unittest.TestCase):
         self.assertEqual(result['owned_observation_completions'],2)
         self.assertEqual(result['owned_probe_ms']['n'],2)
         self.assertEqual(result['owned_probe_ms']['median'],16)
+
+    def completed_work(self,workload,context=None,workers=1):
+        fields=dict(job='job',workload=workload,workers=workers,queue_wait_ms=10,cache_state='warm')
+        if context:
+            fields['compiler_context']=context
+        return [self.row('admitted',1,**fields),
+                self.row('completed',2,job='job',runtime_ms=100,exit_code=0)]
+
+    def test_new_context_metadata_preserves_exact_comparisons_with_old_releases(self):
+        baseline=self.completed_work('same-workload')
+        candidate=self.completed_work('same-workload','new-context')
+        result=compare(baseline,candidate)
+        self.assertEqual(len(result['cohorts']),1)
+        self.assertEqual(result['cohorts'][0]['workload_match'],'exact')
+
+    def test_context_comparisons_remain_exploratory_and_worker_scoped(self):
+        baseline=self.completed_work('before-edit','same-context')
+        candidate=self.completed_work('after-edit','same-context')
+        result=compare(baseline,candidate)
+        self.assertEqual(len(result['cohorts']),1)
+        self.assertEqual(result['cohorts'][0]['workload_match'],'compiler_context')
+        self.assertEqual(result['cohorts'][0]['evidence'],'exploratory')
+        self.assertEqual(compare(baseline,self.completed_work('after-edit','same-context',2))['cohorts'],[])
+        both=compare(baseline,baseline)
+        self.assertEqual({r['workload_match'] for r in both['cohorts']},{'exact','compiler_context'})
 
 
 if __name__=='__main__':unittest.main()
