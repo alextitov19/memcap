@@ -257,3 +257,50 @@ measurements; tests, scripts, resources and container clients provide upward-onl
 evidence because they can allocate outside the measured process tree. Incomplete
 measurements never justify lowering estimates. Disposable Compose
 environments still require a measured stack-plus-workload reservation.
+
+## Reusable compiler evidence and admission benefit
+
+Direct Go builds and TypeScript compiler invocations can share a conservative
+prediction across bounded source edits. The context retains the exact command,
+project, tool identity, worker count, dependency/configuration contents and relevant
+compiler environment. Three complete runs within seven days are required before a
+prediction can fall below its startup prior. The maximum observed peak gets a 50%
+margin, with a 512 MiB minimum; source growth above 20% rejects downward reuse.
+Incomplete enumeration, symlinks and unsupported execution scopes retain the prior.
+Go reuse requires the module root and TypeScript requires a local `tsconfig.json`
+so inherited parent manifests cannot silently escape the recorded context;
+unsupported subdirectory builds retain ordinary sizing.
+Tests, arbitrary scripts and container clients do not gain this compiler profile.
+Observed partial growth raises future predictions immediately. These are estimates,
+not hard memory limits; red pressure and actual physical headroom still gate launch.
+Fixed requests remain fixed floors and classification/tool permissions do not change.
+
+New macOS supervisors measure their owned process tree independently through
+identity-checked physical-footprint reads. This lets short jobs accumulate samples
+without waiting for another full-machine scan. Foreign/reused PIDs, missing live
+processes, gaps (including the final interval before exit) and unresolved detached
+work prevent complete learning. Probe failures retain supervision and the existing
+reservation rather than ending a running task. These
+observations never establish host pressure/headroom or authorize signals. Older
+supervisors retain their loaded observation behavior until their existing work ends.
+
+`analytics today --json` includes `learning_effectiveness`:
+
+- `known_admissions` and `admissions_below_prior` show how often recorded admission
+  requests actually fell below their original startup priors.
+- `compiler_profile_admissions` separates reusable compiler predictions from default
+  and exact-workload estimates. `reuse_reasons` codes are 0 unsupported, 1 reused,
+  2 cold context, 3 insufficient complete evidence, 4 expired evidence, 5 source growth,
+  6 changed workers, 7 changed compiler, 8 changed dependencies/configuration,
+  9 changed compiler environment. `compiler_complete_runs` accompanies admissions.
+- `owned_observation_completions`, `owned_observation_complete` and `owned_probe_ms`
+  distinguish observation coverage from admission benefit and measure its direct cost.
+- `sampling_busy_count`, `sampling_expired_count` and `sample_cache_mismatch_count`
+  distinguish unavailable samples from data that aged out before admission. These
+  are completed-job decision counts, not elapsed delay. `shared_probe_ms` describes observed probe
+  timings; multiple observations can refer to the same probe.
+
+Missing historical fields remain unknown. Lower requests do not prove time saved.
+Compare equal workload/worker contexts at comparable available memory, pressure and
+paging; preserve pending/cancelled work and source-build identities. Wired-memory
+growth and kernel-zone counters remain context, not attributed process ownership.

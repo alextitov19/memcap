@@ -180,6 +180,10 @@ class Scheduler:
         self.headroom_kb = int(headroom_gb * GIB)
         self.poll = poll
         self.cancelled = 0
+        self.compiler_profile = None
+        self.estimate_reuse_reason = 0
+        self.estimate_prior_kb = self.memory_kb
+        self.compiler_complete_runs = 0
         if max_pressure not in ("green", "yellow"):
             raise QueueError("QUEUE_MAX_PRESSURE must be green or yellow")
         self.allowed_pressure = (1, 2) if max_pressure == "yellow" else (1,)
@@ -272,18 +276,9 @@ class Scheduler:
             Path(os.environ.get("MEMCAP_CONFIG_HOME", str(Path.home() / ".config")))
             / "memcap/memcap.conf"
         )
-        signature = hashlib.sha256(
-            str(config).encode()
-            + (config.read_bytes() if config.exists() else b"")
-            + json.dumps(
-                sorted(
-                    (k, v)
-                    for k, v in os.environ.items()
-                    if k.startswith(("MC_", "MEMCAP_", "QUEUE_"))
-                    and k != "MEMCAP_QUEUE_LEASE"
-                )
-            ).encode()
-        ).hexdigest()
+        from scheduler_metrics import measurement_signature
+        from analytics_events import build_digest
+        signature = measurement_signature(config, os.environ, build_digest())
         try:
             return shared_sample(self.directory, signature, self.sampler)
         except (QueueError, OSError, ValueError, subprocess.SubprocessError):
@@ -325,7 +320,7 @@ class Scheduler:
                     reservation_source=job.get("reservation_source", 0),
                     lane_code=lane_code(job),
                 ))
-            if not job["members"]:
+            if not job["members"] and job.get('learning_protocol') != 2:
                 # The foreground group finished while attributed work remains.
                 # Its future peak is unknown; never train a lower estimate.
                 job["learning_incomplete"] = True
@@ -345,6 +340,18 @@ class Scheduler:
                     job["learned_peak_kb"] = measured
                     while len(history) > 256:
                         del history[next(iter(history))]
+                    from compiler_profiles import record_profile
+                    record_profile(data.setdefault('compiler_profiles', {}), job.get('compiler_profile'),
+                                   measured, False, time.time())
+            # New runners obtain their own paired process observations. A global
+            # host snapshot can predate a child's birth; it cannot certify this
+            # learning stream either complete or incomplete. Growth above still
+            # contributes upward evidence, including observations by old runners.
+            if job.get('learning_protocol') == 2:
+                if sample.get('fault') or not all(p in footprints for p in footprint_members(job)):
+                    field = 'learning_fault_samples' if sample.get('fault') else 'learning_missing_samples'
+                    job[field] = job.get(field,0)+1
+                continue
             if sample.get("fault") or not all(p in footprints for p in footprint_members(job)):
                 job["learning_incomplete"] = True
                 field = "learning_fault_samples" if sample.get("fault") else "learning_missing_samples"
@@ -475,7 +482,38 @@ class Scheduler:
             prior = max(prior, 4 * GIB)
         history = data.get("estimates", {})
         row = history.get(key, {}) or history.get(self.estimate_family_key, {})
-        return key, row.get("estimate_kb", prior)
+        exact = row.get("estimate_kb", prior)
+        from compiler_profiles import compiler_profile, predict
+        profile = compiler_profile(argv, cwd, workers, dict(os.environ))
+        # HMAC even the context digest before it enters the private registry.
+        if profile:
+            profile['key'] = fingerprint({'compiler_context': profile['key']}, bytes.fromhex(secret))
+            profile['family_key'] = fingerprint({'compiler_family':profile['family_key']},bytes.fromhex(secret))
+        predicted, reason = predict(data.get('compiler_profiles', {}), profile, prior, time.time())
+        self.compiler_profile = profile
+        self.estimate_reuse_reason = reason
+        self.estimate_prior_kb = prior
+        self.compiler_complete_runs = sum(0 <= time.time()-r['at'] <= 7*86400 for r in
+            data.get('compiler_profiles',{}).get((profile or {}).get('key',''),{}).get('samples',[]))
+        if reason == 1:
+            # Never discard a large exact-profile observation. A startup prior
+            # alone is not evidence against a complete reusable compiler profile.
+            floor = max((math.ceil(p * 1.5) for p in row.get('peaks_kb', [])), default=0)
+            if exact > prior:
+                floor = max(floor, exact)
+            predicted = max(predicted, floor)
+            # Old observers use estimate_kb as an upward floor. Give this
+            # independently evidenced model its own exact namespace and seed it
+            # before publishing a waiter, rather than erasing old evidence.
+            key = fingerprint({'compiler_prediction': key, 'model_version': 1}, bytes.fromhex(secret))
+            estimates = data.setdefault('estimates', {})
+            existing = estimates.get(key, {})
+            predicted = max(predicted, existing.get('estimate_kb', 0))
+            estimates[key] = estimates.pop(key, {'estimate_kb':predicted})
+            while len(estimates)>256:
+                del estimates[next(iter(estimates))]
+            return key, predicted
+        return key, max(exact, predicted)
 
     def refresh(self, data, table):
         live = []
@@ -510,6 +548,44 @@ class Scheduler:
                 ) from exc
         data["jobs"] = live
         refresh_footprint_members(live, table, os.getuid())
+
+    def observe_owned(self, data, job, sample):
+        """Apply only identity-matched workload evidence, never host admission."""
+        from job_observation import accumulate
+        expected = footprint_members(job)
+        if not expected or any(sample.get('identities', {}).get(p) != start for p, start in expected.items()):
+            sample = {**sample, 'complete': False, 'missing': sample.get('missing', 0)+1}
+        state = accumulate(job.get('owned_observation', {'began':job.get('start_monotonic',sample['at'])}), sample)
+        job['owned_observation'] = state
+        measured = sample['peak_kb']
+        previous_peak = job.get('observed_peak_kb', 0)
+        job['observed_peak_kb'] = max(previous_peak, measured)
+        job['measurement_complete'] = bool(sample['complete'])
+        if sample['complete']:
+            job.update(measured_kb=measured, measured_at=time.time(), measurement_complete=True)
+        # Complete owned observations can adjust a running automatic allowance;
+        # incomplete evidence may only raise it. The existing reservation policy
+        # retains explicit, startup, strict and orphan floors.
+        footprint_sample = dict(footprints=sample.get('footprints', {}),
+                                monotonic=sample['at'], fault=not sample['complete'])
+        previous = job.get('reservation_kb', job['memory_kb'])
+        job['reservation_kb'] = max(measured, self.reservation(job, footprint_sample, measured,
+                                                             adaptive=self.policy == 'adaptive'))
+        if job['reservation_kb'] != previous:
+            append_event(self.directory, dict(event='reservation', job_ref=int(job['id'][:13],16),
+                         reservation_kb=job['reservation_kb'], measured_kb=measured,
+                         measurement_complete=int(sample['complete']),
+                         reservation_source=job.get('reservation_source',0), lane_code=lane_code(job)))
+        if measured > previous_peak:
+            from compiler_profiles import record_profile
+            record_profile(data.setdefault('compiler_profiles', {}), job.get('compiler_profile'),
+                           measured, False, time.time())
+            history = data.setdefault('estimates', {})
+            for key in {job.get('estimate_key',''), job.get('estimate_family_key','')} - {''}:
+                history[key] = record_estimate(history.pop(key, {'estimate_kb':job.get('learning_prior_kb',job['memory_kb'])}),
+                                               measured, complete=False)
+            while len(history)>256:
+                del history[next(iter(history))]
 
     @staticmethod
     def reservation(job, sample, measured, adaptive=False):
@@ -805,6 +881,10 @@ class Scheduler:
                         "estimate_family_key": getattr(self, "estimate_family_key", "") if estimate_key else "",
                         "estimate_source": 1 if memory_gb is not None else (3 if estimate_row else 4 if family_row else 2),
                         "estimate_complete_runs": estimate_row.get("complete_runs", 0),
+                        "compiler_profile": self.compiler_profile if estimate_key else None,
+                        "estimate_reuse_reason": self.estimate_reuse_reason if estimate_key else 0,
+                        "estimate_prior_kb": self.estimate_prior_kb if estimate_key else memory,
+                        "compiler_complete_runs": self.compiler_complete_runs if estimate_key else 0,
                         "lane_version": 1,
                         "demand_version": 1,
                         "fairness_version": 2,
@@ -867,6 +947,10 @@ class Scheduler:
                                    estimate_complete_runs=exact.get("complete_runs", 0),
                                    small_candidate=self.small_candidate if job.get('demand_version') != 1 else False, workers=workers,
                                    memory_kb=request)
+                        job.update(compiler_profile=self.compiler_profile,
+                                   estimate_reuse_reason=self.estimate_reuse_reason,
+                                   estimate_prior_kb=self.estimate_prior_kb)
+                        job['compiler_complete_runs'] = self.compiler_complete_runs
                     job['workers'] = workers
                     memory = job["memory_kb"]
                     active_resource = next(
@@ -995,6 +1079,10 @@ class Scheduler:
                         job["admission"]["measurement_busy"] = int(
                             bool(sample.get("busy"))
                         )
+                        if job['admission']['reason'] == 'sampling':
+                            field = 'sampling_busy_count' if sample.get('busy') else 'sampling_expired_count'
+                            job[field] = job.get(field,0)+1
+                            job['sample_cache_mismatch_count'] = job.get('sample_cache_mismatch_count',0)+int(bool(sample.get('sample_cache_mismatch')))
                         from scheduler_metrics import account_blocker
 
                         account_blocker(job, job["admission"]["reason"], time.monotonic())
@@ -1053,14 +1141,23 @@ class Scheduler:
             last_cancel_notice = 0.0
             while True:
                 result = child.poll()
+                owned_sample = None
+                if job.get('learning_protocol') == 2 and result is None:
+                    from job_observation import sample_job
+                    from native_observer import usage
+                    excluded = {p:s for other in data.get('jobs',[]) if other['id'] != ident
+                                for p,s in footprint_members(other).items()}
+                    owned_sample = sample_job({**job,'observation_exclusions':excluded}, processes, usage)
                 sample = (
                     self.measure()
-                    if result is None or self.policy == "adaptive"
+                    if job.get('learning_protocol') != 2 and (result is None or self.policy == "adaptive")
                     else {}
                 )
                 with self.observed_registry(retry=True) as (data, table):
                     self.refresh(data, table)
                     job = next(j for j in data["jobs"] if j["id"] == ident)
+                    if owned_sample is not None:
+                        self.observe_owned(data, job, owned_sample)
                     self.observe(data, sample)
                     job["cancel"] = bool(self.cancelled)
                     members = dict(job["members"])
@@ -1070,6 +1167,12 @@ class Scheduler:
                                   signal=-result if result < 0 else 0)
                         key = job.get("estimate_key")
                         learning_complete = result == 0 and job.get("sample_count", 0) >= 2 and not job.get("learning_incomplete")
+                        observation = job.get('owned_observation', {})
+                        if job.get('learning_protocol') == 2:
+                            from job_observation import complete_at
+                            learning_complete = (result == 0 and complete_at(observation, time.monotonic())
+                                                 and not footprint_members(job)
+                                                 and not job.get('learning_unverified_scope'))
                         if (
                             key
                             and not self.cancelled
@@ -1086,6 +1189,10 @@ class Scheduler:
                             )
                             while len(history) > 256:
                                 del history[next(iter(history))]
+                        from compiler_profiles import record_profile
+                        if not self.cancelled:
+                            record_profile(data.setdefault('compiler_profiles', {}), job.get('compiler_profile'),
+                                           job.get('observed_peak_kb', 0), learning_complete, time.time())
                         from scheduler_metrics import completion_fields
 
                         append_event(
@@ -1097,11 +1204,16 @@ class Scheduler:
                                 runtime_ms=int(max(0, time.monotonic() - job.get("start_monotonic", time.monotonic())) * 1000),
                                 peak_kb=job.get("observed_peak_kb", 0),
                                 learning_complete=int(learning_complete),
-                                learning_samples=job.get("sample_count", 0),
-                                learning_fault_samples=job.get("learning_fault_samples", 0),
-                                learning_missing_samples=job.get("learning_missing_samples", 0),
+                                learning_samples=observation.get('samples',job.get("sample_count", 0)),
+                                learning_fault_samples=observation.get('faults',job.get("learning_fault_samples", 0)),
+                                learning_missing_samples=observation.get('missing',job.get("learning_missing_samples", 0)),
                                 learning_detached_samples=job.get("learning_detached_samples", 0),
                                 learning_unverified_scope=job.get("learning_unverified_scope", 0),
+                                learning_protocol=job.get('learning_protocol', 1),
+                                observation_probe_ms=observation.get('probe_ms',0),
+                                sampling_busy_count=job.get('sampling_busy_count',0),
+                                sampling_expired_count=job.get('sampling_expired_count',0),
+                                sample_cache_mismatch_count=job.get('sample_cache_mismatch_count',0),
                                 lane_code=job.get("admission_lane_code", lane_code(job)),
                                 **blocker_fields(job),
                             ),
@@ -1133,7 +1245,10 @@ class Scheduler:
                     return 128 + self.cancelled
                 if result is not None and not members:
                     return result if result >= 0 else 128 - result
-                time.sleep(self.poll)
+                interval = self.poll
+                if job.get('learning_protocol') == 2:
+                    interval = min(interval, .25 if time.monotonic()-job.get('start_monotonic',0)<5 else 1)
+                time.sleep(interval)
         finally:
             if registered:
                 if child is None and not analytics_claimed:
@@ -1232,6 +1347,7 @@ class Scheduler:
             if self.policy == "adaptive" and not job.get("elastic", True):
                 job["estimate_key"], job["learning_prior_kb"] = self.demand(argv, cwd, workers, data)
                 job["estimate_family_key"] = self.estimate_family_key
+                job['compiler_profile'] = self.compiler_profile
                 # Older supervisors also observe registered groups. Seed both
                 # profiles before publishing the job so their fallback cannot
                 # mistake this fixed admission floor for an automatic prior.
@@ -1250,6 +1366,7 @@ class Scheduler:
                 if job.get("estimate_key"):
                     job["estimate_key"], _ = self.demand(argv, cwd, workers, data)
                     job["estimate_family_key"] = self.estimate_family_key
+                    job['compiler_profile'] = self.compiler_profile
             job["workers"] = workers
             if (
                 len(argv) >= 3
@@ -1293,6 +1410,7 @@ class Scheduler:
                 )
             job.update(
                 status="running",
+                learning_protocol=2 if sys.platform == 'darwin' and self.sampler is sample_host else 1,
                 admission_lane_code=lane_code(job),
                 started=time.time(),
                 start_monotonic=time.monotonic(),
@@ -1312,9 +1430,15 @@ class Scheduler:
                     node_worker_limit=int(env.get('MEMCAP_NODE_WORKERS', workers)) if workers > 0 else 0,
                     request_kb=job["memory_kb"],
                     workload=job.get('estimate_key', ''),
+                    compiler_context=(job.get('compiler_profile') or {}).get('key',''),
                     classification_code=job.get("classification_code", 0),
                     estimate_source=job.get("estimate_source", 0),
                     estimate_complete_runs=job.get("estimate_complete_runs", 0),
+                    estimate_reuse_reason=job.get('estimate_reuse_reason',0),
+                    estimate_prior_kb=job.get('estimate_prior_kb',job['memory_kb']),
+                    compiler_complete_runs=job.get('compiler_complete_runs',0),
+                    compiler_profile_used=int(bool(job.get('compiler_profile')) and job.get('estimate_reuse_reason')==1
+                                              and job.get('elastic') is True),
                     lane_code=job["admission_lane_code"],
                     **blocker_fields(job),
                     queue_wait_ms=(int(max(0, time.monotonic() - job["enqueued_monotonic"]) * 1000)
