@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.24.0 — 2026-10-03
+
+- Reuse conservative compiler memory predictions across bounded source edits while
+  keeping command targets, tool/dependency configuration and worker contexts separate.
+  Require three complete observations, reject excessive growth, and preserve partial
+  upward evidence, explicit reservations and ordinary pressure/headroom admission.
+- Observe owned macOS workloads directly with identity-checked physical-footprint
+  probes so short commands can be measured independently of full-host sampling.
+  Missing processes, PID reuse, observation gaps and detached work retain uncertainty.
+- Keep equivalent shared measurement contexts compatible across session metadata;
+  distinguish busy sampling, expired observations and incompatible cached contexts.
+- Report actual admissions below their startup prior, compiler-profile reuse/misses,
+  observation coverage and measurement cost. Preserve historical unknowns and compare
+  matching compiler contexts without claiming a controlled productivity improvement.
+- Add deterministic admission replay and deliberately broken safety controls to the
+  regression suite. No change to signal eligibility, physical headroom, red-pressure
+  admission, fixed-request floors or cancellation ownership.
+
 ## v0.23.0 — 2026-10-02
 
 - Learn future automatic estimates from fixed-memory jobs using their actual

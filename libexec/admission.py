@@ -57,6 +57,7 @@ def decide(
         mode = policy["mode"]
         memory = candidate["memory_kb"]
         if sample.get("busy"):
+            result['sampling_reason'] = 1
             return deny("sampling")
         if (
             mode not in ("strict", "adaptive")
@@ -103,6 +104,7 @@ def decide(
             if now - stamp > 2:
                 # A valid observation can age out while registry work runs.
                 # Wait for fresh data without claiming the measurement failed.
+                result['sampling_reason'] = 2
                 return deny("sampling")
             if now < controller.get("cooldown_until", 0):
                 return deny("paging")

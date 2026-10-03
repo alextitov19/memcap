@@ -39,8 +39,12 @@ ENUMS = {
     "tool": {"Bash", "exec_command", "shell_command", "Read", "Grep", "Glob", "Write", "Edit", "Agent", "Task", "TaskOutput", "unknown"},
     "cache_state": {"warm", "cold", "unknown"},
 }
-IDS = {"session", "parent", "turn", "operation", "job", "project", "work", "action", "model", "agent_version", "workload", "delivery", "resource"}
+IDS = {"session", "parent", "turn", "operation", "job", "project", "work", "action", "model", "agent_version", "workload", "compiler_context", "delivery", "resource"}
 NUMBERS = {
+    "compiler_complete_runs",
+    "estimate_reuse_reason", "estimate_prior_kb", "compiler_profile_used",
+    "learning_protocol", "observation_probe_ms", "sampling_busy_count",
+    "sampling_expired_count", "sample_cache_mismatch_count", "sampling_reason",
     "learning_unverified_scope",
     "learning_samples", "learning_fault_samples", "learning_missing_samples", "learning_detached_samples",
     "capacity_stalled", "headroom_deficit_kb", "outstanding_kb", "headroom_kb",

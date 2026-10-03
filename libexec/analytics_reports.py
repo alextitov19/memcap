@@ -147,6 +147,25 @@ def completion_evidence(jobs):
                 interpretation='Completed includes nonzero exits; cancelled and pending jobs are separate. Missing historical learning diagnostics are unknown. Partial peaks cannot justify lower reservations.')
 
 
+def learning_effectiveness(jobs, rows):
+    admissions = [j['admitted'] for j in jobs if 'estimate_prior_kb' in j.get('admitted', {})]
+    completions = [j['completed'] for j in jobs if 'learning_protocol' in j.get('completed', {})]
+    def count(name):
+        known = [j['completed'][name] for j in jobs if name in j.get('completed', {})]
+        return sum(known) if known else None
+    return dict(known_admissions=len(admissions),
+                admissions_below_prior=sum(r.get('request_kb',r['estimate_prior_kb']) < r['estimate_prior_kb'] for r in admissions) if admissions else None,
+                compiler_profile_admissions=sum(r.get('compiler_profile_used',0) for r in admissions) if admissions else None,
+                reuse_reasons=dict(collections.Counter(r.get('estimate_reuse_reason',0) for r in admissions)),
+                owned_observation_completions=sum(r['learning_protocol']==2 for r in completions) if completions else None,
+                owned_observation_complete=sum(r['learning_protocol']==2 and r.get('learning_complete')==1 for r in completions) if completions else None,
+                owned_probe_ms=distribution([r['observation_probe_ms'] for r in completions if r['learning_protocol']==2 and 'observation_probe_ms' in r]),
+                sampling_busy_count=count('sampling_busy_count'), sampling_expired_count=count('sampling_expired_count'),
+                sample_cache_mismatch_count=count('sample_cache_mismatch_count'),
+                shared_probe_ms=distribution([r['sample_duration_ms'] for r in rows if r['event']=='sample' and 'sample_duration_ms' in r]),
+                interpretation='Observed admissions below their startup prior, not counterfactual time saved. Unknown historical fields stay unknown. Busy and expired counts are decisions, not durations. Shared sample rows can repeat a probe duration.')
+
+
 def summarize(rows, health=None, now=None, include_monitoring=False):
     # Historical callers use the observation cutoff, never today's wall clock.
     now = max((r['wall'] for r in rows), default=0) if now is None else now
@@ -282,6 +301,7 @@ def summarize(rows, health=None, now=None, include_monitoring=False):
         "completion_path_wait_seconds": None,
         "worst_waits": sorted(worst, key=lambda r: r["wait_ms"], reverse=True)[:10],
         "delay_by_family": delay_breakdown(jobs), "cohorts": delay_breakdown(jobs, by_cohort=True),
+        "learning_effectiveness": learning_effectiveness(jobs, rows),
         "delay_by_lane": delay_breakdown(jobs, by_lane=True),
         "delay_interpretation": "Short jobs ran for 10–5000 ms; short runtime does not prove lightweight memory use. Blocker intervals are recorded decisions, not causal attribution.",
         "tool_elapsed_ms": distribution(hook_times),
@@ -349,11 +369,18 @@ def compare(baseline, candidate):
                 state = enforcement_state([r for r in job.values() if isinstance(r, dict)])
                 if state == "mixed":
                     continue
-                result[(row.get("family", "unknown"), row.get("workload"), row.get("model"), row.get("cache_state", "unknown"), state, row.get("workers"))].append(row["runtime_ms"] + row["queue_wait_ms"])
+                # Keep exact matches available when only the new release has
+                # compiler metadata. Context cohorts are additional evidence;
+                # replacing the exact key would silently lose older matches.
+                scopes = [('exact',row.get('workload'))] if row.get('workload') or not row.get('compiler_context') else []
+                if row.get('compiler_context'):
+                    scopes.append(('compiler_context',row['compiler_context']))
+                for scope,identity in scopes:
+                    result[(row.get("family", "unknown"), identity, row.get("model"), row.get("cache_state", "unknown"), state, row.get("workers"), scope)].append(row["runtime_ms"] + row["queue_wait_ms"])
         return result
     left, right = cohorts(baseline), cohorts(candidate)
     matches = []
-    for key in sorted(left.keys() & right.keys(), key=str):
+    for key in sorted(left.keys() & right.keys(), key=lambda key:(key[6]!='exact',str(key))):
         a, b = left[key], right[key]
         before, after = statistics.median(a), statistics.median(b)
         delta = after - before
@@ -364,15 +391,16 @@ def compare(baseline, candidate):
             deltas = sorted(statistics.median(rng.choices(b, k=min(200, len(b)))) - statistics.median(rng.choices(a, k=min(200, len(a)))) for _ in range(200))
             interval = [deltas[5], deltas[194]]
         matches.append(dict(family=key[0], enforcement_state=key[4], workers=key[5], baseline_n=len(a), candidate_n=len(b), baseline_median_ms=before,
+                            workload_match=key[6],
                             candidate_median_ms=after, delta_ms=delta,
                             exploratory_bootstrap_95pct_delta_ms=interval,
                             percent=100 * delta / before if before else None,
                             regression=sufficient and delta > 1000 and after > before * 1.2,
-                            evidence="exploratory" if key[1] is None or key[3] == "unknown" else "matched_workload"))
+                            evidence="exploratory" if key[1] is None or key[3] == "unknown" or key[6]=='compiler_context' else "matched_workload"))
     regression = any(m["regression"] for m in matches)
     return dict(verdict="regression_signal" if regression else "no_regression_signal" if any(min(m["baseline_n"], m["candidate_n"]) >= 5 for m in matches) else "insufficient_evidence",
                 regression=regression, cohorts=matches, baseline=summarize(baseline), candidate=summarize(candidate),
-                causal=False, uncertainty="Observational; unmatched workload, cache, model, concurrency and background conditions can confound differences. No improvement certification.")
+                causal=False, uncertainty="Observational; unmatched workload, cache, model, concurrency and background conditions can confound differences. Exact and compiler-context cohorts can overlap; do not sum their counts. No improvement certification.")
 
 
 def text_report(report):
@@ -381,6 +409,7 @@ def text_report(report):
     jobs = report["jobs"]
     machine = report["machine"]
     quality = report["coverage"]
+    learning = report.get('learning_effectiveness', {})
     lines = ["memcap · local performance", "",
              f"Jobs: {jobs['succeeded']} succeeded, {jobs['failed']} failed, {jobs['cancelled']} cancelled, {jobs['unfinished']} unfinished.",
              f"Pending without a recorded start: {report['pending']['observed']}; oldest age: {number(report['pending']['age_ms']['max'], ' ms')} (liveness unverified).",
@@ -392,6 +421,8 @@ def text_report(report):
              f"Queue wait median: {number(report['queue_wait_ms']['median'], ' ms')}; p95: {number(report['queue_wait_ms']['p95'], ' ms')}; n={report['queue_wait_ms']['n']}.",
              f"Completed jobs only: wait median {number(report['completed_evidence']['queue_wait_ms']['median'], ' ms')}; p95 {number(report['completed_evidence']['queue_wait_ms']['p95'], ' ms')}; {report['completed_evidence']['waited_over_10m']} waited over ten minutes.",
              f"Completed-job learning: {report['completed_evidence']['learning_complete']} complete, {report['completed_evidence']['learning_incomplete']} incomplete, {report['completed_evidence']['learning_unknown']} unknown; {report['completed_evidence']['explicit_requests']} fixed requests.",
+             f"Admissions below startup prior: {number(learning.get('admissions_below_prior'))}; reusable compiler profiles: {number(learning.get('compiler_profile_admissions'))}; known admissions: {learning.get('known_admissions', 0)}.",
+             f"Sampling decisions: busy {number(learning.get('sampling_busy_count'))}; expired {number(learning.get('sampling_expired_count'))}; incompatible cache {number(learning.get('sample_cache_mismatch_count'))}.",
              f"Pressure observed: {number(machine['observed_seconds'], ' s')}; red: {number(machine['red_seconds'], ' s')}; yellow: {number(machine['yellow_seconds'], ' s')}.",
              f"Paging at least 1 MiB/s: {number(machine['paging_ge_1MiB_s_seconds'], ' s')}.",
              f"Wired memory peak: {number(machine['wired_kb']['max'], ' KiB')}; kernel counters are allocation evidence, not process attribution.",

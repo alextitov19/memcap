@@ -1,6 +1,7 @@
 """Shared scheduler telemetry. KiB, monotonic intervals, fixed public vocabulary."""
 
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -15,6 +16,10 @@ from functools import lru_cache
 BLOCKERS = ("unknown", "budget", "headroom", "slots", "pressure_or_measurement", "measurement", "fairness", "startup", "stabilizing", "paging", "sampling")
 EVENTS = {"sample", "queued", "admitted", "completed", "cancelled", "stalled", "reservation"}
 FIELDS = {
+    "compiler_complete_runs",
+    "estimate_reuse_reason", "estimate_prior_kb", "compiler_profile_used",
+    "learning_protocol", "observation_probe_ms", "sampling_busy_count",
+    "sampling_expired_count", "sample_cache_mismatch_count", "sampling_reason",
     "learning_unverified_scope",
     "learning_samples", "learning_fault_samples", "learning_missing_samples", "learning_detached_samples",
     "capacity_stalled",
@@ -173,6 +178,18 @@ def vm_sample() -> dict:
         return {}
 
 
+def measurement_signature(config, environ, source):
+    """Only known non-measurement identities are excluded; future controls remain."""
+    metadata = {'MEMCAP_QUEUE_LEASE', 'MEMCAP_SESSION_KEY', 'MEMCAP_AGENT_PID',
+                'MEMCAP_PARENT_PID', 'MEMCAP_TOOL_CALL_ID', 'MEMCAP_NODE_WORKERS'}
+    context = sorted((k,v) for k,v in environ.items()
+                     if k.startswith(('MC_', 'MEMCAP_', 'QUEUE_')) and k not in metadata)
+    config = Path(config)
+    return hashlib.sha256(str(config.resolve()).encode()
+                          + (config.read_bytes() if config.exists() else b'')
+                          + json.dumps(context).encode() + source.encode()).hexdigest()
+
+
 def shared_sample(directory: Path, key: str, sampler) -> dict:
     """Elect one sampler without holding or waiting for the admission lock.
 
@@ -218,6 +235,7 @@ def shared_sample(directory: Path, key: str, sampler) -> dict:
                 "busy": True,
                 "pressure": 0,
                 "monotonic": time.monotonic(),
+                "sample_cache_mismatch": int(bool(cached) and cached.get('key') != key),
             }
         cached = read()
         if fresh(cached, 1):

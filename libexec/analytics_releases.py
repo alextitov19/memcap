@@ -91,7 +91,11 @@ def compare_snapshots(baseline, candidate):
                     completed_amplification_median=done['amplification_min_runtime_10ms']['median'],
                     pending_oldest_ms=pending['age_ms']['max'],
                     red_fraction=machine['red_seconds'] / machine['observed_seconds'] if machine['observed_seconds'] else None,
-                    guard_p95_ms=report['guard_ms']['p95'])
+                    guard_p95_ms=report['guard_ms']['p95'],
+                    admissions_below_prior=report.get('learning_effectiveness',{}).get('admissions_below_prior'),
+                    compiler_profile_admissions=report.get('learning_effectiveness',{}).get('compiler_profile_admissions'),
+                    sampling_busy_count=report.get('learning_effectiveness',{}).get('sampling_busy_count'),
+                    sampling_expired_count=report.get('learning_effectiveness',{}).get('sampling_expired_count'))
     def changes(left, right):
         before, after = metrics(left), metrics(right)
         return {key: dict(baseline=before[key], candidate=after[key],
