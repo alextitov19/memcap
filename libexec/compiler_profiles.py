@@ -18,18 +18,19 @@ SOURCE_SUFFIXES = {'.go', '.ts', '.tsx', '.js', '.jsx', '.c', '.cc', '.cpp', '.h
 SKIP = {'.git', 'node_modules', 'vendor', 'target', 'build', '.build', '.venv', 'venv', '__pycache__', '.next'}
 
 
-def compiler_profile(argv, cwd, workers, env):
+def compiler_profile(argv, cwd, workers, env, diagnostics=None):
     """Return a bounded private context/envelope, or None on uncertainty."""
+    diagnostics = diagnostics if diagnostics is not None else {}
+    diagnostics['reason'] = 1
     if not argv or type(workers) is not int or workers < 1:
         return None
     original = list(argv)
-    if len(argv)==3 and argv[0] in {'/bin/bash','/bin/sh'} and argv[1]=='-c':
-        if any(env.get(k) for k in ('BASH_ENV','ENV')) or any(k.startswith('BASH_FUNC_') for k in env):
-            return None
-        from scheduler_policy import simple_words
-        argv = simple_words(argv[2])
-        if not argv:
-            return None
+    from compiler_commands import resolve
+    resolved = resolve(argv, cwd, env, diagnostics, shutil.which)
+    if resolved is None:
+        return None
+    argv,cwd,env,wrappers = resolved
+    diagnostics['reason'] = 6
     name = Path(argv[0]).name
     if not (name == 'tsc' or name == 'go' and len(argv) > 1 and argv[1] == 'build'):
         return None
@@ -57,7 +58,7 @@ def compiler_profile(argv, cwd, workers, env):
             # manifests outside cwd. Do not certify that unenumerated scope.
             if not mod.is_file() or re.search(r'=>\s*(?:\./|\.\./|/)',mod.read_text()):
                 return None
-        executable = Path(shutil.which(argv[0]) or argv[0]).resolve(strict=True)
+        executable = Path(shutil.which(argv[0], path=env.get('PATH')) or argv[0]).resolve(strict=True)
         info = executable.stat()
         # Commands may name an output outside cwd, but external compiler inputs
         # and config references have no bounded source envelope here.
@@ -71,6 +72,7 @@ def compiler_profile(argv, cwd, workers, env):
             raise error
         for directory, dirs, names in os.walk(cwd, followlinks=False, onerror=walk_failed):
             if time.monotonic() > deadline:
+                diagnostics['reason'] = 5
                 return None
             if any((Path(directory)/d).is_symlink() for d in dirs if d not in SKIP):
                 return None
@@ -81,9 +83,11 @@ def compiler_profile(argv, cwd, workers, env):
                     continue
                 scanned += 1
                 if scanned > 4096 or time.monotonic() > deadline or path.is_symlink():
+                    diagnostics['reason'] = 6 if path.is_symlink() else 5
                     return None
                 before = path.stat()
                 if before.st_size > 8 * 1024 * 1024 - size:
+                    diagnostics['reason'] = 5
                     return None
                 data = path.read_bytes()
                 after = path.stat()
@@ -116,11 +120,12 @@ def compiler_profile(argv, cwd, workers, env):
                     context_files['external-goenv'] = hashlib.sha256(config).hexdigest()
         relevant_env = {k:v for k,v in env.items() if k.startswith(('GO', 'CGO_', 'TS_')) or k in
                         {'CC', 'CXX', 'CFLAGS', 'CXXFLAGS', 'LDFLAGS', 'NODE_OPTIONS', 'NODE_ENV'}}
-        description = dict(version=2, argv=original, cwd=str(cwd), workers=workers,
+        description = dict(version=3, argv=original, cwd=str(cwd), workers=workers, wrappers=wrappers,
                            executable=str(executable), tool=[info.st_size, info.st_mtime_ns],
                            configs=context_files, env=relevant_env)
         key = hashlib.sha256(json.dumps(description, sort_keys=True).encode()).hexdigest()
         digest = lambda value: hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
+        diagnostics['reason'] = 0
         return dict(key=key, source_bytes=source_size, source_files=files,
                     family_key=digest([original,str(cwd)]), components={
                         'workers':digest(workers), 'tool':digest([str(executable),info.st_size,info.st_mtime_ns]),

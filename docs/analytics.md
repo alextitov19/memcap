@@ -308,3 +308,36 @@ growth and kernel-zone counters remain context, not attributed process ownership
 Comparisons retain exact-workload cohorts for older releases and add exploratory
 compiler-context cohorts when both sides have that metadata. These cohorts can
 overlap; do not sum their counts. Worker and enforcement scopes remain separate.
+
+## Learning recovery in v0.25
+
+Compare saved snapshots by runner build and policy, then compare matching commands
+and worker contexts. The startup default is a fallback, not learned evidence:
+valid exact-command learning remains usable when compiler reuse is unavailable.
+
+`learning_effectiveness.exact_profile_admissions` counts admissions with complete
+exact-profile evidence. It can overlap compiler-profile admissions; do not add the
+two counts. `admissions_below_prior` measures actual requests below the startup
+default, not counterfactual time saved. Fixed requests retain their explicit floor.
+
+`compiler_scope_reasons` separates supported contexts (0), unsupported commands
+(1), unsupported shell syntax/startup (2), environment overrides (3), package or
+configuration scope (4), inspection budget (5), and compiler input scope (6).
+These describe why a context could not be inspected, whereas `reuse_reasons`
+describe whether existing observations were usable. No commands or paths are
+included in these numeric counters.
+
+`observation_failures` distinguishes absent anchors, membership changes, missing
+usage, identity changes, registry refresh mismatches, gaps and probe faults.
+`terminal_empty_observations` counts exits discovered between polling and probing;
+those empty probes never count as zero memory or as complete measurements.
+Previously complete observations still require a fresh terminal timestamp.
+Missing live reads remain incomplete and cannot train a smaller reservation.
+Old releases without these fields report unknown values rather than zero failures.
+
+New commands through stable installed paths adopt the new runner. Existing queue
+supervisors retain their loaded code until completion; never resubmit their jobs.
+If analytics is enabled, refresh its collector after upgrade to accept the new
+fields. This does not require changing agent hooks or restarting enforcement.
+Raw command tracing is separate, owner-enabled and expires after 24 hours; an
+empty recent trace is not proof that no commands ran. Keep raw evidence local.

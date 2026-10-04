@@ -153,7 +153,14 @@ def learning_effectiveness(jobs, rows):
     def count(name):
         known = [j['completed'][name] for j in jobs if name in j.get('completed', {})]
         return sum(known) if known else None
+    exact = [j['admitted']['exact_profile_used'] for j in jobs if 'exact_profile_used' in j.get('admitted',{})]
     return dict(known_admissions=len(admissions),
+                exact_profile_admissions=sum(exact) if exact else None,
+                compiler_scope_reasons=dict(collections.Counter(j['admitted']['compiler_scope_reason'] for j in jobs
+                                            if 'compiler_scope_reason' in j.get('admitted',{}))),
+                observation_failures={name:count('observation_'+name)
+                                      for name in ('anchor','members','usage','identity','refresh','gap','fault')},
+                terminal_empty_observations=count('observation_terminal_empty'),
                 admissions_below_prior=sum(r.get('request_kb',r['estimate_prior_kb']) < r['estimate_prior_kb'] for r in admissions) if admissions else None,
                 compiler_profile_admissions=sum(r.get('compiler_profile_used',0) for r in admissions) if admissions else None,
                 reuse_reasons=dict(collections.Counter(r.get('estimate_reuse_reason',0) for r in admissions)),

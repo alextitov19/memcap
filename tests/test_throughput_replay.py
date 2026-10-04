@@ -34,7 +34,31 @@ def replay():
     return dict(synthetic=True,causal_production_claim=False,cases=result)
 
 
+def exact_replay():
+    """Same previously learned evidence, same policy, same physical headroom."""
+    policy=dict(mode='adaptive',allowed_pressure=(1,2),max_jobs=4,headroom_kb=GIB//2)
+    result=[]
+    for name,exact,pressure,mode in [('learned-small',GIB//2,2,'adaptive'),
+                                    ('cold',GIB,2,'adaptive'),('large',3*GIB,2,'adaptive'),
+                                    ('red',GIB//2,4,'adaptive'),('strict',GIB,2,'strict')]:
+        before=max(exact,predict({},None,GIB,110)[0])
+        after=max(exact,predict({},None,exact,110)[0])
+        sample=dict(fault=False,pressure=pressure,tracked_kb=0,cap_kb=20*GIB,
+                    available_kb=int(1.2*GIB),footprints={},tracked_pids=[],monotonic=110)
+        decisions=[decide({**policy,'mode':mode},sample,dict(now=110,healthy_since=100,last_start=100),[],
+                          dict(memory_kb=value,resource='')) for value in (before,after)]
+        result.append(dict(case=name,before_kb=before,after_kb=after,
+                           before_admitted=decisions[0]['allow'],after_admitted=decisions[1]['allow']))
+    return result
+
+
 class ReplayTests(unittest.TestCase):
+    def test_exact_regression_replay_restores_only_evidenced_admissions(self):
+        cases={r['case']:r for r in exact_replay()}
+        self.assertFalse(cases['learned-small']['before_admitted'])
+        self.assertTrue(cases['learned-small']['after_admitted'])
+        for name in ('cold','large','red','strict'):
+            self.assertFalse(cases[name]['after_admitted'])
     def test_same_headroom_timeline_improves_only_supported_warm_predictions(self):
         cases={r['case']:r for r in replay()['cases']}
         for name in ('warm','edited'):
@@ -47,5 +71,5 @@ class ReplayTests(unittest.TestCase):
 
 
 if __name__=='__main__':
-    print(json.dumps(replay(),sort_keys=True))
+    print(json.dumps({**replay(),'exact_recovery':exact_replay()},sort_keys=True))
     unittest.main()

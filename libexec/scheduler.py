@@ -184,6 +184,8 @@ class Scheduler:
         self.estimate_reuse_reason = 0
         self.estimate_prior_kb = self.memory_kb
         self.compiler_complete_runs = 0
+        self.compiler_scope_reason = 0
+        self.exact_profile_used = 0
         if max_pressure not in ("green", "yellow"):
             raise QueueError("QUEUE_MAX_PRESSURE must be green or yellow")
         self.allowed_pressure = (1, 2) if max_pressure == "yellow" else (1,)
@@ -484,12 +486,17 @@ class Scheduler:
         row = history.get(key, {}) or history.get(self.estimate_family_key, {})
         exact = row.get("estimate_kb", prior)
         from compiler_profiles import compiler_profile, predict
-        profile = compiler_profile(argv, cwd, workers, dict(os.environ))
+        scope = {}
+        profile = compiler_profile(argv, cwd, workers, dict(os.environ), diagnostics=scope)
+        self.compiler_scope_reason = scope.get('reason', 0)
+        self.exact_profile_used = int(bool(history.get(key, {}).get('complete_runs')))
         # HMAC even the context digest before it enters the private registry.
         if profile:
             profile['key'] = fingerprint({'compiler_context': profile['key']}, bytes.fromhex(secret))
             profile['family_key'] = fingerprint({'compiler_family':profile['family_key']},bytes.fromhex(secret))
-        predicted, reason = predict(data.get('compiler_profiles', {}), profile, prior, time.time())
+        # Absence of a compiler prediction is not evidence against an already
+        # learned exact estimate. Still apply any independently observed growth.
+        predicted, reason = predict(data.get('compiler_profiles', {}), profile, exact, time.time())
         self.compiler_profile = profile
         self.estimate_reuse_reason = reason
         self.estimate_prior_kb = prior
@@ -553,8 +560,11 @@ class Scheduler:
         """Apply only identity-matched workload evidence, never host admission."""
         from job_observation import accumulate
         expected = footprint_members(job)
-        if not expected or any(sample.get('identities', {}).get(p) != start for p, start in expected.items()):
-            sample = {**sample, 'complete': False, 'missing': sample.get('missing', 0)+1}
+        if any(sample.get('identities', {}).get(p) != start for p, start in expected.items()):
+            # New/unmatched live identities remain uncertain. An empty later
+            # registry, however, cannot invalidate an earlier complete probe.
+            sample = {**sample, 'complete': False, 'missing': sample.get('missing', 0)+1,
+                      'reasons': {**sample.get('reasons', {}), 'refresh': 1}}
         state = accumulate(job.get('owned_observation', {'began':job.get('start_monotonic',sample['at'])}), sample)
         job['owned_observation'] = state
         measured = sample['peak_kb']
@@ -885,6 +895,8 @@ class Scheduler:
                         "estimate_reuse_reason": self.estimate_reuse_reason if estimate_key else 0,
                         "estimate_prior_kb": self.estimate_prior_kb if estimate_key else memory,
                         "compiler_complete_runs": self.compiler_complete_runs if estimate_key else 0,
+                        "compiler_scope_reason": self.compiler_scope_reason if estimate_key else 0,
+                        "exact_profile_used": self.exact_profile_used if estimate_key else 0,
                         "lane_version": 1,
                         "demand_version": 1,
                         "fairness_version": 2,
@@ -951,6 +963,8 @@ class Scheduler:
                                    estimate_reuse_reason=self.estimate_reuse_reason,
                                    estimate_prior_kb=self.estimate_prior_kb)
                         job['compiler_complete_runs'] = self.compiler_complete_runs
+                        job['compiler_scope_reason'] = self.compiler_scope_reason
+                        job['exact_profile_used'] = self.exact_profile_used
                     job['workers'] = workers
                     memory = job["memory_kb"]
                     active_resource = next(
@@ -1156,6 +1170,16 @@ class Scheduler:
                 with self.observed_registry(retry=True) as (data, table):
                     self.refresh(data, table)
                     job = next(j for j in data["jobs"] if j["id"] == ident)
+                    if result is None and owned_sample is not None:
+                        result = child.poll()
+                    from job_observation import terminal_empty
+                    if terminal_empty(owned_sample, result, footprint_members(job)):
+                        # Exit occurred after the loop's first poll but before
+                        # the probe could find a live group. Treat this exactly
+                        # like exit at that first poll: certify only prior fresh
+                        # complete observations, never this empty sample as zero.
+                        job['observation_terminal_empty'] = job.get('observation_terminal_empty', 0)+1
+                        owned_sample = None
                     if owned_sample is not None:
                         self.observe_owned(data, job, owned_sample)
                     self.observe(data, sample)
@@ -1211,6 +1235,11 @@ class Scheduler:
                                 learning_unverified_scope=job.get("learning_unverified_scope", 0),
                                 learning_protocol=job.get('learning_protocol', 1),
                                 observation_probe_ms=observation.get('probe_ms',0),
+                                **({'observation_'+name: observation.get('reasons',{}).get(name,0)
+                                    for name in ('anchor','members','usage','identity','refresh','gap','fault')}
+                                   if job.get('learning_protocol') == 2 else {}),
+                                **({'observation_terminal_empty':job.get('observation_terminal_empty',0)}
+                                   if job.get('learning_protocol') == 2 else {}),
                                 sampling_busy_count=job.get('sampling_busy_count',0),
                                 sampling_expired_count=job.get('sampling_expired_count',0),
                                 sample_cache_mismatch_count=job.get('sample_cache_mismatch_count',0),
@@ -1348,6 +1377,8 @@ class Scheduler:
                 job["estimate_key"], job["learning_prior_kb"] = self.demand(argv, cwd, workers, data)
                 job["estimate_family_key"] = self.estimate_family_key
                 job['compiler_profile'] = self.compiler_profile
+                job['compiler_scope_reason'] = self.compiler_scope_reason
+                job['exact_profile_used'] = self.exact_profile_used
                 # Older supervisors also observe registered groups. Seed both
                 # profiles before publishing the job so their fallback cannot
                 # mistake this fixed admission floor for an automatic prior.
@@ -1367,6 +1398,8 @@ class Scheduler:
                     job["estimate_key"], _ = self.demand(argv, cwd, workers, data)
                     job["estimate_family_key"] = self.estimate_family_key
                     job['compiler_profile'] = self.compiler_profile
+                    job['compiler_scope_reason'] = self.compiler_scope_reason
+                    job['exact_profile_used'] = self.exact_profile_used
             job["workers"] = workers
             if (
                 len(argv) >= 3
@@ -1437,6 +1470,8 @@ class Scheduler:
                     estimate_reuse_reason=job.get('estimate_reuse_reason',0),
                     estimate_prior_kb=job.get('estimate_prior_kb',job['memory_kb']),
                     compiler_complete_runs=job.get('compiler_complete_runs',0),
+                    compiler_scope_reason=job.get('compiler_scope_reason',0),
+                    exact_profile_used=int(bool(job.get('exact_profile_used')) and job.get('elastic') is True),
                     compiler_profile_used=int(bool(job.get('compiler_profile')) and job.get('estimate_reuse_reason')==1
                                               and job.get('elastic') is True),
                     lane_code=job["admission_lane_code"],

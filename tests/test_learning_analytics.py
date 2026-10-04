@@ -17,6 +17,24 @@ class LearningAnalyticsTests(unittest.TestCase):
         self.assertIsNone(report['learning_effectiveness']['admissions_below_prior'])
         self.assertIsNone(report['learning_effectiveness']['sampling_busy_count'])
 
+    def test_failure_reasons_and_exact_reuse_remain_numeric_and_unknown_for_old_runs(self):
+        old=summarize([self.row('completed',1,job='old',exit_code=0)])['learning_effectiveness']
+        self.assertIsNone(old['observation_failures']['usage'])
+        self.assertIsNone(old['exact_profile_admissions'])
+        rows=[self.row('admitted',1,job='one',request_kb=524288,estimate_prior_kb=1048576,
+                       exact_profile_used=1,compiler_scope_reason=2),
+              self.row('completed',2,job='one',exit_code=0,observation_usage=3,
+                       observation_refresh=2,observation_gap=0,observation_terminal_empty=1,
+                       command='must never be retained')]
+        report=summarize(rows)['learning_effectiveness']
+        self.assertEqual(report['exact_profile_admissions'],1)
+        self.assertEqual(report['compiler_scope_reasons'],{2:1})
+        self.assertEqual(report['observation_failures']['usage'],3)
+        self.assertEqual(report['observation_failures']['refresh'],2)
+        self.assertEqual(report['observation_failures']['gap'],0)
+        self.assertEqual(report['terminal_empty_observations'],1)
+        self.assertNotIn('command',rows[-1])
+
     def test_actual_lower_admission_separate_from_complete_observation(self):
         rows=[self.row('admitted',1,job='one',request_kb=524288,estimate_prior_kb=1048576,compiler_profile_used=1,estimate_reuse_reason=1),
               self.row('completed',2,job='one',runtime_ms=2800,learning_complete=1,learning_protocol=2,observation_probe_ms=12,sampling_busy_count=3,sampling_expired_count=1),

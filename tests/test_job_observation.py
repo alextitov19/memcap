@@ -35,6 +35,19 @@ class JobObservationTests(unittest.TestCase):
         previous={**self.job(),'owned_observation':{'usage_identities':{'10':999}}}
         self.assertFalse(sample_job(previous,lambda:self.table(),lambda pid:dict(identity=int(pid),footprint_kb=100),uid=501)['complete'])
 
+    def test_failure_diagnostics_distinguish_missing_usage_identity_and_scope(self):
+        from job_observation import sample_job, accumulate
+        missing=sample_job(self.job(),lambda:self.table(),lambda pid:None,uid=501)
+        self.assertEqual(missing['reasons']['usage'],3)
+        empty=sample_job(self.job(),lambda:{},lambda pid:None,uid=501)
+        self.assertEqual(empty['reasons']['anchor'],1)
+        previous={**self.job(),'owned_observation':{'usage_identities':{'10':999}}}
+        reused=sample_job(previous,lambda:self.table(),lambda pid:dict(identity=int(pid),footprint_kb=100),uid=501)
+        self.assertEqual(reused['reasons']['identity'],1)
+        state=accumulate({},missing)
+        self.assertEqual(state['reasons']['usage'],3)
+        self.assertFalse(state['complete'])
+
     def test_new_member_after_measurement_is_incomplete(self):
         from job_observation import sample_job
         before=self.table();after={**before,'14':dict(ppid=10,group=10,uid=501,start='new')}
@@ -86,6 +99,15 @@ class JobObservationTests(unittest.TestCase):
         self.assertFalse(complete_at(state,106))
         self.assertFalse(complete_at(state,99))
         self.assertFalse(complete_at({'complete':True},101))
+
+    def test_terminal_empty_requires_exit_empty_group_and_no_probe_fault(self):
+        from job_observation import terminal_empty
+        empty=dict(identities={},fault=0)
+        self.assertTrue(terminal_empty(empty,0,{}))
+        self.assertFalse(terminal_empty(empty,None,{}))
+        self.assertFalse(terminal_empty(empty,0,{'10':'live'}))
+        self.assertFalse(terminal_empty({**empty,'fault':1},0,{}))
+        self.assertFalse(terminal_empty({**empty,'identities':{'10':'measured'}},0,{}))
 
 
 if __name__=='__main__': unittest.main()
