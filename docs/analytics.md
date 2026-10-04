@@ -1,5 +1,18 @@
 # Local performance analytics
 
+From v0.26, the `timing` report includes separate `queue_wait_*_ms` and
+`runtime_*_ms` distributions for awake, elapsed (including system sleep), and
+sleep time. The sleep-inclusive clock is monotonic and unaffected by wall-clock
+adjustments. Unsupported clocks and older recordings stay unknown. The existing
+`queue_wait_ms` and `runtime_ms` fields retain their original clock basis, which
+excludes sleep on macOS, so historical comparisons do not silently change meaning.
+Admission deadlines also retain their existing clock behavior. A historical
+wall/monotonic discrepancy alone cannot distinguish sleep from a clock adjustment;
+`wall_divergent_jobs` flags it without assigning a cause. New timing fields are
+captured before event emission and carried in local release snapshots.
+Pending timing distributions end at the last recorded stall observation and do
+not imply current liveness or extrapolate sleep up to the report cutoff.
+
 Analytics measures three separate things: developer delay, machine health, and
 the quality/cost of the observations. It does not tune policy, resume enforcement,
 release reservations, or send analytics to GitHub. Public incident reporting keeps

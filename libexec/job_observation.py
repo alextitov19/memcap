@@ -58,6 +58,13 @@ def sample_job(job, table_reader, usage_reader, *, uid=None):
                 result['missing'] += 1
                 reason = 'usage' if not first or not second else 'identity'
                 result['reasons'][reason] = result['reasons'].get(reason, 0) + 1
+                # A prior paired kernel identity can authenticate this first
+                # read even when the process exits before the second. Retain
+                # upward evidence only; it never certifies a complete interval.
+                if (first and type(first.get('identity')) is int
+                        and first['identity'] > 0 and previous == first['identity']
+                        and type(first.get('footprint_kb')) is int and first['footprint_kb'] >= 0):
+                    result['footprints'][pid] = first['footprint_kb']
                 continue
             result['usage_identities'][pid] = first['identity']
             # A sum of per-process maxima can overestimate this short interval,

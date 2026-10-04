@@ -87,7 +87,26 @@ class ReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(delta['deltas']['completed_wait_median_ms']['delta'], 900)
         self.assertIsNone(delta['deltas']['red_fraction']['delta'])
         self.assertIsNone(delta['deltas']['completed_wait_p95_ms']['delta'])
+        self.assertIsNone(delta['deltas']['admitted_wait_elapsed_median_ms']['delta'])
+        self.assertIsNone(delta['deltas']['completed_runtime_elapsed_median_ms']['delta'])
         self.assertFalse(delta['causal'])
+
+    def test_sleep_inclusive_timings_survive_release_archives_and_both_allowlists(self):
+        from scheduler_metrics import append_event
+        directory = self.root / 'queue'
+        directory.mkdir()
+        fields = dict(queue_wait_awake_ms=100, queue_wait_elapsed_ms=60100, queue_wait_sleep_ms=60000)
+        append_event(directory, dict(event='admitted', **fields))
+        stored = json.loads((directory / 'events.jsonl').read_text().splitlines()[-1])
+        for key, value in fields.items():
+            self.assertEqual(stored[key], value)
+        rows = [self.row('admitted', 1, job='one', **fields),
+                self.row('completed', 2, job='one', exit_code=0, runtime_elapsed_ms=50)]
+        output = self.root / 'timed'
+        snapshot(rows, {}, output, since=0, until=2000)
+        report = load(output)
+        self.assertEqual(report['summary']['timing']['queue_wait_elapsed_ms']['median'], 60100)
+        self.assertEqual(report['cohorts'][0]['summary']['timing']['runtime_elapsed_ms']['median'], 50)
 
     def test_sampling_notice_preserves_last_valid_headroom(self):
         job = dict(memory_kb=4*GIB, elastic=False)

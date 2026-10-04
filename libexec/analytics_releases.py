@@ -87,6 +87,8 @@ def compare_snapshots(baseline, candidate):
     def metrics(report):
         done, pending, machine = report['completed_evidence'], report['pending'], report['machine']
         return dict(completed_wait_median_ms=done['queue_wait_ms']['median'],
+                    admitted_wait_elapsed_median_ms=report.get('timing',{}).get('queue_wait_elapsed_ms',{}).get('median'),
+                    completed_runtime_elapsed_median_ms=report.get('timing',{}).get('runtime_elapsed_ms',{}).get('median'),
                     completed_wait_p95_ms=done['queue_wait_ms']['p95'],
                     completed_amplification_median=done['amplification_min_runtime_10ms']['median'],
                     pending_oldest_ms=pending['age_ms']['max'],

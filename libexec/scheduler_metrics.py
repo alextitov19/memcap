@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import time
 from functools import lru_cache
+from job_timing import FIELDS as TIMING_FIELDS
 
 BLOCKERS = ("unknown", "budget", "headroom", "slots", "pressure_or_measurement", "measurement", "fairness", "startup", "stabilizing", "paging", "sampling")
 EVENTS = {"sample", "queued", "admitted", "completed", "cancelled", "stalled", "reservation"}
@@ -63,7 +64,7 @@ FIELDS = {
     "reservation_source",
     "measurement_complete",
     "learning_complete",
-} | {"blocked_" + reason + "_ms" for reason in BLOCKERS}
+} | {"blocked_" + reason + "_ms" for reason in BLOCKERS} | TIMING_FIELDS
 MAX_SEGMENT = 16 * 1024 * 1024
 ANALYTICS_CONTEXT = {}
 

@@ -9,6 +9,7 @@ from test_sampling_context import SamplingContextTests
 from test_learning_analytics import LearningAnalyticsTests
 from test_learning_integration import LearningIntegrationTests
 from test_compiler_commands import CompilerCommandTests
+from test_job_timing import JobTimingTests
 
 
 def rejects(case, name, target, replacement):
@@ -73,7 +74,32 @@ def main():
             'compiler_commands.resolve',ignore_cdpath)
     rejects(JobObservationTests,'test_terminal_empty_requires_exit_empty_group_and_no_probe_fault',
             'job_observation.terminal_empty',lambda *args:True)
-    count=16
+    import job_observation
+    sample_job = job_observation.sample_job
+    def discard_unpaired(*args, **kwargs):
+        sample = sample_job(*args, **kwargs)
+        sample['peak_kb'] = sum(v for p, v in sample['footprints'].items()
+                                if p in sample['usage_identities'])
+        return sample
+    rejects(JobObservationTests, 'test_verified_growth_survives_exit_before_second_read_without_certifying_complete',
+            'job_observation.sample_job', discard_unpaired)
+    import compiler_profiles
+    profile = compiler_profiles.compiler_profile
+    def waste_source_reads(argv, cwd, *args, **kwargs):
+        from pathlib import Path
+        for source in Path(cwd).glob('*.go'):
+            source.read_bytes()
+        return profile(argv, cwd, *args, **kwargs)
+    rejects(CompilerProfileTests, 'test_large_source_envelope_uses_metadata_budget_without_reading_source_contents',
+            'compiler_profiles.compiler_profile', waste_source_reads)
+    import job_timing
+    fields = job_timing.phase_fields
+    def awake_as_elapsed(job, phase):
+        result = fields(job, phase)
+        result[phase + '_elapsed_ms'] = result.get(phase + '_awake_ms')
+        return result
+    rejects(JobTimingTests, 'test_sleep_and_wall_adjustments', 'job_timing.phase_fields', awake_as_elapsed)
+    count=19
     if sys.platform=='darwin':
         rejects(LearningIntegrationTests,'test_exit_between_first_poll_and_empty_probe_preserves_prior_evidence',
                 'job_observation.terminal_empty',lambda *args:False)

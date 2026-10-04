@@ -61,6 +61,39 @@ class AnalyticsTests(unittest.TestCase):
         self.assertEqual(row["duration_ms"], 5)
         self.assertNotIn("duration_ms", self.row("hook", duration_ms=float("nan")))
 
+    def test_suspend_inclusive_timing_is_preserved_separately_from_awake_wait(self):
+        admitted=self.row('admitted',2,job='timed',queue_wait_ms=1000,
+                          queue_wait_awake_ms=1000,queue_wait_elapsed_ms=61000,queue_wait_sleep_ms=60000)
+        done=self.row('completed',3,job='timed',exit_code=0,runtime_ms=2000,
+                      runtime_awake_ms=2000,runtime_elapsed_ms=12000,runtime_sleep_ms=10000)
+        self.assertEqual(admitted.get('queue_wait_elapsed_ms'),61000)
+        report=summarize([admitted,done])
+        self.assertEqual(report['timing']['queue_wait_elapsed_ms']['median'],61000)
+        self.assertEqual(report['timing']['runtime_awake_ms']['median'],2000)
+        self.assertEqual(report['timing']['runtime_sleep_ms']['median'],10000)
+        self.assertEqual(report['completed_evidence']['queue_wait_ms']['median'],1000)
+
+    def test_legacy_clock_divergence_is_reported_without_inventing_sleep(self):
+        queued=self.row('queued',1,job='old')
+        admitted=self.row('admitted',2,job='old',queue_wait_ms=1000)
+        admitted['wall']+=60
+        done=self.row('completed',3,job='old',runtime_ms=1000,exit_code=0)
+        done['wall']+=60
+        report=summarize([queued,admitted,done])
+        self.assertEqual(report['timing']['wall_divergent_jobs'],1)
+        self.assertEqual(report['timing']['queue_wait_elapsed_ms']['n'],0)
+        self.assertEqual(report['timing']['queue_wait_sleep_ms']['n'],0)
+
+    def test_pending_sleep_timing_is_last_observation_not_completed_or_current_age(self):
+        queued = self.row('queued', 1, job='pending')
+        stalled = self.row('stalled', 2, job='pending', queue_wait_awake_ms=1000,
+                           queue_wait_elapsed_ms=61000, queue_wait_sleep_ms=60000)
+        stalled['wall'] += 60
+        report = summarize([queued, stalled], now=10000)
+        self.assertEqual(report['timing']['pending_queue_wait_elapsed_ms']['max'], 61000)
+        self.assertEqual(report['timing']['queue_wait_elapsed_ms']['n'], 0)
+        self.assertEqual(report['timing']['wall_divergent_jobs'], 1)
+
     def test_absent_recorder_does_not_raise_or_retry(self):
         producer = events.Producer(self.root)
         self.addCleanup(producer.close)

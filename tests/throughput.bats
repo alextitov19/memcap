@@ -50,7 +50,7 @@ setup() {
 @test "THROUGHPUT: learning and sampling negative controls actually fail" {
   run python3 "$MEMCAP_ROOT/tests/test_learning_negative.py"
   [ "$status" = 0 ]
-  assert_matches "$output" '(16/16|17/17) deliberate learning and sampling regressions detected'
+  assert_matches "$output" '(19/19|20/20) deliberate learning and sampling regressions detected'
 }
 
 @test "THROUGHPUT: pending work, lifecycle retention and exact admission evidence" {
@@ -69,4 +69,8 @@ setup() {
   run python3 "$MEMCAP_ROOT/tests/test_throughput_negative.py"
   [ "$status" = 0 ]
   assert_contains "$output" '6/6 deliberate regressions detected'
+}
+@test "job timing distinguishes awake and sleep-inclusive elapsed intervals" {
+  run python3 "$MEMCAP_ROOT/tests/test_job_timing.py"
+  [ "$status" -eq 0 ]
 }

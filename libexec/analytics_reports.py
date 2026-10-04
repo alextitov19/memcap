@@ -53,6 +53,32 @@ def enforcement_state(rows):
     return {0: "active", 1: "paused"}.get(next(iter(values), None), "unknown")
 
 
+def timing_evidence(jobs):
+    from job_timing import FIELDS
+    values = {key: [] for key in FIELDS}
+    pending = {'pending_' + key: [] for key in FIELDS if key.startswith('queue_wait_')}
+    divergent = 0
+    for job in jobs:
+        admission, completion = job.get('admitted', {}), job.get('completed', {})
+        for key in values:
+            row = admission if key.startswith('queue_wait_') else completion
+            if key in row:
+                values[key].append(row[key])
+        if not admission and not completion and not job.get('cancelled'):
+            for key in pending:
+                field = key[len('pending_'):]
+                if field in job.get('stalled', {}):
+                    pending[key].append(job['stalled'][field])
+        endpoints = [(job.get('queued'), admission or job.get('stalled')), (admission, completion)]
+        divergent += int(any(a and b and a.get('boot') == b.get('boot')
+                             and a.get('boot') not in (None, '0' * 32)
+                             and abs((b['wall']-a['wall'])-(b['mono']-a['mono'])) > 2
+                             for a, b in endpoints))
+    return {**{key: distribution(value) for key, value in {**values, **pending}.items()},
+            'wall_divergent_jobs': divergent,
+            'interpretation': 'Elapsed includes sleep; awake excludes sleep on macOS. Pending timing ends at the last recorded stall, not the report cutoff; liveness unverified. Legacy missing clocks remain unknown. Wall divergence alone does not identify sleep. Existing queue_wait_ms/runtime_ms retain their original clock basis.'}
+
+
 def delay_breakdown(jobs, by_cohort=False, by_lane=False):
     groups = {}
     for job in jobs:
@@ -294,6 +320,7 @@ def summarize(rows, health=None, now=None, include_monitoring=False):
     return {
         "jobs": dict(counts), "queue_wait_ms": distribution(waits), "runtime_ms": distribution(runtimes),
         "completed_evidence": completion_evidence(jobs),
+        "timing": timing_evidence(jobs),
         "pending": dict(observed=len(pending), age_ms=distribution([p['age_ms'] for p in pending if p['age_ms'] is not None]),
                         jobs=sorted(pending, key=lambda p: p['age_ms'] or 0, reverse=True),
                         interpretation="No recorded admission/end; ages at report cutoff, not proof of current liveness. Excluded from completed wait percentiles."),
@@ -417,8 +444,12 @@ def text_report(report):
     machine = report["machine"]
     quality = report["coverage"]
     learning = report.get('learning_effectiveness', {})
+    timing = report.get('timing', {})
     lines = ["memcap · local performance", "",
              f"Jobs: {jobs['succeeded']} succeeded, {jobs['failed']} failed, {jobs['cancelled']} cancelled, {jobs['unfinished']} unfinished.",
+             f"Queue timing medians: awake {number(timing.get('queue_wait_awake_ms', {}).get('median'), ' ms')}; including sleep {number(timing.get('queue_wait_elapsed_ms', {}).get('median'), ' ms')}; sleep {number(timing.get('queue_wait_sleep_ms', {}).get('median'), ' ms')}.",
+             f"Runtime median including sleep: {number(timing.get('runtime_elapsed_ms', {}).get('median'), ' ms')}; jobs with wall/monotonic divergence: {timing.get('wall_divergent_jobs', 'unknown')}. Missing historical clocks remain unknown.",
+             f"Pending wait including sleep, longest last observation: {number(timing.get('pending_queue_wait_elapsed_ms', {}).get('max'), ' ms')} (not current age or verified liveness).",
              f"Pending without a recorded start: {report['pending']['observed']}; oldest age: {number(report['pending']['age_ms']['max'], ' ms')} (liveness unverified).",
              f"Monitoring jobs excluded: {report['monitoring_jobs']['observed']}. {report['job_scope']}",
              f"Raw history oldest timestamp: {quality.get('raw_oldest_wall', 'unknown')}; retained lifecycle checkpoints: {quality.get('job_checkpoints', 0)}.",
