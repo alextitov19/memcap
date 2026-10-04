@@ -1,11 +1,14 @@
 """Prove the new guards reject deliberate regressions; isolated unit fixtures."""
 import io
 import unittest
+import sys
 from unittest.mock import patch
 from test_compiler_profiles import CompilerProfileTests
 from test_job_observation import JobObservationTests
 from test_sampling_context import SamplingContextTests
 from test_learning_analytics import LearningAnalyticsTests
+from test_learning_integration import LearningIntegrationTests
+from test_compiler_commands import CompilerCommandTests
 
 
 def rejects(case, name, target, replacement):
@@ -44,7 +47,38 @@ def main():
         return {**result,'cohorts':[r for r in result['cohorts'] if r['workload_match']!='exact']}
     rejects(LearningAnalyticsTests,'test_new_context_metadata_preserves_exact_comparisons_with_old_releases',
             'test_learning_analytics.compare',dropped_exact_matches)
-    print('9/9 deliberate learning and sampling regressions detected')
+    from compiler_profiles import predict
+    def restored_default_floor(history,profile,prior,now):
+        return predict(history,profile,max(prior,1048576),now)
+    rejects(LearningIntegrationTests,'test_unavailable_compiler_reuse_preserves_exact_learning_and_growth',
+            'compiler_profiles.predict',restored_default_floor)
+    from scheduler import Scheduler
+    observe=Scheduler.observe_owned
+    def exit_poisoned(self,data,job,sample):
+        if not job.get('footprint_members',job['members']):
+            sample={**sample,'complete':False,'missing':sample.get('missing',0)+1}
+        return observe(self,data,job,sample)
+    rejects(LearningIntegrationTests,'test_complete_sample_survives_exit_before_registry_refresh',
+            'scheduler.Scheduler.observe_owned',exit_poisoned)
+    rejects(CompilerCommandTests,'test_literal_directory_environment_and_go_directory_flag_reach_profile',
+            'compiler_commands.resolve',lambda *args:None)
+    rejects(SamplingContextTests,'test_busy_sampler_rereads_newly_published_fresh_sample',
+            'scheduler_metrics.shared_sample',lambda *args:{'busy':True})
+    rejects(JobObservationTests,'test_failure_diagnostics_distinguish_missing_usage_identity_and_scope',
+            'job_observation.sample_job',lambda *args,**kwargs:{'reasons':{}})
+    from compiler_commands import resolve
+    def ignore_cdpath(argv,cwd,env,*args):
+        return resolve(argv,cwd,{k:v for k,v in env.items() if k!='CDPATH'},*args)
+    rejects(CompilerCommandTests,'test_cdpath_cannot_redirect_profile_to_different_compiler_inputs',
+            'compiler_commands.resolve',ignore_cdpath)
+    rejects(JobObservationTests,'test_terminal_empty_requires_exit_empty_group_and_no_probe_fault',
+            'job_observation.terminal_empty',lambda *args:True)
+    count=16
+    if sys.platform=='darwin':
+        rejects(LearningIntegrationTests,'test_exit_between_first_poll_and_empty_probe_preserves_prior_evidence',
+                'job_observation.terminal_empty',lambda *args:False)
+        count+=1
+    print(f'{count}/{count} deliberate learning and sampling regressions detected')
 
 
 if __name__=='__main__': main()

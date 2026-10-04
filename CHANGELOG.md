@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.25.0 — 2026-10-04
+
+- Preserve previously learned exact-command estimates when reusable compiler
+  evidence is unavailable; v0.24 could incorrectly restore the startup default.
+  Independently observed growth and fixed, strict and orphaned floors remain.
+- Recognize bounded literal directory/environment prefixes, Go `-C`, and local
+  package compiler scripts for reusable compiler contexts. Custom shell startup,
+  lifecycle hooks, arbitrary script bodies and uncertain inputs remain unsupported.
+  Prediction inspection does not rewrite or execute the original command.
+- Preserve complete owned-process measurements when the measured group exits
+  before registry refresh. Distinguish a verified terminal empty probe from
+  missing live usage; genuine gaps and missing readings still prohibit lowering.
+- Re-read a freshly published compatible memory sample after sampler-lock
+  contention while retaining the two-second admission freshness limit.
+- Record exact-estimate reuse, compiler scope rejection reasons, and separate
+  observation failure counters. Older missing fields remain unknown. Faster probe
+  measurements alone are not evidence of improved developer completion time.
+
 ## v0.24.0 — 2026-10-03
 
 - Reuse conservative compiler memory predictions across bounded source edits while

@@ -6,6 +6,8 @@ cannot establish host headroom, release a lease, or authorize cancellation.
 import os
 import time
 
+REASONS = ('anchor', 'members', 'usage', 'identity', 'refresh', 'gap', 'fault')
+
 
 def members(job, table, uid):
     excluded = job.get('observation_exclusions', {})
@@ -32,15 +34,18 @@ def sample_job(job, table_reader, usage_reader, *, uid=None):
     uid = os.getuid() if uid is None else uid
     began = time.monotonic()
     result = dict(complete=False, peak_kb=0, identities={}, footprints={}, at=began,
-                  usage_identities={}, missing=0, fault=0, duration_ms=0)
+                  usage_identities={}, missing=0, fault=0, duration_ms=0, reasons={})
     try:
         before = members(job, table_reader(), uid)
         if not before:
+            result['reasons']['anchor'] = 1
             return result
         reads = {pid:usage_reader(int(pid)) for pid in before}
         after = members({**job, 'footprint_members':before}, table_reader(), uid)
         result['identities'] = before
         result['complete'] = before == after
+        if before != after:
+            result['reasons']['members'] = 1
         for pid in before:
             first = reads[pid]
             second = usage_reader(int(pid)) if after.get(pid) == before[pid] else None
@@ -51,6 +56,8 @@ def sample_job(job, table_reader, usage_reader, *, uid=None):
                     or any(type(v.get('footprint_kb')) is not int or v['footprint_kb'] < 0 for v in (first, second))):
                 result['complete'] = False
                 result['missing'] += 1
+                reason = 'usage' if not first or not second else 'identity'
+                result['reasons'][reason] = result['reasons'].get(reason, 0) + 1
                 continue
             result['usage_identities'][pid] = first['identity']
             # A sum of per-process maxima can overestimate this short interval,
@@ -64,6 +71,7 @@ def sample_job(job, table_reader, usage_reader, *, uid=None):
         # and interpreter exit are BaseException subclasses and still propagate.
         result['complete'] = False
         result['fault'] = 1
+        result['reasons']['fault'] = 1
     result['at'] = time.monotonic()
     result['duration_ms'] = (result['at'] - began)*1000
     return result
@@ -76,14 +84,28 @@ def complete_at(state, now):
                 and 0 <= now-last <= 5)
 
 
+def terminal_empty(sample, result, current_members):
+    """A verified completed group has no new live interval to measure.
+
+    This only selects prior evidence; complete_at still checks its freshness.
+    Any identities or probe fault make the sample real uncertainty to retain.
+    """
+    return bool(sample is not None and result is not None and not current_members
+                and not sample.get('identities') and not sample.get('fault'))
+
+
 def accumulate(state, sample):
     result = dict(state)
     at = sample['at']
     if at <= result.get('last', -1):
         return result
     gap = at-result.get('last',result.get('began',at))
+    reasons = dict(result.get('reasons', {}))
+    for reason in REASONS:
+        reasons[reason] = reasons.get(reason, 0) + sample.get('reasons', {}).get(reason, 0)
+    reasons['gap'] += int(gap > 5)
     incomplete = result.get('incomplete', False) or not sample['complete'] or gap > 5
-    result.update(last=at, incomplete=incomplete,
+    result.update(last=at, incomplete=incomplete, reasons=reasons,
                   samples=result.get('samples', 0)+int(sample['complete']),
                   peak_kb=max(result.get('peak_kb',0),sample['peak_kb']),
                   missing=result.get('missing',0)+sample.get('missing',0),

@@ -16,6 +16,9 @@ from functools import lru_cache
 BLOCKERS = ("unknown", "budget", "headroom", "slots", "pressure_or_measurement", "measurement", "fairness", "startup", "stabilizing", "paging", "sampling")
 EVENTS = {"sample", "queued", "admitted", "completed", "cancelled", "stalled", "reservation"}
 FIELDS = {
+    'compiler_scope_reason', 'exact_profile_used', 'observation_terminal_empty',
+    'observation_anchor', 'observation_members', 'observation_usage', 'observation_identity',
+    'observation_refresh', 'observation_gap', 'observation_fault',
     "compiler_complete_runs",
     "estimate_reuse_reason", "estimate_prior_kb", "compiler_profile_used",
     "learning_protocol", "observation_probe_ms", "sampling_busy_count",
@@ -228,6 +231,9 @@ def shared_sample(directory: Path, key: str, sampler) -> dict:
         except BlockingIOError:
             # Refresh begins before expiry. Other supervisors can still use a
             # valid sample while the elected sampler works; never extend TTL.
+            # The winner may have published between our read and lock attempt.
+            # Re-read atomically replaced JSON; keep key and two-second checks.
+            cached = read()
             if fresh(cached):
                 return cached["sample"]
             return {

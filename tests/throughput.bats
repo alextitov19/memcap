@@ -11,6 +11,12 @@ setup() {
   assert_contains "$output" OK
 }
 
+@test "THROUGHPUT: literal compiler wrappers preserve bounded input scope" {
+  run python3 "$MEMCAP_ROOT/tests/test_compiler_commands.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" OK
+}
+
 @test "THROUGHPUT: owned process observations preserve identity and uncertainty" {
   run python3 "$MEMCAP_ROOT/tests/test_job_observation.py"
   [ "$status" = 0 ]
@@ -44,7 +50,7 @@ setup() {
 @test "THROUGHPUT: learning and sampling negative controls actually fail" {
   run python3 "$MEMCAP_ROOT/tests/test_learning_negative.py"
   [ "$status" = 0 ]
-  assert_contains "$output" '9/9 deliberate learning and sampling regressions detected'
+  assert_matches "$output" '(16/16|17/17) deliberate learning and sampling regressions detected'
 }
 
 @test "THROUGHPUT: pending work, lifecycle retention and exact admission evidence" {
