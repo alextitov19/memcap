@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import time
 
 GIB = 1048576
@@ -85,7 +86,19 @@ def compiler_profile(argv, cwd, workers, env, diagnostics=None):
                 if scanned > 4096 or time.monotonic() > deadline or path.is_symlink():
                     diagnostics['reason'] = 6 if path.is_symlink() else 5
                     return None
-                before = path.stat()
+                before = path.lstat()
+                if not stat.S_ISREG(before.st_mode):
+                    return None
+                # Source content is deliberately not part of the reusable
+                # context. Count its envelope without spending the bounded
+                # configuration-read budget on bytes we would discard.
+                if path.suffix in SOURCE_SUFFIXES:
+                    after = path.lstat()
+                    if (before.st_ino, before.st_dev, before.st_size, before.st_mtime_ns, before.st_mode) != (after.st_ino, after.st_dev, after.st_size, after.st_mtime_ns, after.st_mode):
+                        return None
+                    files += 1
+                    source_size += before.st_size
+                    continue
                 if before.st_size > 8 * 1024 * 1024 - size:
                     diagnostics['reason'] = 5
                     return None
@@ -96,13 +109,9 @@ def compiler_profile(argv, cwd, workers, env, diagnostics=None):
                 size += len(data)
                 if size > 8 * 1024 * 1024:
                     return None
-                if path.suffix in SOURCE_SUFFIXES:
-                    files += 1
-                    source_size += len(data)
-                else:
-                    if filename.startswith('tsconfig') and re.search(rb'"(?:\.\./|/)',data):
-                        return None
-                    context_files[str(path.relative_to(cwd))] = hashlib.sha256(data).hexdigest()
+                if filename.startswith('tsconfig') and re.search(rb'"(?:\.\./|/)',data):
+                    return None
+                context_files[str(path.relative_to(cwd))] = hashlib.sha256(data).hexdigest()
         if not files:
             return None
         if name == 'go' and env.get('GOENV') != 'off':

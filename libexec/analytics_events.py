@@ -15,6 +15,7 @@ import socket
 import stat
 import time
 import uuid
+from job_timing import FIELDS as TIMING_FIELDS
 
 EVENTS = frozenset(("hook", "route", "queued", "admitted", "completed", "cancelled", "native_memory", "classification",
                     "stalled", "reservation", "sample", "stop_wait", "action",
@@ -55,6 +56,7 @@ NUMBERS = {
     "classifier_version", "dependency_count", "classifier_ms",
     "lane_code",
     "wired_kb", "physical_memory_kb", "kernel_data_1024_inuse_kb", "kernel_data_shared_1024_inuse_kb",
+    *TIMING_FIELDS,
     "duration_ms", "hook_ms", "guard_ms", "queue_wait_ms", "runtime_ms", "exit_code", "signal",
     "completion_kind", "pressure", "available_kb", "tracked_kb", "request_kb", "peak_kb",
     "workers", "running", "waiting", "swap_in_kbps", "swap_out_kbps", "compressor_kb",

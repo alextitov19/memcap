@@ -137,6 +137,35 @@ class CompilerProfileTests(unittest.TestCase):
         self.assertEqual(estimate,GIB)
         self.assertEqual(reason,5)
 
+    def test_large_source_envelope_uses_metadata_budget_without_reading_source_contents(self):
+        from compiler_profiles import compiler_profile, predict, record_profile
+        source=self.root/'generated.go'
+        with source.open('wb') as stream:
+            stream.truncate(9*1024*1024)
+        original=Path.read_bytes
+        def bounded_read(path):
+            if path.suffix=='.go':
+                self.fail('source content is not part of the reusable key; only its size envelope is needed')
+            return original(path)
+        with patch.object(Path,'read_bytes',bounded_read):
+            profile=self.profile()
+        self.assertIsNotNone(profile)
+        self.assertGreater(profile['source_bytes'],9*1024*1024)
+        history={}
+        for at in (1,2,3): record_profile(history,profile,GIB//8,True,at)
+        self.assertEqual(predict(history,profile,GIB,4)[0],GIB//2)
+        with source.open('ab') as stream:
+            stream.truncate(12*1024*1024)
+        self.assertEqual(predict(history,self.profile(),GIB,4)[0],GIB)
+
+    def test_config_payload_budget_and_symlinks_remain_rejected(self):
+        config=self.root/'dependency.json'
+        with config.open('wb') as stream: stream.truncate(9*1024*1024)
+        self.assertIsNone(self.profile())
+        config.unlink()
+        (self.root/'linked.go').symlink_to(self.root/'main.go')
+        self.assertIsNone(self.profile())
+
 
 if __name__ == '__main__':
     unittest.main()

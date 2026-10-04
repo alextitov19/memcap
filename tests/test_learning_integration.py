@@ -207,6 +207,10 @@ class LearningIntegrationTests(unittest.TestCase):
         self.assertEqual(result,0)
         completed=[r for r in events if r['event']=='completed']
         self.assertEqual(len(completed),1)
+        admitted = next(r for r in events if r['event'] == 'admitted')
+        self.assertGreaterEqual(admitted['queue_wait_elapsed_ms'], 0)
+        self.assertGreaterEqual(completed[0]['runtime_elapsed_ms'], completed[0]['runtime_awake_ms'] - 10)
+        self.assertLess(completed[0]['runtime_sleep_ms'], 1000)
         self.assertEqual(completed[0]['learning_protocol'],2)
         self.assertGreaterEqual(completed[0]['learning_samples'],2)
         self.assertEqual(completed[0]['learning_complete'],int(terminal_gap==0 and not terminal_fault),json.dumps(completed[0],sort_keys=True))

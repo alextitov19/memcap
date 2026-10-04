@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.26.0 — 2026-10-04
+
+- Keep an authenticated high footprint reading when a child exits before the
+  paired read. Partial observations still cannot lower estimates or certify a
+  complete run; unknown and reused kernel identities remain excluded.
+- Count compiler source envelopes through bounded metadata inspection instead
+  of reading unused source contents. Preserve configuration hashes/read limits,
+  source growth checks and the three-complete-run requirement for lower estimates.
+- Record awake and sleep-inclusive queue/runtime durations separately. Report
+  historical wall/monotonic divergence without inventing missing sleep evidence.
+  Admission deadlines retain their existing clock behavior. No change to live
+  pressure, headroom, ownership, cancellation or cleanup policy.
+
 ## v0.25.0 — 2026-10-04
 
 - Preserve previously learned exact-command estimates when reusable compiler

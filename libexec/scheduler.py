@@ -22,6 +22,7 @@ import sys
 import tempfile
 import time
 import uuid
+from job_timing import continuous, phase_fields
 
 from admission import advance, decide
 from queue_deadlines import WAIT_SECONDS
@@ -836,6 +837,7 @@ class Scheduler:
         child = None
         analytics_claimed = False
         registered = False
+        job = {}
         estimate_key = ""
         from orphan_recovery import agent_identity
         originating_agent = agent_identity()
@@ -906,6 +908,7 @@ class Scheduler:
                         "elastic": memory_gb is None,
                         "enqueued": time.time(),
                         "enqueued_monotonic": time.monotonic(),
+                        "enqueued_continuous": continuous(),
                         "label": Path(argv[0]).name,
                         "cancel": False,
                         "session_key": session_key,
@@ -1127,6 +1130,7 @@ class Scheduler:
                                 self.directory,
                                 dict(
                                     event="stalled",
+                                    **phase_fields(job, 'queue_wait'),
                                     capacity_stalled=int(bool(job.get('capacity_progress', {}).get('stalled'))),
                                     job_ref=int(ident[:13], 16),
                                     classification_code=job.get("classification_code", 0),
@@ -1226,6 +1230,7 @@ class Scheduler:
                                 job_ref=int(ident[:13], 16),
                                 **completion_fields(result, self.cancelled),
                                 runtime_ms=int(max(0, time.monotonic() - job.get("start_monotonic", time.monotonic())) * 1000),
+                                **phase_fields(job, 'runtime'),
                                 peak_kb=job.get("observed_peak_kb", 0),
                                 learning_complete=int(learning_complete),
                                 learning_samples=observation.get('samples',job.get("sample_count", 0)),
@@ -1287,6 +1292,7 @@ class Scheduler:
                               outcome='cancelled' if self.cancelled else 'timeout'
                               if wait is not None and time.monotonic() - began >= wait else 'failed')
                     append_event(self.directory, dict(event="cancelled", job_ref=int(ident[:13], 16),
+                                                      **phase_fields(job, 'queue_wait'),
                                                       queue_wait_ms=int((time.monotonic() - began) * 1000),
                                                       signal=self.cancelled,
                                                       outcome="cancelled" if self.cancelled else "timeout" if wait is not None and time.monotonic() - began >= wait else "failed"))
@@ -1447,6 +1453,7 @@ class Scheduler:
                 admission_lane_code=lane_code(job),
                 started=time.time(),
                 start_monotonic=time.monotonic(),
+                start_continuous=continuous(),
                 group=child.pid,
                 members={str(child.pid): leader["start"]},
             )
@@ -1476,6 +1483,7 @@ class Scheduler:
                                               and job.get('elastic') is True),
                     lane_code=job["admission_lane_code"],
                     **blocker_fields(job),
+                    **phase_fields(job, 'queue_wait'),
                     queue_wait_ms=(int(max(0, time.monotonic() - job["enqueued_monotonic"]) * 1000)
                                    if "enqueued_monotonic" in job else None),
                 ),

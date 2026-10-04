@@ -54,6 +54,29 @@ class JobObservationTests(unittest.TestCase):
         tables=iter([before,after])
         self.assertFalse(sample_job(self.job(),lambda:next(tables),lambda pid:dict(identity=int(pid),footprint_kb=100),uid=501)['complete'])
 
+    def test_verified_growth_survives_exit_before_second_read_without_certifying_complete(self):
+        from job_observation import sample_job, accumulate
+        before=self.table(); after={p:r for p,r in before.items() if p!='11'}
+        job={**self.job(),'owned_observation':{'usage_identities':{'11':11}}}
+        tables=iter([before,after])
+        sample=sample_job(job,lambda:next(tables),
+                          lambda pid:dict(identity=pid,footprint_kb=2048 if pid==11 else 100),uid=501)
+        self.assertFalse(sample['complete'])
+        self.assertEqual(sample['peak_kb'],2248)
+        self.assertEqual(accumulate({},sample)['peak_kb'],2248)
+        self.assertFalse(accumulate({},sample)['complete'])
+
+    def test_unpaired_read_without_prior_kernel_identity_cannot_be_attributed(self):
+        from job_observation import sample_job
+        for previous in ({}, {'11':999}):
+            before=self.table();after={p:r for p,r in before.items() if p!='11'}
+            tables=iter([before,after])
+            job={**self.job(),'owned_observation':{'usage_identities':previous}}
+            sample=sample_job(job,lambda:next(tables),
+                              lambda pid:dict(identity=pid,footprint_kb=2048 if pid==11 else 100),uid=501)
+            self.assertFalse(sample['complete'])
+            self.assertEqual(sample['peak_kb'],200)
+
     def test_process_probe_errors_are_incomplete_observations_not_runner_failures(self):
         from job_observation import sample_job
         from scheduler import QueueError
