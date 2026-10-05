@@ -125,17 +125,22 @@ def json_object(text, path):
     return data
 
 
-def ours(hook):
-    if hook.get("type") != "command" or not isinstance(hook.get("command"), str):
-        return False
-    try:
-        words = shlex.split(hook["command"])
-    except ValueError:
-        return False
+def hook_command_words(command):
+    words = shlex.split(command)
     # Recognize both legacy direct hooks and the exact interpreter form we
     # generate. Do not adopt arbitrary shell flags or shell command strings.
     if words[:1] == ["/bin/bash"]:
         words = words[1:]
+    return words
+
+
+def ours(hook):
+    if hook.get("type") != "command" or not isinstance(hook.get("command"), str):
+        return False
+    try:
+        words = hook_command_words(hook["command"])
+    except ValueError:
+        return False
     return bool(
         words
         and Path(words[0]).name in {"memcap", "memcap-real"}
@@ -174,12 +179,12 @@ def merge_hooks(data, generated):
                 if not ours(handler):
                     remaining.append(handler)
                     continue
-                role = shlex.split(handler["command"])[1]
+                role = hook_command_words(handler["command"])[1]
                 match = next(
                     (
                         g
                         for g in pending
-                        if shlex.split(g["hooks"][0]["command"])[1] == role
+                        if hook_command_words(g["hooks"][0]["command"])[1] == role
                         and (mixed or not remaining)
                         and (
                             not mixed

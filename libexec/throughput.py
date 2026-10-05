@@ -14,7 +14,7 @@ def wait_summary(ident, jobs, now):
     explanation = ('Last recorded admission blocker(s): ' + ', '.join(blockers) + '. '
                    if blockers else 'Admission blocker unavailable for this runner. ')
     return (f"memcap: {ident} " + (capacity + ' ' if capacity else '')
-            + f"pending; {running} running, {waiting} queued IN THIS WAIT SCOPE (not host totals); "
+            + f"pending ({jobs[0]['status'] if jobs else 'unknown'}); {running} running, {waiting} queued IN THIS WAIT SCOPE (not host totals); "
             + f"oldest current phase {int(oldest)}s. " + explanation
             + f"Repeat memcap wait {ident} --timeout 60 only if native completion notification/blocking task polling is unavailable; "
             + "no job or reservation was created. Running work has already passed admission. "

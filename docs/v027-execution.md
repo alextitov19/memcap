@@ -84,6 +84,14 @@ Candidate full grouped ShellCheck passed (93741 exit 0). Candidate Bash parsing
 passed for every dispatcher/library/helper file; git diff --check passed. These
 checks do not substitute for the still-pending behavioral test job and full suites.
 
+Draft PR #348 created at 4bb899b. First CI run 37253302436 completed 652 Bats
+tests: 648 passed, four failed; isolated-HOME step did not run after that failure.
+The new productivity regression group passed. Failures exposed a real mixed-hook
+migration mismatch (role parsing still assumed an unprefixed command), plus three
+stale expectations for cancellation argv, wait phase text and immediate sampler
+return. Fixed role normalization, retained legacy phase wording, and updated
+argv/bounded-handoff contracts. CI and local suites must pass on the corrected head.
+
 ## Rulings
 
 - Execute inline with one final whole-diff review, honoring the user's requested

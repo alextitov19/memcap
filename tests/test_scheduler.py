@@ -508,7 +508,7 @@ class SchedulerTests(unittest.TestCase):
             return Mock(poll=Mock(return_value=None))
 
         def cancel(*args, **kwargs):
-            self.assertEqual(args[0][1], "_queue-cancel")
+            self.assertEqual(args[0][:3], ['/bin/bash', str(self.mod.ROOT / 'bin/memcap'), '_queue-cancel'])
             job = json.loads((q.directory / "jobs.json").read_text())["jobs"][0]
             self.assertTrue(job["cancel"])
             self.assertEqual(job["members"], {"99999": "child"})
