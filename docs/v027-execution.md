@@ -3,6 +3,37 @@
 Branch: fix/v027-productivity, baseline 4934a3c (v0.26.0).
 Plan: v027-productivity-plan.md. User authorized planning through release/install.
 
+## Verified candidate result
+
+The entries below are chronological; pending statements describe their time of
+writing. At corrected implementation 8b18f6b, local job f3e5fe73 completed with
+exit 0: 652/652 normal Bats and 652/652 isolated-HOME/no-Docker Bats. Candidate
+ShellCheck and individual Bash parsing passed. CI run 37253879066 independently
+passed both 652-test suites and lint/parse checks. Four deliberately broken
+controls produce assertion failures inside the passing regression suite.
+
+The original focused local red run never started before implementation; it was
+cancelled as obsolete after CI and replaced by the complete local suites. Do not
+claim a chronological local red/green cycle. Deterministic tests compare the
+old startup reservation against the learned request with identical host inputs;
+this is an admission replay, not a production throughput benchmark or a full
+historical-binary replay. Pending burden and insufficient-evidence comparison
+verdicts already existed and are retained; the new fields normalize contention
+and distinguish pending observations. Historical missing fields remain unknown.
+
+Open reports through #349 were triaged by context. The confirmed fixes have
+synthetic paired reproductions. Reports alone do not establish that native reads,
+SSM calls or waits were queued. No blanket issue closure is supported. Recorder
+gaps and historical wired allocation ownership remain unresolved. Those facts
+must stay visible in release comparisons rather than be claimed as fixes.
+
+One whole-diff review is complete. Publishing, Homebrew installation, live health
+and the post-install snapshot are the remaining operational checklist, recorded
+in the private release-history validation directory after execution. Existing
+trusted hook commands remain compatible with the new package. Leave their text
+and trust intact during this upgrade; future explicit integration uses the new
+interpreter form and requires the owner's independent Codex trust review.
+
 ## Evidence and progress
 
 - Read repository guidance, current source and open GitHub issue list.
@@ -91,6 +122,25 @@ migration mismatch (role parsing still assumed an unprefixed command), plus thre
 stale expectations for cancellation argv, wait phase text and immediate sampler
 return. Fixed role normalization, retained legacy phase wording, and updated
 argv/bounded-handoff contracts. CI and local suites must pass on the corrected head.
+
+The focused 21-test regression group passed in CI on the same test-file bytes.
+Its separately queued local invocation was therefore obsolete (the required full
+local Bats suites will cover it again). Cancelled only that owned pending job
+through native tool cancellation; session 83905 ended with exit 130 without
+starting the tests. Do not claim a local pass. Required normal/isolated local
+suites remain outstanding; no other session's job or lease was touched.
+
+Corrected head 8b18f6b passed CI run 37253879066: 652/652 normal Bats and
+652/652 isolated-HOME/no-Docker Bats, plus ShellCheck and per-file Bash parsing.
+Both PR check runs are green. Logs are saved privately. Submitted the required
+full local normal and isolated suites once as job f3e5fe73, tool session 82871;
+it is pending, not a local success. A manual memory_pressure -Q reading of 8%
+does not match the scheduler's vm_stat page-based headroom definition. Admission
+still reported about 0.96–1.20 GiB against 1.50 GiB required. No policy relaxation.
+
+The current recorder heartbeat remains live with zero reported errors. Earlier
+multi-minute recorder gaps include a later-day gap and are not explained solely
+by startup. Their cause remains unproven; this candidate does not claim to fix them.
 
 ## Rulings
 
