@@ -28,7 +28,7 @@ from admission import advance, decide
 from queue_deadlines import WAIT_SECONDS
 from scheduler_metrics import append_event, shared_sample, blocker_fields, BLOCKERS
 from workload_estimates import fingerprint, record as record_estimate, source_identity
-from throughput import pending_request, capacity_progress, capacity_message
+from throughput import pending_request, capacity_progress, capacity_message, wait_summary
 from workload_members import footprint_members, refresh_footprint_members
 from scheduler_lanes import lane as job_lane, lane_code, candidate as small_candidate, script_index, SMALL_BURST
 
@@ -105,8 +105,11 @@ def wait_targets(jobs, caller, table):
 
 
 def sample_host() -> dict:
+    # Invoke our known Bash bridge through the interpreter: repeated nested
+    # shebang execution can leak kernel pathname allocations on macOS 26.
+    # Keep the bridge/config and parent identity intact; never rewrite workloads.
     result = subprocess.run(
-        [str(ROOT / "bin/memcap"), "_queue-sample"],
+        ["/bin/bash", str(ROOT / "bin/memcap"), "_queue-sample"],
         capture_output=True,
         text=True,
         timeout=25,
@@ -559,33 +562,29 @@ class Scheduler:
 
     def observe_owned(self, data, job, sample):
         """Apply only identity-matched workload evidence, never host admission."""
-        from job_observation import accumulate
+        from job_observation import reconcile
         expected = footprint_members(job)
-        if any(sample.get('identities', {}).get(p) != start for p, start in expected.items()):
-            # New/unmatched live identities remain uncertain. An empty later
-            # registry, however, cannot invalidate an earlier complete probe.
-            sample = {**sample, 'complete': False, 'missing': sample.get('missing', 0)+1,
-                      'reasons': {**sample.get('reasons', {}), 'refresh': 1}}
-        state = accumulate(job.get('owned_observation', {'began':job.get('start_monotonic',sample['at'])}), sample)
+        state, complete = reconcile(
+            job.get('owned_observation', {'began':job.get('start_monotonic',sample['at'])}), sample, expected)
         job['owned_observation'] = state
         measured = sample['peak_kb']
         previous_peak = job.get('observed_peak_kb', 0)
         job['observed_peak_kb'] = max(previous_peak, measured)
-        job['measurement_complete'] = bool(sample['complete'])
-        if sample['complete']:
+        job['measurement_complete'] = complete
+        if complete:
             job.update(measured_kb=measured, measured_at=time.time(), measurement_complete=True)
         # Complete owned observations can adjust a running automatic allowance;
         # incomplete evidence may only raise it. The existing reservation policy
         # retains explicit, startup, strict and orphan floors.
         footprint_sample = dict(footprints=sample.get('footprints', {}),
-                                monotonic=sample['at'], fault=not sample['complete'])
+                                monotonic=sample['at'], fault=not complete)
         previous = job.get('reservation_kb', job['memory_kb'])
         job['reservation_kb'] = max(measured, self.reservation(job, footprint_sample, measured,
                                                              adaptive=self.policy == 'adaptive'))
         if job['reservation_kb'] != previous:
             append_event(self.directory, dict(event='reservation', job_ref=int(job['id'][:13],16),
                          reservation_kb=job['reservation_kb'], measured_kb=measured,
-                         measurement_complete=int(sample['complete']),
+                         measurement_complete=int(complete),
                          reservation_source=job.get('reservation_source',0), lane_code=lane_code(job)))
         if measured > previous_peak:
             from compiler_profiles import record_profile
@@ -998,6 +997,9 @@ class Scheduler:
                     if (self.directory.parent / "paused").exists():
                         allowed, reason = True, "memcap is paused"
                     else:
+                        job['sampling_decisions'] = job.get('sampling_decisions', 0) + 1
+                        for field in ('sampling_handoff_count', 'sampling_handoff_ms'):
+                            job[field] = job.get(field, 0) + sample.get(field, 0)
                         try:
                             if sample.get("cap_kb") and memory > sample["cap_kb"]:
                                 raise QueueError(
@@ -1247,6 +1249,11 @@ class Scheduler:
                                    if job.get('learning_protocol') == 2 else {}),
                                 sampling_busy_count=job.get('sampling_busy_count',0),
                                 sampling_expired_count=job.get('sampling_expired_count',0),
+                                sampling_decisions=job.get('sampling_decisions',0),
+                                sampling_handoff_count=job.get('sampling_handoff_count',0),
+                                sampling_handoff_ms=job.get('sampling_handoff_ms',0),
+                                observation_pending_seen=observation.get('pending_seen',0),
+                                observation_pending_resolved=observation.get('pending_resolved',0),
                                 sample_cache_mismatch_count=job.get('sample_cache_mismatch_count',0),
                                 lane_code=job.get("admission_lane_code", lane_code(job)),
                                 **blocker_fields(job),
@@ -1259,7 +1266,7 @@ class Scheduler:
                     try:
                         cancelled = (
                             subprocess.run(
-                                [str(ROOT / "bin/memcap"), "_queue-cancel", ident],
+                                ["/bin/bash", str(ROOT / "bin/memcap"), "_queue-cancel", ident],
                                 check=False,
                                 timeout=30,
                             ).returncode
@@ -1564,26 +1571,7 @@ class Scheduler:
                 )
                 return 0
             if time.monotonic() >= deadline:
-                waiting = sum(j["status"] == "waiting" for j in live["jobs"])
-                running = len(live["jobs"]) - waiting
-                oldest = max(
-                    max(
-                        0,
-                        time.time() - j.get("started", j.get("enqueued", time.time())),
-                    )
-                    for j in live["jobs"]
-                )
-                blockers = sorted({j.get('admission', {}).get('reason') for j in live['jobs']
-                                   if j['status'] == 'waiting'
-                                   and j.get('admission', {}).get('reason') in BLOCKERS})
-                explanation = ('Last recorded admission blocker(s): ' + ', '.join(blockers) + '. '
-                               if blockers else 'Admission blocker unavailable for this runner. ')
-                explanation += ' '.join(capacity_message(j) for j in live['jobs'])
-                print(
-                    f"memcap: {ident} pending ({live['jobs'][0]['status']}); {running} running, {waiting} queued IN THIS WAIT SCOPE (not host totals); oldest current phase {int(oldest)}s. "
-                    + explanation +
-                    f"Repeat memcap wait {ident} --timeout 60 only if native completion notification/blocking task polling is unavailable; no job or reservation was created. Running work has already passed admission. Read original task output for workload progress."
-                )
+                print(wait_summary(ident, live['jobs'], time.time()))
                 return 0
             time.sleep(min(2, max(0, deadline - time.monotonic())))
 

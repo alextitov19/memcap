@@ -17,6 +17,8 @@ from job_timing import FIELDS as TIMING_FIELDS
 BLOCKERS = ("unknown", "budget", "headroom", "slots", "pressure_or_measurement", "measurement", "fairness", "startup", "stabilizing", "paging", "sampling")
 EVENTS = {"sample", "queued", "admitted", "completed", "cancelled", "stalled", "reservation"}
 FIELDS = {
+    'sampling_decisions', 'sampling_handoff_count', 'sampling_handoff_ms',
+    'observation_pending_seen', 'observation_pending_resolved',
     'compiler_scope_reason', 'exact_profile_used', 'observation_terminal_empty',
     'observation_anchor', 'observation_members', 'observation_usage', 'observation_identity',
     'observation_refresh', 'observation_gap', 'observation_fault',
@@ -234,9 +236,18 @@ def shared_sample(directory: Path, key: str, sampler) -> dict:
             # valid sample while the elected sampler works; never extend TTL.
             # The winner may have published between our read and lock attempt.
             # Re-read atomically replaced JSON; keep key and two-second checks.
-            cached = read()
-            if fresh(cached):
-                return cached["sample"]
+            began = time.monotonic()
+            # Bounded attempts also terminate with a frozen/broken test clock.
+            # This waits outside the registry lock and never starts a probe.
+            for attempt in range(6):
+                cached = read()
+                if fresh(cached):
+                    return {**cached['sample'],
+                            'sampling_handoff_count': int(attempt > 0),
+                            'sampling_handoff_ms': max(0, time.monotonic()-began)*1000}
+                if attempt == 5 or time.monotonic()-began >= .25:
+                    break
+                time.sleep(.05)
             return {
                 "fault": True,
                 "busy": True,

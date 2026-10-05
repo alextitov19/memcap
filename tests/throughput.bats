@@ -5,6 +5,12 @@ setup() {
   export MC_DRY_RUN=1
 }
 
+@test "THROUGHPUT: productivity regressions preserve observation and admission safety" {
+  run python3 "$MEMCAP_ROOT/tests/test_productivity_027.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" OK
+}
+
 @test "THROUGHPUT: compiler predictions retain evidence across bounded source edits" {
   run python3 "$MEMCAP_ROOT/tests/test_compiler_profiles.py"
   [ "$status" = 0 ]

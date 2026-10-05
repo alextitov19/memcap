@@ -404,7 +404,7 @@ mc_render_status() {
       # A separate process cannot shadow this renderer's dynamically scoped
       # variables. Queue failures must be visible rather than look like zero.
       local queue_summary
-      queue_summary=$("$MEMCAP_ROOT/bin/memcap" queue --summary 2>/dev/null) || queue_summary='unavailable -- inspect memcap queue'
+      queue_summary=$(/bin/bash "$MEMCAP_ROOT/bin/memcap" queue --summary 2>/dev/null) || queue_summary='unavailable -- inspect memcap queue'
       mc_status_row "workload queue" "$queue_summary"
     else
       mc_status_row "workload queue" 'unavailable -- Python 3.9+ required'

@@ -1094,6 +1094,8 @@ def hook_response(payload: dict, executable: str, agent: str = "codex", observat
                     for part in spans(normalized_lines(command)))
     )
     if already_wrapped:
+        if wrapped[1:3] == ['environment', 'run'] and kind == 'light':
+            return {}  # argparse help exits before any environment or workload.
         bound = bind_runner_text(command, session_key)
         environment_run = wrapped[1:3] == ['environment', 'run']
         if bound is not None or wrapped[1] == "run" or environment_run:

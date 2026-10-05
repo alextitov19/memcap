@@ -132,6 +132,10 @@ def ours(hook):
         words = shlex.split(hook["command"])
     except ValueError:
         return False
+    # Recognize both legacy direct hooks and the exact interpreter form we
+    # generate. Do not adopt arbitrary shell flags or shell command strings.
+    if words[:1] == ["/bin/bash"]:
+        words = words[1:]
     return bool(
         words
         and Path(words[0]).name in {"memcap", "memcap-real"}
@@ -370,7 +374,7 @@ class Installer:
     def hooks(self, agent):
         if agent not in self.generated:
             result = subprocess.run(
-                [self.executable, "agent-hooks", agent, "--queue"],
+                ["/bin/bash", self.executable, "agent-hooks", agent, "--queue"],
                 capture_output=True,
                 text=True,
                 timeout=10,

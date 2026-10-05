@@ -33,7 +33,8 @@ def resolve(argv, cwd, env, diagnostics, lookup):
 
     try:
         if argv and Path(argv[0]).name in {'bash','sh','zsh','dash'}:
-            if (len(argv) != 3 or argv[0] not in {'/bin/bash','/bin/sh'} or argv[1] != '-c'):
+            interpreter = lookup(argv[0], path=env.get('PATH')) if argv[0] in {'bash', 'sh'} else argv[0]
+            if (len(argv) != 3 or interpreter not in {'/bin/bash','/bin/sh'} or argv[1] != '-c'):
                 return reject(2)
             if any(env.get(k) for k in ('BASH_ENV','ENV')) or any(k.startswith('BASH_FUNC_') for k in env):
                 return reject(3)
@@ -49,6 +50,8 @@ def resolve(argv, cwd, env, diagnostics, lookup):
                 argv = argv[3:]
             if any('&' in word for word in argv):
                 return reject(2)
+            if argv[:1] == ['exec']:
+                argv = argv[1:]
         if argv and argv[0] in {'env','/usr/bin/env'}:
             argv = argv[1:]
         while argv and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=',argv[0]):

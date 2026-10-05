@@ -298,7 +298,7 @@ def main():
     decision = classify(args.shell_command, os.getcwd())
     if decision.kind == 'heavy':
         executable = str(Path(__file__).resolve().parents[1] / 'bin/memcap')
-        argv = [executable, 'run', '--wait', '86400', '--session-key', args.session_key, '--shell', args.shell]
+        argv = ['/bin/bash', executable, 'run', '--wait', '86400', '--session-key', args.session_key, '--shell', args.shell]
         if args.login:
             argv.append('--login')
         argv += ['--shell-command', args.shell_command]

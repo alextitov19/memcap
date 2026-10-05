@@ -37,6 +37,35 @@ def duration(start, end):
     return elapsed * 1000
 
 
+def kernel_growth(samples):
+    """Signed allocation changes across nearby, comparable observations only."""
+    result = {}
+    for field in ('kernel_data_1024_inuse_kb', 'kernel_data_shared_1024_inuse_kb'):
+        groups = collections.defaultdict(list)
+        for row in samples:
+            if field in row:
+                groups[(row.get('boot'), row.get('build'), row.get('policy'))].append(row)
+        seconds = delta = intervals = decreases = 0
+        for rows in groups.values():
+            rows.sort(key=lambda row: row['mono'])
+            for before, after in zip(rows, rows[1:]):
+                elapsed = duration(before, after)
+                # Normal zone cadence is 60 seconds. Missing recorder coverage,
+                # sleep/clock changes and reboot cannot become an invented rate.
+                if elapsed is None or not 0 < elapsed <= 180000:
+                    continue
+                change = after[field] - before[field]
+                seconds += elapsed / 1000
+                delta += change
+                intervals += 1
+                decreases += int(change < 0)
+        result[field] = dict(observed_seconds=seconds, intervals=intervals,
+                             net_change_kb=delta if intervals else None,
+                             net_kb_per_hour=delta * 3600 / seconds if seconds else None,
+                             decreasing_intervals=decreases)
+    return result
+
+
 def job_rows(rows):
     jobs = {}
     for row in sorted(rows, key=lambda r: (r["wall"], r["seq"])):
@@ -180,7 +209,16 @@ def learning_effectiveness(jobs, rows):
         known = [j['completed'][name] for j in jobs if name in j.get('completed', {})]
         return sum(known) if known else None
     exact = [j['admitted']['exact_profile_used'] for j in jobs if 'exact_profile_used' in j.get('admitted',{})]
+    sampled = [j['completed'] for j in jobs if 'sampling_decisions' in j.get('completed', {})
+               and 'sampling_busy_count' in j['completed']]
+    decisions = sum(r['sampling_decisions'] for r in sampled)
     return dict(known_admissions=len(admissions),
+                sampling_decisions=decisions if sampled else None,
+                sampling_busy_fraction=sum(r['sampling_busy_count'] for r in sampled)/decisions if decisions else None,
+                sampling_handoff_count=count('sampling_handoff_count'),
+                sampling_handoff_ms=count('sampling_handoff_ms'),
+                pending_observations_seen=count('observation_pending_seen'),
+                pending_observations_resolved=count('observation_pending_resolved'),
                 exact_profile_admissions=sum(exact) if exact else None,
                 compiler_scope_reasons=dict(collections.Counter(j['admitted']['compiler_scope_reason'] for j in jobs
                                             if 'compiler_scope_reason' in j.get('admitted',{}))),
@@ -372,6 +410,7 @@ def summarize(rows, health=None, now=None, include_monitoring=False):
                         wired_kb=distribution([r["wired_kb"] for r in samples if "wired_kb" in r]),
                         physical_memory_kb=distribution([r["physical_memory_kb"] for r in samples if "physical_memory_kb" in r]),
                         kernel_zones={k: distribution([r[k] for r in samples if k in r]) for k in ("kernel_data_1024_inuse_kb", "kernel_data_shared_1024_inuse_kb")},
+                        kernel_zone_growth=kernel_growth(samples),
                         kernel_zone_interpretation="In-use element bytes in two fixed kernel buckets; not a process owner, complete wired attribution, or proof of a leak."),
         "native_api": dict(requests=sum(r["event"] == "api" for r in rows),
                            input_tokens=sum(r.get("input_tokens", 0) for r in rows) if any("input_tokens" in r for r in rows) else None,

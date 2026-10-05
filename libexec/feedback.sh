@@ -113,13 +113,14 @@ mc_agent_hooks() {
   case "$queue" in ''|--queue) ;; *) echo 'usage: memcap agent-hooks codex|claude [--queue]' >&2; return 2 ;; esac
   jqbin=$(mc_feedback_jq) || return 1
   executable=$(mc_feedback_executable) || return 1
-  printf -v command_text '%q feedback' "$executable"
+  # Avoid repeated kernel shebang resolution in agent-spawned hook shells.
+  printf -v command_text '/bin/bash %q feedback' "$executable"
   case "$agent" in
     codex) events='["PreToolUse","PostToolUse","SessionStart","UserPromptSubmit","Stop","SessionEnd","SubagentStart","SubagentStop"]' ;;
     claude) events='["PreToolUse","PostToolUse","PostToolUseFailure","SessionStart","UserPromptSubmit","Stop","SessionEnd","SubagentStart","SubagentStop"]' ;;
     *) echo 'usage: memcap agent-hooks codex|claude' >&2; return 2 ;;
   esac
-  printf -v queue_command '%q queue-hook %q' "$executable" "$agent"
+  printf -v queue_command '/bin/bash %q queue-hook %q' "$executable" "$agent"
   "$jqbin" -n --arg command "$command_text" --argjson events "$events" \
     --arg queue "$queue" --arg queue_command "$queue_command" --arg agent "$agent" \
     '{hooks:($events | map({key:.,value:[{hooks:[{type:"command",command:($command + (if . == "Stop" then " --wait" else "" end)),timeout:(if . == "Stop" then 75 elif $agent == "codex" and . == "SessionEnd" then 3 else 5 end)}]}]}) | from_entries)} |

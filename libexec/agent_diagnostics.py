@@ -126,7 +126,7 @@ def measure(state, mobile):
     # Share a deadline: a hung probe cannot multiply it by the number of probes.
     deadline = time.monotonic() + 1.5
     facts = []
-    raw = probe([str(ROOT / "bin/memcap"), "_queue-sample"], deadline)
+    raw = probe(["/bin/bash", str(ROOT / "bin/memcap"), "_queue-sample"], deadline)
     try:
         cap, tracked, available, pressure, fault = map(int, raw.splitlines()[0].split())
         if (

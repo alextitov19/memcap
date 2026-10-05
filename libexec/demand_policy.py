@@ -278,6 +278,9 @@ class Classifier:
             if '--' in args:
                 return self.argv(args[args.index('--') + 1:], cwd, depth + 1)
         if name == 'memcap' and args[:2] == ['environment', 'run']:
+            options = args[2:args.index('--') if '--' in args else len(args)]
+            if any(arg in {'--help', '-h'} for arg in options):
+                return None
             return 'container-workload'
         if name == 'jq':
             # Explicit materialization is evidence; unfamiliar/streaming filters are not.
@@ -425,10 +428,19 @@ class Classifier:
             return None
         # Heredoc bodies are data for their consumer, not shell commands. Inspect
         # executable interpreter bodies without treating quoted documentation as work.
+        from inspection import spans
         lines, cleaned, i = text.splitlines(keepends=True), [], 0
         while i < len(lines):
             line = lines[i]
-            match = re.search(r'<<-?\s*([\'\"]?)([A-Za-z_][A-Za-z0-9_]*)\1\s*$', line.rstrip('\n'))
+            operators = set()
+            for start, _, token, _ in spans(line):
+                if token.startswith('#'):
+                    break
+                if token == '<<':
+                    operators.add(start)
+            match = next((m for m in re.finditer(
+                r'<<-?\s*([\'\"]?)([A-Za-z_][A-Za-z0-9_]*)\1(?=\s|$)', line.rstrip('\n'))
+                          if m.start() in operators), None)
             if match:
                 prefix = line[:match.start()]
                 body, i = [], i + 1
@@ -453,7 +465,9 @@ class Classifier:
                         reason = self.shell(sub, cwd, depth + 1)
                         if reason:
                             return reason
-                cleaned.append(prefix + '\n')
+                # Redirects and commands after the delimiter still execute.
+                # Only the data body and heredoc operator disappear here.
+                cleaned.append(prefix + line[match.end():].rstrip('\n') + '\n')
             else:
                 cleaned.append(line)
             i += 1

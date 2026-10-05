@@ -68,7 +68,7 @@ def benchmark(repetitions=10):
                     else:
                         marker.unlink(missing_ok=True)
                     began = time.perf_counter_ns()
-                    result = subprocess.run([str(root / "bin/memcap"), "queue-hook", "claude"],
+                    result = subprocess.run(['/bin/bash', str(root / "bin/memcap"), "queue-hook", "claude"],
                                             input=json.dumps(payload), text=True, capture_output=True,
                                             env=env, cwd=tmp, timeout=10)
                     observations.append(dict(family=name, repetition=repetition, mode=mode,
@@ -77,7 +77,7 @@ def benchmark(repetitions=10):
                                              expected=expected, actual=kind))
                     if name == "read":
                         began = time.perf_counter_ns()
-                        feedback = subprocess.run([str(root / "bin/memcap"), "feedback"],
+                        feedback = subprocess.run(['/bin/bash', str(root / "bin/memcap"), "feedback"],
                                                   input=json.dumps(payload), text=True, capture_output=True,
                                                   env=env, cwd=tmp, timeout=10)
                         feedback_times.append(dict(mode=mode, duration_ms=(time.perf_counter_ns() - began) / 1e6,
