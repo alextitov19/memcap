@@ -213,7 +213,7 @@ def queue_facts(state):
 def capture(state):
     facts = {"enforcement_paused": int((state / "paused").is_file())}
     root = Path(__file__).resolve().parents[1]
-    lines = probe([str(root / "bin/memcap"), "_report-sample"], timeout=2).splitlines()
+    lines = probe(["/bin/bash", str(root / "bin/memcap"), "_report-sample"], timeout=2).splitlines()
     facts["measurement_fault"] = 1
     # 1=valid independent probe, 2=no response (timeout/error), 3=invalid/degraded.
     # This is NOT proof that the scheduler's own shared sample failed.

@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.27.0 — 2026-10-04
+
+- Invoke memcap-owned Bash bridges and generated hooks through an explicit
+  interpreter, avoiding nested shebang dispatch implicated in a macOS kernel
+  allocation leak. Homebrew's wrapper must use the same form. This mitigates a
+  trigger; it cannot reclaim existing kernel allocations or attribute their owner.
+- Report signed kernel-bucket growth with same-boot/build/policy coverage;
+  missing samples, reboot and release changes do not imply a zero growth rate.
+- Keep environment help and redirected documentation heredocs native. Actual
+  environment workloads and executable interpreter heredocs still use admission.
+- Retain a pending measurement obligation for children discovered after a paired
+  probe. Only a later complete identity-matched measurement settles it; unmeasured
+  exits, PID reuse and missing readings still prohibit downward learning.
+- Recognize literal system-shell aliases and `exec` compiler wrappers. Preserve
+  startup injection guards, complete-run requirements and fixed memory floors.
+- Briefly await a shared sampler's publication outside the registry lock while
+  preserving the two-second freshness limit. Record decision-normalized contention
+  and useful handoffs separately from observation failures and capacity refusal.
+- Put sustained capacity-block diagnostics first in wait output. Permit abandoned
+  simulator runtime leaves to enter idle observation during a stuck shutdown,
+  while live mobile tools, booted devices, activity, network and ownership checks
+  retain protection. Configured grace, pause, dry-run and kill authorization remain.
+
 ## v0.26.0 — 2026-10-04
 
 - Keep an authenticated high footprint reading when a child exits before the

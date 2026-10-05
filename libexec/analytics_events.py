@@ -42,6 +42,8 @@ ENUMS = {
 }
 IDS = {"session", "parent", "turn", "operation", "job", "project", "work", "action", "model", "agent_version", "workload", "compiler_context", "delivery", "resource"}
 NUMBERS = {
+    'sampling_decisions', 'sampling_handoff_count', 'sampling_handoff_ms',
+    'observation_pending_seen', 'observation_pending_resolved',
     'compiler_scope_reason', 'exact_profile_used', 'observation_terminal_empty',
     'observation_anchor', 'observation_members', 'observation_usage', 'observation_identity',
     'observation_refresh', 'observation_gap', 'observation_fault',

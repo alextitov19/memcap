@@ -95,6 +95,11 @@ the disabled marker. Re-enable with `enable --service` to start it again.
   These counters can reveal accumulation, but do not identify its triggering
   process, attribute all wired memory, or prove a leak. Missing history stays
   unknown. No privileged probes, kernel changes or termination are performed.
+  `machine.kernel_zone_growth` reports signed net change and KiB/hour only across
+  same-boot, same-build, same-policy observations no more than 180 seconds apart.
+  It includes decreasing intervals and measured coverage. Reboots, clock
+  uncertainty and missing coverage never become an inferred improvement. A lower
+  rate is an observation, not proof that a release removed the original trigger.
 - Collector CPU uses observed within-window counter deltas, grouped by producer
   and boot, so restarts and counters accumulated before the window cannot inflate
   or erase the result. It excludes probe children and hook producers. Guard

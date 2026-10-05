@@ -84,7 +84,7 @@ class AdaptiveSchedulerTests(unittest.TestCase):
         q.observe(data, {})
         self.assertEqual(data["controller"]["healthy_since"], 1)
 
-    def test_shared_sampler_reuses_result_and_busy_election_returns_immediately(self):
+    def test_shared_sampler_reuses_result_and_busy_election_has_bounded_handoff(self):
         calls = []
 
         def reader():
@@ -97,10 +97,12 @@ class AdaptiveSchedulerTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             with open(self.root / "sample.lock", "a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                start = time.monotonic()
-                result = shared_sample(self.root, "different", reader)
+                clock = [100.0]
+                with patch('scheduler_metrics.time.monotonic', side_effect=lambda:clock[0]), \
+                     patch('scheduler_metrics.time.sleep', side_effect=lambda seconds:clock.__setitem__(0, clock[0]+seconds)):
+                    result = shared_sample(self.root, "different", reader)
                 self.assertTrue(result["busy"])
-                self.assertLess(time.monotonic() - start, 0.2)
+                self.assertLessEqual(clock[0] - 100, .250001)
             self.assertEqual(len(calls), 1)
 
     def test_observed_peak_growth_survives_a_later_memory_lull(self):

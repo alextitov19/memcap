@@ -87,8 +87,44 @@ def sample_job(job, table_reader, usage_reader, *, uid=None):
 def complete_at(state, now):
     """A terminal interval without fresh observation cannot certify a low peak."""
     last = state.get('last')
-    return bool(state.get('complete') and isinstance(last, (int, float))
+    return bool(state.get('complete') and not state.get('pending') and isinstance(last, (int, float))
                 and 0 <= now-last <= 5)
+
+
+def reconcile(state, sample, current):
+    """Account for identities found after a paired observation finished.
+
+    A new child is an evidence obligation, not a retrospectively failed probe.
+    Losing that identity before a complete paired read permanently poisons
+    downward learning. Stale observations cannot settle an obligation.
+    """
+    if sample['at'] <= state.get('last', -1):
+        return state, False
+    state = dict(state)
+    pending = dict(state.get('pending', {}))
+    identities = sample.get('identities', {})
+    failed = resolved = seen = 0
+    for pid, start in list(pending.items()):
+        if (sample['complete'] and identities.get(pid) == start
+                and pid in sample.get('footprints', {})):
+            del pending[pid]
+            resolved += 1
+        elif current.get(pid) != start:
+            del pending[pid]
+            failed += 1
+    for pid, start in current.items():
+        if identities.get(pid) != start and pending.get(pid) != start:
+            pending[pid] = start
+            seen += 1
+    if failed:
+        sample = {**sample, 'complete': False,
+                  'missing': sample.get('missing', 0) + failed,
+                  'reasons': {**sample.get('reasons', {}), 'refresh': failed}}
+    state.update(pending=pending, pending_seen=state.get('pending_seen', 0)+seen,
+                 pending_resolved=state.get('pending_resolved', 0)+resolved)
+    state = accumulate(state, sample)
+    state['complete'] = state['complete'] and not pending
+    return state, bool(sample['complete'] and not pending)
 
 
 def terminal_empty(sample, result, current_members):

@@ -2,6 +2,25 @@
 from pathlib import Path
 
 
+def wait_summary(ident, jobs, now):
+    """Put the actionable impasse before status text commonly truncated by hosts."""
+    from scheduler_metrics import BLOCKERS
+    waiting = sum(j['status'] == 'waiting' for j in jobs)
+    running = len(jobs) - waiting
+    oldest = max((max(0, now - j.get('started', j.get('enqueued', now))) for j in jobs), default=0)
+    capacity = ' '.join(message.strip() for j in jobs if (message := capacity_message(j)))
+    blockers = sorted({j.get('admission', {}).get('reason') for j in jobs
+                       if j['status'] == 'waiting' and j.get('admission', {}).get('reason') in BLOCKERS})
+    explanation = ('Last recorded admission blocker(s): ' + ', '.join(blockers) + '. '
+                   if blockers else 'Admission blocker unavailable for this runner. ')
+    return (f"memcap: {ident} " + (capacity + ' ' if capacity else '')
+            + f"pending ({jobs[0]['status'] if jobs else 'unknown'}); {running} running, {waiting} queued IN THIS WAIT SCOPE (not host totals); "
+            + f"oldest current phase {int(oldest)}s. " + explanation
+            + f"Repeat memcap wait {ident} --timeout 60 only if native completion notification/blocking task polling is unavailable; "
+            + "no job or reservation was created. Running work has already passed admission. "
+            + "Read original task output for workload progress and final exit status.")
+
+
 def fixed_learning_scope(argv, resource=False):
     """Only direct compiler invocations have a known local memory boundary.
 

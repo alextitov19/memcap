@@ -218,7 +218,7 @@ def worker(compose, command, token, runner=None, required_memory=None):
     finally:
         with registry(state) as data:
             data[token]['phase'] = 'releasing'
-        result = run([str(ROOT / 'bin/memcap'), '_environment-stop', token])
+        result = run(['/bin/bash', str(ROOT / 'bin/memcap'), '_environment-stop', token])
         if result.returncode:
             with registry(state) as data:
                 stopped = data[token].get('phase') == 'stopped'
@@ -264,7 +264,7 @@ def main(argv=None):
         token = 'memcap-' + uuid.uuid4().hex
         # Enter the normal runner before inspecting/starting Docker. Explicit
         # memory keeps strict and adaptive admission from shrinking this budget.
-        os.execv(str(ROOT / 'bin/memcap'), [str(ROOT / 'bin/memcap'), 'run', '--memory', str(args.memory), '--wait', str(args.wait), '--session-key', args.session_key, '--',
+        os.execv('/bin/bash', ['/bin/bash', str(ROOT / 'bin/memcap'), 'run', '--memory', str(args.memory), '--wait', str(args.wait), '--session-key', args.session_key, '--',
                    sys.executable, str(Path(__file__).resolve()), '_worker', str(compose), token, str(args.memory), *command])
     if args.action == '_worker':
         import math

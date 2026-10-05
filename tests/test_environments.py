@@ -91,7 +91,7 @@ class EnvironmentTests(unittest.TestCase):
         with patch('scheduler.Scheduler.nested', return_value=True), patch('environments.os.getpid', return_value=11), patch('orphan_recovery.agent_identity', return_value={'agent_owner': 12, 'agent_start': 'agent'}), patch('environments.containers', side_effect=[[], [self.container], [self.container]]):
             self.assertEqual(e.worker('fixture.yml', ['fixture-test'], self.token, runner=run), 9)
         self.assertIn('--no-start', calls[0])
-        self.assertEqual(calls[-1][1:], ['_environment-stop', self.token])
+        self.assertEqual(calls[-1], ['/bin/bash', str(e.ROOT / 'bin/memcap'), '_environment-stop', self.token])
 
     def test_outer_small_job_cannot_underreserve_nested_environment(self):
         data = dict(jobs=[dict(id='lease', status='running', memory_kb=1048576)])

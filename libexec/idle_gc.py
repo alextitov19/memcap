@@ -265,7 +265,10 @@ def simulators_clear(table):
         ):
             return False
         return all(
-            d.get("state") == "Shutdown" for group in devices.values() for d in group
+            # A stalled shutdown may leave reparented runtime leaves forever.
+            # This only permits observation: live tooling above still vetoes,
+            # and per-leaf identity, network and continuous idle grace remain.
+            d.get("state") in {"Shutdown", "Shutting Down"} for group in devices.values() for d in group
         )
     except (OSError, ValueError, KeyError, AttributeError, subprocess.SubprocessError):
         return False
