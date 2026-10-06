@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
+# Observation identity only; never an admission or ownership credential.
+if [ "${1:-}" = queue-hook ]; then export MEMCAP_HOOK_PID=$$; fi
 MEMCAP_ROOT="${MEMCAP_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 LIB="$MEMCAP_ROOT/libexec"
 # shellcheck source=/dev/null

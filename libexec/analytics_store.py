@@ -111,6 +111,7 @@ class Store:
             if not previous or row["wall"] > previous["wall"]:
                 self.last_sample = row
         for metric in ("queue_wait_ms", "runtime_ms", "hook_ms", "guard_ms", "duration_ms", "swap_in_kbps", "swap_out_kbps", "available_kb",
+                       "sample_call_ms", "sample_ready_age_ms", "sampler_retry_ms", "sampler_ready_to_retry_ms",
                        "wired_kb", "physical_memory_kb", "kernel_data_1024_inuse_kb", "kernel_data_shared_1024_inuse_kb"):
             if metric not in row or (metric == "queue_wait_ms" and row["event"] == "stalled"):
                 continue

@@ -379,6 +379,15 @@ def summarize(rows, health=None, now=None, include_monitoring=False):
         "tool_elapsed_ms": distribution(hook_times),
         "guard_ms": distribution([r["guard_ms"] for r in rows if "guard_ms" in r]),
         "hook_ms": distribution([r["hook_ms"] for r in rows if "hook_ms" in r]),
+        "hook_timing": {
+            "by_route": {route: distribution([r['hook_ms'] for r in rows if r.get('event') == 'hook_timing'
+                         and r.get('route') == route and 'hook_ms' in r]) for route in ('native', 'managed', 'denied', 'unknown')},
+            "interpretation": "Queue hook dispatcher birth through response flush on macOS; includes Bash/Python startup, excludes final teardown and telemetry emission. Paused/early-failure hooks and feedback hooks are unmeasured. All-agent hook totals remain separate."},
+        "sampler_timing": {
+            **{name: distribution([r[name] for r in rows if r.get('event') == 'sampling' and name in r])
+               for name in ('sample_call_ms', 'sample_ready_age_ms', 'sampler_retry_ms', 'sampler_ready_to_retry_ms')},
+            "paths": dict(collections.Counter(r.get('sampling_path', 0) for r in rows if r.get('event') == 'sampling')),
+            "interpretation": "Paths: 0 unknown/fault, 1 cache, 2 probe, 3 handoff, 4 busy. Retry is end-of-busy-call to next call. Ready-to-retry uses the consumed sample, whose readiness precedes serialization/publication; an upper bound for that sample, not first availability or causal time lost. Running and waiting supervisors both contribute. Missing historical timing stays unknown."},
         "all_agent_hooks_ms": distribution([r["agent_hooks_ms"] for r in rows if "agent_hooks_ms" in r]),
         "sessions": len(sessions), "turns_with_explicit_ids": len(turns),
         "prompt_to_stop_attempt_ms": distribution(turn_times),
@@ -504,6 +513,8 @@ def text_report(report):
              f"Paging at least 1 MiB/s: {number(machine['paging_ge_1MiB_s_seconds'], ' s')}.",
              f"Wired memory peak: {number(machine['wired_kb']['max'], ' KiB')}; kernel counters are allocation evidence, not process attribution.",
              f"Guard component p95: {number(report['guard_ms']['p95'], ' ms')}; whole memcap hook timing remains separate.",
+             f"Queue hook startup through response p95: {number(report['hook_ms']['p95'], ' ms')}; n={report['hook_ms']['n']} (excludes final teardown; other hooks unmeasured).",
+             f"Sampler call p95: {number(report['sampler_timing']['sample_call_ms']['p95'], ' ms')}; sample-ready to retry p95: {number(report['sampler_timing']['sampler_ready_to_retry_ms']['p95'], ' ms')} (observed upper bound, not proven wasted time).",
              f"Collector CPU over observed intervals: {number(report['observer']['one_core_percent'], '% of one core')} (probe children excluded).",
              f"Stop attempts: {report['stop_attempts']}; blocks: {report['stop_blocks']}; wait calls: {report['wait_calls']}.",
              f"Routes: {json.dumps(report['routes'], sort_keys=True)}.",

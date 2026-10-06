@@ -285,10 +285,20 @@ class Scheduler:
         from scheduler_metrics import measurement_signature
         from analytics_events import build_digest
         signature = measurement_signature(config, os.environ, build_digest())
+        began = time.monotonic()
         try:
-            return shared_sample(self.directory, signature, self.sampler)
+            sample = shared_sample(self.directory, signature, self.sampler)
         except (QueueError, OSError, ValueError, subprocess.SubprocessError):
-            return {"fault": True, "pressure": 0, "monotonic": time.monotonic()}
+            sample = {"fault": True, "pressure": 0, "monotonic": time.monotonic()}
+        ended = time.monotonic()
+        try:
+            from passive_timing import SamplingTiming
+            if not hasattr(self, '_sampling_timing'):
+                self._sampling_timing = SamplingTiming()
+            self._sampling_timing.observe(self.directory, sample, began, ended)
+        except Exception:
+            pass
+        return sample
 
     def observe(self, data, sample):
         if not sample or sample.get("busy"):
@@ -1666,6 +1676,7 @@ def main():
             args.session_key,
         )
     if action == "hook":
+        payload, route, agent = {}, 'unknown', 'unknown'
         try:
             agent = sys.argv[2] if len(sys.argv) > 2 else "codex"
             if agent not in {"codex", "claude"}:
@@ -1697,6 +1708,15 @@ def main():
             }
         if result:
             print(json.dumps(result))
+        sys.stdout.flush()
+        response_flushed_ns = time.monotonic_ns()
+        try:
+            from analytics_events import producer
+            if producer().socket is not None:
+                from passive_timing import emit_queue_hook
+                emit_queue_hook(payload, agent, route, response_flushed_ns)
+        except Exception:
+            pass
         return 0
     if action == "wait":
         parser = argparse.ArgumentParser(prog="memcap wait")
