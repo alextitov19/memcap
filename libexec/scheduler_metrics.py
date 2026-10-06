@@ -15,8 +15,10 @@ from functools import lru_cache
 from job_timing import FIELDS as TIMING_FIELDS
 
 BLOCKERS = ("unknown", "budget", "headroom", "slots", "pressure_or_measurement", "measurement", "fairness", "startup", "stabilizing", "paging", "sampling")
-EVENTS = {"sample", "queued", "admitted", "completed", "cancelled", "stalled", "reservation"}
+EVENTS = {"sample", "sampling", "queued", "admitted", "completed", "cancelled", "stalled", "reservation"}
 FIELDS = {
+    'sampling_path', 'sample_call_ms', 'sample_ready_age_ms', 'sampler_retry_ms',
+    'sampler_ready_to_retry_ms',
     'sampling_decisions', 'sampling_handoff_count', 'sampling_handoff_ms',
     'observation_pending_seen', 'observation_pending_resolved',
     'compiler_scope_reason', 'exact_profile_used', 'observation_terminal_empty',
@@ -187,7 +189,7 @@ def vm_sample() -> dict:
 def measurement_signature(config, environ, source):
     """Only known non-measurement identities are excluded; future controls remain."""
     metadata = {'MEMCAP_QUEUE_LEASE', 'MEMCAP_SESSION_KEY', 'MEMCAP_AGENT_PID',
-                'MEMCAP_PARENT_PID', 'MEMCAP_TOOL_CALL_ID', 'MEMCAP_NODE_WORKERS'}
+                'MEMCAP_PARENT_PID', 'MEMCAP_TOOL_CALL_ID', 'MEMCAP_NODE_WORKERS', 'MEMCAP_HOOK_PID'}
     context = sorted((k,v) for k,v in environ.items()
                      if k.startswith(('MC_', 'MEMCAP_', 'QUEUE_')) and k not in metadata)
     config = Path(config)
@@ -224,7 +226,7 @@ def shared_sample(directory: Path, key: str, sampler) -> dict:
 
     cached = read()
     if fresh(cached, 1):
-        return cached["sample"]
+        return {**cached["sample"], 'sampling_path': 1}
     fd = os.open(
         directory / "sample.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
     )
@@ -243,6 +245,7 @@ def shared_sample(directory: Path, key: str, sampler) -> dict:
                 cached = read()
                 if fresh(cached):
                     return {**cached['sample'],
+                            'sampling_path': 3,
                             'sampling_handoff_count': int(attempt > 0),
                             'sampling_handoff_ms': max(0, time.monotonic()-began)*1000}
                 if attempt == 5 or time.monotonic()-began >= .25:
@@ -251,13 +254,14 @@ def shared_sample(directory: Path, key: str, sampler) -> dict:
             return {
                 "fault": True,
                 "busy": True,
+                "sampling_path": 4,
                 "pressure": 0,
                 "monotonic": time.monotonic(),
                 "sample_cache_mismatch": int(bool(cached) and cached.get('key') != key),
             }
         cached = read()
         if fresh(cached, 1):
-            return cached["sample"]
+            return {**cached["sample"], 'sampling_path': 1}
         began = time.monotonic()
         sample = sampler()
         vm = vm_sample()
@@ -286,7 +290,7 @@ def shared_sample(directory: Path, key: str, sampler) -> dict:
                 "measurement_fault": int(bool(sample.get("fault"))),
             },
         )
-        return sample
+        return {**sample, 'sampling_path': 2}
     finally:
         os.close(fd)
 

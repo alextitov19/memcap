@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.28.2 — 2026-10-06
+
+- Add private sampler call, cache/handoff path and busy-retry timing to distinguish
+  probe cost from the delay before a supervisor observes a ready sample. Report
+  sample-ready-to-retry as an observed upper bound, not proven wasted time.
+- Measure the macOS queue hook from dispatcher process birth through response
+  flush, including Bash/Python startup without another timer process. Keep final
+  teardown, feedback hooks and missing observations explicitly outside coverage.
+- Preserve these measurements in local release snapshots and comparisons. Keep
+  admission, pressure/headroom, freshness, reservations, cleanup and VM settings
+  unchanged. Existing trusted hooks need no profile rewrite; old supervisors
+  retain their loaded code. Refresh an enabled analytics collector for new fields.
+
 ## v0.28.1 — 2026-10-05
 
 - Report the selected running Colima profile's VM memory ceiling using a bounded,

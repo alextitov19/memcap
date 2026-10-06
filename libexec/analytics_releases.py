@@ -94,6 +94,10 @@ def compare_snapshots(baseline, candidate):
                     pending_oldest_ms=pending['age_ms']['max'],
                     red_fraction=machine['red_seconds'] / machine['observed_seconds'] if machine['observed_seconds'] else None,
                     guard_p95_ms=report['guard_ms']['p95'],
+                    queue_hook_response_p95_ms=report.get('hook_ms', {}).get('p95'),
+                    queue_hook_response_observations=report.get('hook_ms', {}).get('n') or None,
+                    sampler_call_p95_ms=report.get('sampler_timing', {}).get('sample_call_ms', {}).get('p95'),
+                    sampler_ready_to_retry_p95_ms=report.get('sampler_timing', {}).get('sampler_ready_to_retry_ms', {}).get('p95'),
                     admissions_below_prior=report.get('learning_effectiveness',{}).get('admissions_below_prior'),
                     compiler_profile_admissions=report.get('learning_effectiveness',{}).get('compiler_profile_admissions'),
                     sampling_busy_count=report.get('learning_effectiveness',{}).get('sampling_busy_count'),
@@ -106,4 +110,4 @@ def compare_snapshots(baseline, candidate):
     return dict(causal=False, deltas=changes(a['summary'], b['summary']),
                 baseline=dict(since=a['since'], until=a['until'], cohorts=a['cohorts']),
                 candidate=dict(since=b['since'], until=b['until'], cohorts=b['cohorts']),
-                interpretation='Descriptive differences, not proof of improvement. Compare equal windows and similar workload/worker, policy, enforcement and host conditions. Positive delay/pressure deltas warrant investigation. p95 needs 20 observations. Pending age is censored and liveness unverified; unknown values stay null.')
+                interpretation='Descriptive differences, not proof of improvement. Compare equal windows and similar workload/worker, policy, enforcement and host conditions. Positive delay/pressure deltas warrant investigation. p95 needs 20 observations. Queue-hook response excludes teardown and other hook types; sample-ready-to-retry is an observed upper bound, not causal wasted time. Pending age is censored and liveness unverified; unknown values stay null.')

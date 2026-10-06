@@ -5,6 +5,12 @@ setup() {
   export MC_DRY_RUN=1
 }
 
+@test "ANALYTICS: passive sampler and hook timing preserves behavior" {
+  run python3 "$MEMCAP_ROOT/tests/test_passive_timing.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" OK
+}
+
 @test "ANALYTICS: immutable release evidence and fixed-request learning" {
   run python3 "$MEMCAP_ROOT/tests/test_release_evidence.py"
   [ "$status" = 0 ]
