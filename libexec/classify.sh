@@ -5,7 +5,7 @@ set -uo pipefail
 
 MC_DEV_PATTERN='(/node|/bun|/deno|/esbuild|/tsx|/nodemon|/next-server|/vite|/ts-node|/webpack|/rollup|/concurrently)([[:space:]]|$)|[[:space:]](uvicorn|gunicorn|nodemon|vite|tsx|next|manage\.py[[:space:]]+runserver)([[:space:]]|$)'
 MC_AGENT_PATTERN='(^|/)(claude|codex|cursor-agent|aider|gemini|amp|opencode|goose|crush)([[:space:]]|$)'
-MC_DOCKER_PATTERN='Virtualization\.framework.*VirtualMachine|com\.docker|/Docker\.app/|hyperkit|vpnkit'
+MC_DOCKER_PATTERN='Virtualization\.framework.*VirtualMachine|com\.docker|/Docker\.app/|/OrbStack\.app/|(^|/)(orb|orbctl|orbstack)([[:space:]]|$)|hyperkit|vpnkit'
 # argv[0] only -- matching the whole command line classified `rg ms-playwright`
 # as a browser and made it a kill candidate.
 MC_SIM_EXE='(CoreSimulator|Simulator\.app|launchd_sim|SimulatorTrampoline|simdiskimaged|qemu-system|/emulator$|emulator64|ms-playwright|headless_shell)'
@@ -71,8 +71,18 @@ mc_extra_agent_pattern() {
   printf '%s' "$alt"
 }
 
+mc_database_goose() {
+  local path target
+  path=$(command -v goose 2>/dev/null) || return 0
+  target=$(readlink "$path" 2>/dev/null) || target="$path"
+  # The Homebrew goose formula is the DB migrator; goose-cli is the agent.
+  # Unknown installations keep their existing protection. Never execute --version.
+  case "$target" in */Cellar/goose/*/bin/goose) printf '%s' "$path" ;; esac
+}
+
 mc_classify() {
   awk -v agentpat="${MC_AGENT_PATTERN}$(mc_extra_agent_pattern)" \
+      -v dbgoose="$(mc_database_goose)" \
       -v devpat="$MC_DEV_PATTERN" -v dockpat="$MC_DOCKER_PATTERN" \
       -v simexe="$MC_SIM_EXE" -v simarg="$MC_SIM_ARG" -v simskip="$MC_SIM_SKIP" '
     {
@@ -80,8 +90,9 @@ mc_classify() {
       cmd=$0; sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, "", cmd)
       exe=cmd; sub(/[[:space:]].*$/, "", exe)
       P[pid]=ppid; R[pid]=rss; C[pid]=cmd
-      if (cmd ~ agentpat) { agent[pid]=1; alist = alist " " pid }
-      if (cmd ~ dockpat)  { dock[pid]=1 }
+      database_goose = (exe == dbgoose || exe ~ /\/Cellar\/goose\/[^\/]+\/bin\/goose$/)
+      if (cmd ~ agentpat && !database_goose) { agent[pid]=1; alist = alist " " pid }
+      if (exe ~ dockpat)  { dock[pid]=1 }
       if (exe !~ simskip && (exe ~ simexe || cmd ~ simarg)) { sim[pid]=1 }
       order[++n]=pid
     }

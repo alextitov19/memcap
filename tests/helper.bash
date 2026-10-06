@@ -14,6 +14,9 @@ setup_common() {
   # macOS privacy consent. Docker tests supply their own store fixtures; all
   # other tests must be independent of the developer's Docker settings.
   export MC_DOCKER_STORE="$BATS_TEST_TMPDIR/docker-settings.json"
+  # Never let the owner's selected Docker context affect fixture runtime detection.
+  export DOCKER_CONFIG="$BATS_TEST_TMPDIR/docker-config"
+  unset DOCKER_CONTEXT DOCKER_HOST
 
   # Sandbox for the LaunchAgent feature (service.sh): this machine has a real,
   # live, enforcing memcap install. `memcap uninstall` already called

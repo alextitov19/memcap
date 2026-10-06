@@ -128,12 +128,14 @@ mc_docker_ceiling_cache_age() {
 # a caller needing the diagnosis alongside the number does not have to choose
 # between them. Prints nothing at all on 1 or 2.
 mc_docker_ceiling_gb() {
-  local mib="" src="" read_rc=0
+  local mib="" src="" read_rc=0 selected=""
   MC_DOCKER_CEILING_GB=""
   MC_DOCKER_CEILING_SOURCE=""
   MC_DOCKER_CEILING_ERR=""
   MC_DOCKER_CEILING_AGE=""
   MC_DOCKER_CEILING_UNREADABLE=0
+  selected=$(mc_docker_selected_runtime)
+  case "$selected" in ''|desktop) ;; *) return 1 ;; esac
   if [ -n "${MC_DOCKER_CEILING_MIB:-}" ]; then
     # Escape hatch, the MC_DOCKER_RUNTIME pattern again: what Docker Desktop has
     # in its settings file is a property of the host, not something a test can
@@ -238,7 +240,23 @@ mc_docker_ceiling_drift() {
   return 0
 }
 
+mc_docker_selected_runtime() {
+  if [ -n "${MC_DOCKER_RUNTIME:-}" ]; then
+    printf '%s' "$MC_DOCKER_RUNTIME"
+  elif [ -z "${DOCKER_CONTEXT:-}${DOCKER_HOST:-}" ] && [ ! -e "${DOCKER_CONFIG:-$HOME/.docker}/config.json" ] && [ ! -L "${DOCKER_CONFIG:-$HOME/.docker}/config.json" ]; then
+    # No explicit selection: preserve install detection and the no-Python ceiling
+    # fallback. Never invoke a shim (or contact an engine) for absent metadata.
+    return 0
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -I "$MEMCAP_ROOT/libexec/docker_runtime.py" 2>/dev/null || printf unknown
+  else
+    # Without the context reader it is unsafe to assume Desktop is selected.
+    printf unknown
+  fi
+}
+
 mc_docker_runtime() {
+  local selected
   # Escape hatch, same pattern as MC_NO_TOP: this check depends entirely on what
   # is installed on the host, with no way to make it deterministic in an
   # environment (CI, a machine with no Docker runtime at all) that doesn't have
@@ -250,6 +268,8 @@ mc_docker_runtime() {
     printf '%s' "$MC_DOCKER_RUNTIME"
     return 0
   fi
+  selected=$(mc_docker_selected_runtime)
+  if [ -n "$selected" ]; then printf '%s' "$selected"; return; fi
   if [ -f "$MC_DOCKER_STORE" ] && [ -d "/Applications/Docker.app" ]; then echo desktop; return; fi
   command -v orbctl  >/dev/null 2>&1 && { echo orbstack; return; }
   command -v colima  >/dev/null 2>&1 && { echo colima;   return; }

@@ -16,6 +16,9 @@ mc_installed_agents() {
   # disables that expansion without disabling the word-splitting this loop needs.
   set -f
   for a in $MC_KNOWN_AGENTS ${EXTRA_AGENTS:-}; do
+    if [ "$a" = goose ] && command -v mc_database_goose >/dev/null 2>&1 && [ -n "$(mc_database_goose)" ]; then
+      continue  # Homebrew DB migrator, not evidence that the Goose agent is installed.
+    fi
     if command -v "$a" >/dev/null 2>&1 || pgrep -qx "$a" 2>/dev/null; then
       found="$found $a"
     fi
