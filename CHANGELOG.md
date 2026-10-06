@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.28.1 — 2026-10-05
+
+- Report the selected running Colima profile's VM memory ceiling using a bounded,
+  read-only runtime query. Match the selected socket to its profile, preserving
+  Docker context/host precedence. Missing, stopped, ambiguous or invalid runtime
+  reports remain unverified instead of using edited YAML or Desktop's cache.
+- Keep admission, cleanup, VM settings and owner-selected policy unchanged.
+
 ## v0.28.0 — 2026-10-05
 
 - Account for OrbStack VM/helper footprint, including migrations where Docker

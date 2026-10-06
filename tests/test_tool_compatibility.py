@@ -169,6 +169,73 @@ class ToolCompatibility(unittest.TestCase):
         out = self.shell('source "$MEMCAP_ROOT/libexec/docker.sh"; mc_docker_runtime')
         self.assertEqual(out, 'orbstack')
 
+    def colima_fixture(self, records, profile='default'):
+        self.selected('colima', f'unix://{self.root}/.colima/{profile}/docker.sock')
+        bindir = self.root / 'fakebin'
+        bindir.mkdir(exist_ok=True)
+        binary = bindir / 'colima'
+        binary.write_text('#!/bin/sh\n[ "$*" = "list --json" ] || exit 9\ncat <<\'EOF\'\n'
+                          + records + '\nEOF\n')
+        binary.chmod(0o755)
+        self.env['PATH'] = str(bindir) + ':' + self.env['PATH']
+
+    def colima_label(self):
+        return self.shell('source "$MEMCAP_ROOT/libexec/docker.sh"; mc_colima_ceiling_label; :')
+
+    def test_colima_running_profile_reports_runtime_ceiling_not_edited_config(self):
+        self.colima_fixture(json.dumps(dict(name='default', status='Running', runtime='docker', memory=6*1024**3)))
+        config = self.root / '.colima/default/colima.yaml'
+        config.parent.mkdir(parents=True)
+        config.write_text('memory: 99\n')
+        self.assertEqual(self.colima_label(), '6 GiB VM ceiling (reported by running Colima profile)')
+
+    def test_colima_named_profile_and_explicit_host_match_selected_socket(self):
+        rows = '\n'.join(json.dumps(dict(name=name, status='Running', runtime='docker', memory=size*1024**3))
+                         for name, size in [('default', 6), ('work', 8)])
+        self.colima_fixture(rows, 'work')
+        self.assertTrue(self.colima_label().startswith('8 GiB'))
+        self.env['DOCKER_HOST'] = f'unix://{self.root}/.colima/default/docker.sock'
+        self.assertTrue(self.colima_label().startswith('6 GiB'))
+        self.env['DOCKER_CONTEXT'] = 'colima'
+        self.assertTrue(self.colima_label().startswith('8 GiB'))
+
+    def test_colima_uncertain_runtime_never_certifies_ceiling(self):
+        for row in [dict(name='other', status='Running', runtime='docker', memory=6*1024**3),
+                    dict(name='default', status='Stopped', runtime='docker', memory=6*1024**3),
+                    dict(name='default', status='Running', runtime='containerd', memory=6*1024**3),
+                    dict(name='default', status='Running', runtime='docker', memory=True),
+                    dict(name='default', status='Running', runtime='docker', memory=-1)]:
+            self.colima_fixture(json.dumps(row))
+            self.assertEqual(self.colima_label(), '', row)
+        self.colima_fixture('{broken')
+        self.assertEqual(self.colima_label(), '')
+
+    def test_colima_status_renders_ceiling_without_desktop_apply_advice(self):
+        self.colima_fixture(json.dumps(dict(name='default', status='Running', runtime='docker', memory=6*1024**3)))
+        out = self.shell('"$MEMCAP_ROOT/bin/memcap" status')
+        self.assertIn('6 GiB VM ceiling (reported by running Colima profile)', out)
+        self.assertNotIn('selected engine ceiling unverified', out)
+        self.assertNotIn('Fix with: memcap docker apply', out)
+
+    def test_colima_duplicate_rows_failure_and_timeout_remain_unverified(self):
+        import colima_status
+        row = json.dumps(dict(name='default', status='Running', runtime='docker', memory=6*1024**3))
+        self.colima_fixture(row + '\n' + row)
+        self.assertEqual(self.colima_label(), '')
+        with patch.dict(os.environ, self.env, clear=True):
+            for error in (FileNotFoundError(), subprocess.TimeoutExpired('colima', 2),
+                          subprocess.CalledProcessError(1, 'colima')):
+                with patch('colima_status.subprocess.run', side_effect=error) as probe:
+                    self.assertEqual(colima_status.ceiling_label(), '')
+                    self.assertEqual(probe.call_args.args[0], ['colima', 'list', '--json'])
+                    self.assertEqual(probe.call_args.kwargs['timeout'], 2)
+
+    def test_colima_remote_endpoint_never_probes_local_engine(self):
+        import colima_status
+        with patch.dict(os.environ, {**self.env, 'DOCKER_HOST': 'ssh://remote.test'}, clear=True), \
+                patch('colima_status.subprocess.run', side_effect=AssertionError('local probe forbidden')):
+            self.assertEqual(colima_status.ceiling_label(), '')
+
     def test_non_desktop_context_does_not_read_desktop_ceiling(self):
         self.selected('orbstack', f'unix://{self.root}/.orbstack/run/docker.sock')
         (self.root / 'desktop.json').write_text('{"MemoryMiB":10240}')
