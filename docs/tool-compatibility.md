@@ -48,3 +48,12 @@ Validation uses fake process tables, temporary Docker metadata and command-text
 classification; it does not start workloads, restart Docker, boot devices or
 interrupt a migration. A passing compatibility suite is not a live container
 migration benchmark.
+
+## Colima ceiling reporting
+
+For the selected local Colima socket, status reads `colima list --json` and
+matches the socket's profile to exactly one running Docker profile. It displays
+that profile's reported VM memory ceiling in GiB. It does not infer an enforced
+ceiling from an edited `colima.yaml`, reuse Desktop's cache, or start an engine.
+Unavailable, stopped, mismatched, malformed or timed-out results remain
+unverified. This display does not alter admission budgets or VM settings.

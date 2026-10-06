@@ -359,6 +359,10 @@ mc_render_status() {
   if command -v mc_docker_selected_runtime >/dev/null 2>&1; then
     case "$(mc_docker_selected_runtime)" in
       ''|desktop) ;;
+      colima)
+        docker_ceiling_label=$(mc_colima_ceiling_label)
+        docker_ceiling_label="${docker_ceiling_label:-selected engine ceiling unverified; Colima profile unavailable or not running}"
+        ;;
       *) docker_ceiling_label="selected engine ceiling unverified; Desktop settings do not apply" ;;
     esac
   fi

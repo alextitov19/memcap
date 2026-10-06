@@ -40,35 +40,43 @@ def endpoint_runtime(host, home):
     return 'unknown'
 
 
-def selected_runtime(environ=None):
+def selected_endpoint(environ=None):
+    """Return selected host, None for absent configuration, or '' for invalid."""
     env = os.environ if environ is None else environ
     home = Path(env.get('HOME', str(Path.home())))
     directory = Path(env.get('DOCKER_CONFIG') or home / '.docker')
     context = env.get('DOCKER_CONTEXT')
     # Docker's explicit context overrides DOCKER_HOST, which overrides saved context.
     if not context and env.get('DOCKER_HOST'):
-        return endpoint_runtime(env['DOCKER_HOST'], home)
+        return env['DOCKER_HOST']
     if not context:
         try:
             context = read_json(directory / 'config.json').get('currentContext', '')
         except FileNotFoundError:
-            return ''  # No selected context; caller may report installed runtime.
+            return None  # No selected context; caller may report installed runtime.
         except (OSError, ValueError):
-            return 'unknown'
+            return ''
     if not isinstance(context, str) or len(context) > 1024:
-        return 'unknown'
+        return ''
     if not context or context == 'default':
         # Existing configuration with a default selection follows the conventional
         # socket, including OrbStack's symlink. No file retains install detection.
-        return endpoint_runtime('unix:///var/run/docker.sock', home)
+        return 'unix:///var/run/docker.sock'
     try:
         key = hashlib.sha256(context.encode()).hexdigest()
         metadata = read_json(directory / 'contexts' / 'meta' / key / 'meta.json')
         if metadata.get('Name') != context:
-            return 'unknown'
-        return endpoint_runtime(metadata['Endpoints']['docker']['Host'], home)
+            return ''
+        host = metadata['Endpoints']['docker']['Host']
+        return host if isinstance(host, str) else ''
     except (OSError, ValueError, KeyError, TypeError, RuntimeError):
-        return 'unknown'
+        return ''
+
+
+def selected_runtime(environ=None):
+    env = os.environ if environ is None else environ
+    host = selected_endpoint(env)
+    return '' if host is None else endpoint_runtime(host, Path(env.get('HOME', str(Path.home()))))
 
 
 if __name__ == '__main__':

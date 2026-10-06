@@ -240,6 +240,12 @@ mc_docker_ceiling_drift() {
   return 0
 }
 
+# Display only: never replace the owner's budget or seed Desktop's cache.
+mc_colima_ceiling_label() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 -I "$MEMCAP_ROOT/libexec/colima_status.py" 2>/dev/null || :
+}
+
 mc_docker_selected_runtime() {
   if [ -n "${MC_DOCKER_RUNTIME:-}" ]; then
     printf '%s' "$MC_DOCKER_RUNTIME"
