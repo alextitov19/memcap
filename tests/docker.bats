@@ -169,6 +169,7 @@ SCRIPT
 # a limit rather than as there being no limit at all.
 
 @test "CEILING: the enforced ceiling is read out of Docker's own settings" {
+  use_desktop_runtime_fixture
   MC_DOCKER_STORE="$BATS_TEST_TMPDIR/settings.json"
   printf '{"MemoryMiB": 6144, "Cpus": 8}\n' > "$MC_DOCKER_STORE"
   run mc_docker_ceiling_gb
@@ -177,6 +178,7 @@ SCRIPT
 }
 
 @test "CEILING: an unreadable or absent store is unknown, not a mismatch" {
+  use_desktop_runtime_fixture
   # Never warn on missing information: a machine with no Docker Desktop, or a
   # settings file memcap cannot parse, must produce silence rather than a claim
   # that the user's config is wrong.
@@ -196,6 +198,7 @@ SCRIPT
 }
 
 @test "CEILING: the store is read without jq too" {
+  use_desktop_runtime_fixture
   # jq is a formula dependency, so this is a fallback rather than the main path
   # -- but a status command that dies because jq is missing would be worse than
   # one that reports no ceiling.
@@ -212,6 +215,7 @@ SCRIPT
 }
 
 @test "CEILING: a drift between config and Docker is reported with its remedy" {
+  use_desktop_runtime_fixture
   # shellcheck disable=SC2034  # read by mc_docker_ceiling_gb, sourced from docker.sh
   MC_DOCKER_CEILING_MIB=6144
   run mc_docker_ceiling_drift 4
@@ -221,6 +225,7 @@ SCRIPT
 }
 
 @test "CEILING: agreement is silent" {
+  use_desktop_runtime_fixture
   # shellcheck disable=SC2034  # read by mc_docker_ceiling_gb, sourced from docker.sh
   MC_DOCKER_CEILING_MIB=6144
   run mc_docker_ceiling_drift 6
@@ -229,6 +234,7 @@ SCRIPT
 }
 
 @test "CEILING: an unmanaged Docker (0 GB) is not a drift" {
+  use_desktop_runtime_fixture
   # shellcheck disable=SC2034  # read by mc_docker_ceiling_gb, sourced from docker.sh
   # DOCKER_BUDGET_GB=0 means "memcap is not managing Docker", so whatever Docker
   # is enforcing on its own is not a disagreement with anything.
@@ -269,6 +275,7 @@ ceiling_read() {
 }
 
 @test "EPERM: an unreadable store is 2 with a reason, not a silent 1" {
+  use_desktop_runtime_fixture
   if [ "$(id -u)" -eq 0 ]; then skip "chmod 000 is not a barrier to root"; fi
   MC_DOCKER_STORE="$BATS_TEST_TMPDIR/locked.json"
   printf '{"MemoryMiB": 6144}\n' > "$MC_DOCKER_STORE"
@@ -287,6 +294,7 @@ ceiling_read() {
 }
 
 @test "EPERM: an absent store is still a silent 1, not the unreadable case" {
+  use_desktop_runtime_fixture
   # The negative control for the test above, and the CI case: GitHub's macOS
   # runners have no Docker Desktop at all. A machine that does not run Docker
   # must produce no diagnosis, no log line and no cache lookup.
@@ -299,6 +307,7 @@ ceiling_read() {
 }
 
 @test "a timed out settings reader retains the cached ceiling with its age" {
+  use_desktop_runtime_fixture
   MC_DOCKER_STORE="$BATS_TEST_TMPDIR/settings.json"
   printf '{"MemoryMiB": 8192}\n' > "$MC_DOCKER_STORE"
   mkdir -p "$MEMCAP_STATE_HOME/memcap"
@@ -314,6 +323,7 @@ ceiling_read() {
 }
 
 @test "a timed out settings reader without cache is unknown and diagnosed" {
+  use_desktop_runtime_fixture
   MC_DOCKER_STORE="$BATS_TEST_TMPDIR/settings.json"
   printf '{"MemoryMiB": 8192}\n' > "$MC_DOCKER_STORE"
   # shellcheck disable=SC2329 # Called indirectly by the sourced ceiling reader.
@@ -326,6 +336,7 @@ ceiling_read() {
 }
 
 @test "EPERM: an empty but readable store is unknown, not unreadable" {
+  use_desktop_runtime_fixture
   # An empty file opens fine and simply records no ceiling. Distinguished here
   # because the obvious readability probe -- the shell's own `read` -- fails at
   # end-of-file, which would file a perfectly readable file as a permission
@@ -338,6 +349,7 @@ ceiling_read() {
 }
 
 @test "EPERM: a successful read caches the value, as two integers" {
+  use_desktop_runtime_fixture
   MC_DOCKER_STORE="$BATS_TEST_TMPDIR/settings.json"
   printf '{"MemoryMiB": 6144, "Cpus": 8}\n' > "$MC_DOCKER_STORE"
   ceiling_read
@@ -356,6 +368,7 @@ ceiling_read() {
 }
 
 @test "EPERM: the escape hatch does not seed the cache" {
+  use_desktop_runtime_fixture
   # MC_DOCKER_CEILING_MIB is a test fixture, not a reading of anything. If it
   # wrote the cache, a suite run would leave a number behind that a later pass
   # would report to the user as what Docker is enforcing.
@@ -373,6 +386,7 @@ ceiling_read() {
 }
 
 @test "EPERM: an unreadable store falls back to the cached reading" {
+  use_desktop_runtime_fixture
   if [ "$(id -u)" -eq 0 ]; then skip "chmod 000 is not a barrier to root"; fi
   MC_DOCKER_STORE="$BATS_TEST_TMPDIR/locked.json"
   printf '{"MemoryMiB": 6144}\n' > "$MC_DOCKER_STORE"
@@ -391,6 +405,7 @@ ceiling_read() {
 }
 
 @test "EPERM: the cached reading dates itself in the drift line" {
+  use_desktop_runtime_fixture
   if [ "$(id -u)" -eq 0 ]; then skip "chmod 000 is not a barrier to root"; fi
   MC_DOCKER_STORE="$BATS_TEST_TMPDIR/locked.json"
   printf '{"MemoryMiB": 6144}\n' > "$MC_DOCKER_STORE"
@@ -410,6 +425,7 @@ ceiling_read() {
 }
 
 @test "EPERM: a live read does not carry the cache note" {
+  use_desktop_runtime_fixture
   # The negative control for the test above: the note must appear only when the
   # number is remembered. A drift line that always claimed to be quoting a cache
   # would be as wrong as one that never did.
@@ -422,6 +438,7 @@ ceiling_read() {
 }
 
 @test "EPERM: a malformed cache is ignored rather than half-read" {
+  use_desktop_runtime_fixture
   if [ "$(id -u)" -eq 0 ]; then skip "chmod 000 is not a barrier to root"; fi
   MC_DOCKER_STORE="$BATS_TEST_TMPDIR/locked.json"
   printf '{"MemoryMiB": 6144}\n' > "$MC_DOCKER_STORE"
@@ -442,6 +459,7 @@ ceiling_read() {
 }
 
 @test "EPERM: a torn half-written cache line is never read" {
+  use_desktop_runtime_fixture
   # The write is temp-plus-mv so this cannot happen through memcap itself, which
   # is the point: the reader is strict enough that it would not matter if it did.
   mkdir -p "$MEMCAP_STATE_HOME/memcap"
@@ -456,6 +474,7 @@ ceiling_read() {
 }
 
 @test "EPERM: the cache write is atomic and leaves no temp file behind" {
+  use_desktop_runtime_fixture
   run mc_docker_ceiling_cache_write 4096
   [ "$status" -eq 0 ]
   run cat "$MEMCAP_STATE_HOME/memcap/docker-ceiling"
@@ -465,6 +484,7 @@ ceiling_read() {
 }
 
 @test "EPERM: docker apply refreshes the cache from the value it just wrote" {
+  use_desktop_runtime_fixture
   # `docker apply` runs from a terminal and is the only other place that knows
   # the enforced ceiling for certain. Without this, the service would keep
   # reporting the PREVIOUS ceiling -- and keep advising `memcap docker apply` --

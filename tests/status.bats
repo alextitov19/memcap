@@ -32,6 +32,7 @@ setup() { setup_common; export BUDGET_MODE="split"; }
 # it has a zero-GB allowance. Rendering it as "6.41 GB / 0 GB ceiling" reads as
 # catastrophically over budget when it means memcap isn't tracking Docker at all.
 @test "status renders an unmanaged Docker ceiling instead of a misleading 0 GB" {
+  use_desktop_runtime_fixture
   mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
   cat > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" <<-'EOF'
 	TOTAL_BUDGET_GB=16
@@ -217,6 +218,7 @@ fresh_pass_with_outcome() {
 # The unmanaged Docker ceiling is not the same as an excluded one: that same
 # Docker figure is still summed into `combined` two rows below.
 @test "an unmanaged Docker ceiling says it is still counted in combined" {
+  use_desktop_runtime_fixture
   mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
   cat > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" <<-'EOF'
 	TOTAL_BUDGET_GB=16
@@ -459,6 +461,7 @@ fresh_pass_with_outcome() {
 
 # --- The Docker ceiling row --------------------------------------------------
 @test "status says which Docker ceiling is actually being enforced" {
+  use_desktop_runtime_fixture
   mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
   cat > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" <<-'EOF'
 	TOTAL_BUDGET_GB=16
@@ -476,6 +479,7 @@ fresh_pass_with_outcome() {
 }
 
 @test "status leaves the Docker row alone when the ceiling matches" {
+  use_desktop_runtime_fixture
   mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
   cat > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" <<-'EOF'
 	TOTAL_BUDGET_GB=16
@@ -493,6 +497,7 @@ fresh_pass_with_outcome() {
 # ZERO times in 8 days of real running. `status` runs from a terminal and can
 # read it, so its read is what leaves a value behind for the service to use.
 @test "status seeds the ceiling cache the background service reads" {
+  use_desktop_runtime_fixture
   mkdir -p "$MEMCAP_CONFIG_HOME/memcap"
   cat > "$MEMCAP_CONFIG_HOME/memcap/memcap.conf" <<-'EOF'
 	TOTAL_BUDGET_GB=16
@@ -528,4 +533,3 @@ fresh_pass_with_outcome() {
   [ "$output" = "$MEMCAP_STATE_HOME/memcap/docker-ceiling" ]
   assert_contains "$output" "$BATS_TEST_TMPDIR"
 }
-

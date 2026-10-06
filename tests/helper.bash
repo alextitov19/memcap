@@ -1,3 +1,9 @@
+# Desktop settings fixtures must select Desktop even in the no-runtime suite.
+# This only overrides test detection; it never starts a container engine.
+use_desktop_runtime_fixture() {
+  export MC_DOCKER_RUNTIME=desktop
+}
+
 setup_common() {
   # Tests admitted by a live runner inherit its exported queue settings. Keep
   # those owner-selected limits out of fixtures; each test configures its own.
