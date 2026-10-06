@@ -117,7 +117,7 @@ pids/ppids/commands from the budget snapshot; start identity sampled afterwards 
     case " ${SIMPIDS:-} " in *" $pid "*) kind=sim-browser; detail='idle, ownership and mobile checks required' ;; esac
     case " ${PROTECTEDPIDS:-} " in *" $pid "*) kind=agent-protected; detail='live agent tree protected from tiers 1/2' ;; esac
     case " ${AGENTPIDS:-} " in *" $pid "*) kind=agent-cli; detail='never a reclaim target' ;; esac
-    if printf '%s\n' "$cmd" | LC_ALL=C awk -v pat="$MC_DOCKER_PATTERN" '$0 ~ pat {found=1} END {exit !found}'; then
+    if printf '%s\n' "$cmd" | LC_ALL=C awk -v pat="$MC_DOCKER_PATTERN" '$1 ~ pat {found=1} END {exit !found}'; then
       kind=docker; detail='VM ceiling managed separately'
     fi
     identity=$(ps -p "$pid" -o lstart= 2>/dev/null) || identity=unavailable

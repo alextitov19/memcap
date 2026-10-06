@@ -1,3 +1,9 @@
+# Desktop settings fixtures must select Desktop even in the no-runtime suite.
+# This only overrides test detection; it never starts a container engine.
+use_desktop_runtime_fixture() {
+  export MC_DOCKER_RUNTIME=desktop
+}
+
 setup_common() {
   # Tests admitted by a live runner inherit its exported queue settings. Keep
   # those owner-selected limits out of fixtures; each test configures its own.
@@ -14,6 +20,9 @@ setup_common() {
   # macOS privacy consent. Docker tests supply their own store fixtures; all
   # other tests must be independent of the developer's Docker settings.
   export MC_DOCKER_STORE="$BATS_TEST_TMPDIR/docker-settings.json"
+  # Never let the owner's selected Docker context affect fixture runtime detection.
+  export DOCKER_CONFIG="$BATS_TEST_TMPDIR/docker-config"
+  unset DOCKER_CONTEXT DOCKER_HOST
 
   # Sandbox for the LaunchAgent feature (service.sh): this machine has a real,
   # live, enforcing memcap install. `memcap uninstall` already called

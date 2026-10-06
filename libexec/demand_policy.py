@@ -260,6 +260,10 @@ class Classifier:
             return self.argv(args, cwd, depth + 1)
         if args in (['--help'], ['-h'], ['--version'], ['-V']):
             return None
+        from tool_demand import inspect_tool
+        handled, reason = inspect_tool(self, name, args, cwd, depth)
+        if handled:
+            return reason
         if name in SHELLS:
             for i, arg in enumerate(args):
                 if arg.startswith('-') and 'c' in arg[1:] and i + 1 < len(args):

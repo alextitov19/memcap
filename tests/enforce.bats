@@ -833,6 +833,7 @@ SCRIPT
 # the class of test AGENTS.md rules out.
 mc_watch_modules() {
   printf "%s" "
+    export MC_DOCKER_RUNTIME=desktop
     source '$MEMCAP_ROOT/libexec/common.sh'
     source '$MEMCAP_ROOT/libexec/budget.sh'
     source '$MEMCAP_ROOT/libexec/detect.sh'

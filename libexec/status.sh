@@ -356,6 +356,12 @@ mc_render_status() {
       docker_ceiling_label="${MC_DOCKER_CEILING_GB} GB ceiling ENFORCED (config asks for ${docker_budget} GB)"
     fi
   fi
+  if command -v mc_docker_selected_runtime >/dev/null 2>&1; then
+    case "$(mc_docker_selected_runtime)" in
+      ''|desktop) ;;
+      *) docker_ceiling_label="selected engine ceiling unverified; Desktop settings do not apply" ;;
+    esac
+  fi
 
   # The same guard on the line directly ABOVE the Docker one, where it was
   # missing: DOCKER_BUDGET_GB >= TOTAL_BUDGET_GB rendered "6.19 GB / 0 GB

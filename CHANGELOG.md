@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.28.0 — 2026-10-05
+
+- Account for OrbStack VM/helper footprint, including migrations where Docker
+  Desktop and OrbStack coexist. Match runtime executables instead of incidental
+  command arguments. Follow the selected local Docker context; remote, unknown
+  or malformed endpoints must not select Desktop settings or mutation paths.
+- Stop displaying Docker Desktop's cached VM ceiling for another selected engine.
+- Inspect supported mise, just, hyperfine, Docker-context and developer-tool
+  wrappers without executing them. Positive build/test/media/scanner demand uses
+  admission; lightweight help and unknown-demand calls retain native execution.
+- Distinguish Homebrew's Goose database migration CLI from the Goose agent while
+  preserving ambiguous agent protection.
+- Keep admission limits, pressure/headroom checks, session fairness, fixed-memory
+  floors, ownership, cancellation and cleanup policy unchanged. Existing jobs keep
+  their loaded runner; new calls use the upgraded implementation.
+
 ## v0.27.0 — 2026-10-04
 
 - Invoke memcap-owned Bash bridges and generated hooks through an explicit

@@ -84,13 +84,18 @@ is not a `top` that failed.
   mechanics differ entirely, and a port would share almost no code.
 - **Homebrew**, for install and for the background service.
 - **`jq`**, installed automatically as a formula dependency.
-- **Docker Desktop is optional.** Without it, memcap skips the Docker module and
-  budgets agents only. OrbStack, Colima, and Podman are measured but cannot be
-  capped — no VM ceiling exists to set.
+- **Docker Desktop is optional.** Docker Desktop and OrbStack processes count
+  toward the shared memory total, including while both run during migration.
+  memcap follows local Docker context metadata for runtime selection. It only
+  configures Docker Desktop's ceiling; OrbStack's limit remains owner-managed.
+  Unknown or remote endpoints never authorize a Desktop settings change.
 
 The watchdog uses system `bash` (3.2); no newer shell is needed. The optional
 workload queue additionally requires **Python 3.9+** (`brew install python`),
 using only the standard library.
+
+See [installed tool compatibility](docs/tool-compatibility.md) for mise, task
+wrappers, additional build/test tools and migration limitations.
 
 ## Agent reports to GitHub (v0.14.0)
 
