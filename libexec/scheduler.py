@@ -913,6 +913,8 @@ class Scheduler:
                         "fairness_version": 2,
                         "small_candidate": False,  # Old selectors must also see new managed work as heavy.
                         "classification_code": getattr(self, "classification_code", 0),
+                        **{key:value for key,value in getattr(self,'analytics_metadata',{}).items()
+                           if key in {'demand','demand_reason','confidence','classifier_version'}},
                         "scheduler_version": 2,
                         "elastic": memory_gb is None,
                         "enqueued": time.time(),
@@ -1011,7 +1013,7 @@ class Scheduler:
                         for field in ('sampling_handoff_count', 'sampling_handoff_ms'):
                             job[field] = job.get(field, 0) + sample.get(field, 0)
                         try:
-                            if sample.get("cap_kb") and memory > sample["cap_kb"]:
+                            if self.policy == 'strict' and sample.get("cap_kb") and memory > sample["cap_kb"]:
                                 raise QueueError(
                                     "job reservation exceeds the entire budget; split the job"
                                 )
@@ -1819,12 +1821,26 @@ def main():
         args.memory is None
         and not args.resource
     ):
-        from command_stages import native_command, split_command, staged_script, stable_shell
+        from command_stages import command_decision, split_command, staged_script, stable_shell
         # A cached agent wrapper may have been generated before an upgrade.
         # Recheck its original command using today's classifier before reserving.
         # Explicit user reservations/resources retain their requested policy.
-        if native_command(argv, args.cwd):
-            from analytics_events import emit, family
+        from analytics_events import emit, family
+        decision = command_decision(argv, args.cwd)
+        evidence = dict(demand=decision.kind, demand_reason=decision.reason,
+                        confidence=decision.confidence, classifier_version=1,
+                        dependency_count=decision.dependency_count)
+        scheduler.analytics_metadata.update(evidence)
+        if not scheduler.classification_code:
+            from scheduler_policy import classification_code
+            scheduler.classification_code = classification_code(args.shell_command or shlex.join(argv))
+        emit('classification', source='scheduler', session=args.session_key,
+             **scheduler.analytics_metadata)
+        from command_trace import job as trace_job
+        trace_job(directory, 'runner-route', argv=argv, cwd=str(args.cwd or os.getcwd()),
+                  session=args.session_key, route='native' if decision.kind == 'light' else 'managed',
+                  demand=decision.kind, reason=decision.reason)
+        if decision.kind == 'light':
             emit('route', source='scheduler', route='native', session=args.session_key,
                  purpose=args.purpose, family=family(args.shell_command or shlex.join(argv)),
                  **{k: v for k, v in scheduler.analytics_metadata.items() if k != 'purpose'})

@@ -71,6 +71,14 @@ def sample_job(job, table_reader, usage_reader, *, uid=None):
             # which is preferable to discarding observed growth.
             result['footprints'][pid] = max(first['footprint_kb'], second['footprint_kb'])
         result['peak_kb'] = sum(result['footprints'].values())
+        # Additions after the first process snapshot are observation obligations,
+        # just like children found by the later registry refresh. They do not
+        # prove an unmeasured child disappeared. Preserve their identities even
+        # if they exit before refresh, so reconcile cannot silently forget them.
+        births = {pid:start for pid,start in after.items() if pid not in before}
+        if (births and not result['missing']
+                and all(after.get(pid)==start for pid,start in before.items())):
+            result['births'] = births
     except Exception:
         # Probe adapters also raise their own errors (including QueueError and
         # subprocess timeouts). Observation is optional evidence, never grounds
@@ -104,6 +112,13 @@ def reconcile(state, sample, current):
     pending = dict(state.get('pending', {}))
     identities = sample.get('identities', {})
     failed = resolved = seen = 0
+    for pid,start in sample.get('births', {}).items():
+        if pending.get(pid) != start:
+            # PID reuse must not erase the older child's unmeasured lifetime.
+            if pid in pending:
+                failed += 1
+            pending[pid] = start
+            seen += 1
     for pid, start in list(pending.items()):
         if (sample['complete'] and identities.get(pid) == start
                 and pid in sample.get('footprints', {})):
@@ -147,7 +162,8 @@ def accumulate(state, sample):
     for reason in REASONS:
         reasons[reason] = reasons.get(reason, 0) + sample.get('reasons', {}).get(reason, 0)
     reasons['gap'] += int(gap > 5)
-    incomplete = result.get('incomplete', False) or not sample['complete'] or gap > 5
+    birth_only = bool(sample.get('births')) and not sample.get('missing') and not sample.get('fault')
+    incomplete = result.get('incomplete', False) or (not sample['complete'] and not birth_only) or gap > 5
     result.update(last=at, incomplete=incomplete, reasons=reasons,
                   samples=result.get('samples', 0)+int(sample['complete']),
                   peak_kb=max(result.get('peak_kb',0),sample['peak_kb']),

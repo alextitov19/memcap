@@ -70,3 +70,10 @@ an unrelated command argument contains a newline"
   run mc_sim_device_held "$device"
   [ "$status" -eq 0 ]
 }
+
+@test "a directly owned simulator driver stays protected while its agent waits" {
+  fixture_table="10 1 $fixture_uid codex app-server
+30 10 $fixture_uid /Users/test/.maestro/deps/simulator-server ios --id $device"
+  run mc_sim_device_held "$device"
+  [ "$status" -eq 0 ]
+}

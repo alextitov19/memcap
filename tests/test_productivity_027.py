@@ -306,7 +306,7 @@ class Productivity027Tests(unittest.TestCase):
                  patch('scheduler_metrics.fcntl.flock', side_effect=BlockingIOError()):
                 sample = shared_sample(root, 'same', lambda:self.fail('duplicate probe'))
             self.assertTrue(sample['busy'])
-            self.assertLessEqual(clock[0], 100.5)
+            self.assertLessEqual(clock[0], 101.000001)
 
     def test_shutdown_in_progress_allows_only_abandoned_idle_runtime_leaves(self):
         import idle_gc

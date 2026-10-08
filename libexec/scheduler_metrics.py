@@ -241,14 +241,17 @@ def shared_sample(directory: Path, key: str, sampler) -> dict:
             began = time.monotonic()
             # Bounded attempts also terminate with a frozen/broken test clock.
             # This waits outside the registry lock and never starts a probe.
-            for attempt in range(6):
+            # Host probes commonly take 0.5-0.7s. A 0.25s handoff abandons
+            # their publication then sleeps a full queue interval. Wait locally
+            # for at most one second, outside the registry and without probing.
+            for attempt in range(21):
                 cached = read()
                 if fresh(cached):
                     return {**cached['sample'],
                             'sampling_path': 3,
                             'sampling_handoff_count': int(attempt > 0),
                             'sampling_handoff_ms': max(0, time.monotonic()-began)*1000}
-                if attempt == 5 or time.monotonic()-began >= .25:
+                if attempt == 20 or time.monotonic()-began >= 1:
                     break
                 time.sleep(.05)
             return {

@@ -26,6 +26,24 @@ from report import PERFORMANCE_GUIDANCE, PROTECTION_GUIDANCE, MEMORY_GUIDANCE
 from queue_deadlines import GUIDANCE as DEADLINE_GUIDANCE, TOOL_TIMEOUT_MS
 
 SCHEMA = 1
+
+
+def runtime_issues(hooks, configuration_matches):
+    """Read-only diagnosis; trust is an owner decision, never an installer edit."""
+    problems = []
+    if not configuration_matches:
+        problems.append('Codex runtime hook configuration differs or hooks are missing; reload the session and check /hooks.')
+    disabled = sum(not hook.get('enabled') for hook in hooks)
+    if disabled:
+        problems.append(f'{disabled} Codex memcap hook(s) disabled; review /hooks.')
+    for trust in ('modified', 'untrusted', 'unknown'):
+        count = sum((hook.get('trustStatus') if hook.get('trustStatus') in
+                     {'trusted', 'managed', 'modified', 'untrusted'} else 'unknown') == trust for hook in hooks)
+        if count:
+            problems.append(f'{count} Codex memcap hook(s) have {trust} trust; owner must review /hooks. Reinstalling cannot approve trust.')
+    return problems
+
+
 BEGIN = "<!-- memcap:begin -->"
 END = "<!-- memcap:end -->"
 GUIDANCE = f"""{BEGIN}
@@ -529,14 +547,10 @@ class Installer:
                         )
                         for h in own
                     ]
-                    if Counter(observed) != Counter(wanted) or any(
-                        not h.get("enabled")
-                        or h.get("trustStatus") not in {"trusted", "managed"}
-                        for h in own
-                    ):
-                        print(
-                            f"WARN {label}: Codex hooks missing, disabled or require trust review; open /hooks."
-                        )
+                    problems = runtime_issues(own, Counter(observed) == Counter(wanted))
+                    if problems:
+                        for problem in problems:
+                            print(f"WARN {label}: {problem}")
                         issues += 1
                     else:
                         print(

@@ -180,6 +180,10 @@ def collect(directory, port=43190):
                     # failed insertion must not starve retention indefinitely.
                     if last_maintain == 0 or now - last_maintain >= 60:
                         store.maintain()
+                        from command_trace import maintain as maintain_trace
+                        maintain_trace(directory.parent/'command-trace')
+                        from incident_evidence import maintain as maintain_incidents
+                        maintain_incidents(directory.parent)
                         last_maintain = now
                     for observation in native_observer.tick():
                         record('native_memory', observation)
