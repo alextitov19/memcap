@@ -93,6 +93,21 @@ class Incidents(unittest.TestCase):
             self.assertEqual(scheduler.main(), 0)
         self.assertEqual(run.call_args.args[2], '')
 
+    def test_direct_emulator_is_persistent_without_exempting_mixed_work(self):
+        import scheduler
+        command = 'emulator -avd Fixture_Phone -no-audio'
+        self.assertTrue(persistent_shell(command))
+        with patch.object(sys, 'argv', ['memcap', 'run', '--cwd', str(self.root),
+                                       '--', 'emulator', '-avd', 'Fixture_Phone', '-no-audio']), \
+             patch.object(scheduler.Scheduler, 'run', return_value=0) as run:
+            self.assertEqual(scheduler.main(), 0)
+        self.assertEqual(run.call_args.args[2], 'shell:' + command)
+        for command in ['emulator -list-avds', 'emulator -avd Fixture_Phone -help',
+                        'emulator -avd Fixture_Phone -unknown-mode',
+                        'emulator -avd Fixture_Phone; go test ./...',
+                        'echo emulator -avd Fixture_Phone']:
+            self.assertFalse(persistent_shell(command), command)
+
     def test_codex_session_directory_does_not_override_tool_directory(self):
         # Codex's Bash-compatible hook may omit workdir although exec_command
         # executes in a subdirectory. The synthetic runner prints its real cwd.

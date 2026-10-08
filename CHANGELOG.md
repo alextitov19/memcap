@@ -18,6 +18,9 @@
 - Admit known Expo startup/build operations and limit Metro startup workers,
   preserving smaller explicit limits. Track known persistent Expo servers in explicit
   runners as well as hook launches so finite completion waits can finish.
+- Track supported direct Android emulator launches as persistent resources too;
+  they retain admission and memory accounting without occupying a finite-work
+  slot until shutdown. Unknown options and mixed commands remain finite.
 - Keep memory budgets, headroom, pressure gates and termination rules unchanged.
   Existing servers and supervisors are not restarted or adopted.
 

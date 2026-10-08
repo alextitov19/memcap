@@ -43,6 +43,13 @@ project paths, credentials or transcript contents belong in public issues.
   calls unchanged in Claude subagents and known Claude worktree paths, foregoing
   optional passive learning there. Positive heavy evidence and learned promotions
   still require admission. Do not change or bypass the host's worktree guard.
+- #401 arrived during validation. The report observed four finite slots occupied;
+  local evidence identified one as an Android emulator, alongside actual test
+  suites. Treat supported direct emulator launches as persistent resources, while
+  retaining their memory accounting and admission checks. Unknown options and
+  mixed commands stay finite. This removes one demonstrated slot-retention cause;
+  it does not establish that the entire reported delay was avoidable, nor change
+  already-running supervisors' classifications.
 
 ## Validation
 
@@ -50,7 +57,10 @@ Initial targeted run: seven tests, nine failing assertions/subtests covering
 classification, incorrect cwd, missing worker/resource handling, misleading
 feedback and an unnecessary probe. After the first changes, seven passed and
 the additional explicit-run persistent-resource test failed as intended.
-Final focused validation passed 99 tests. Full-suite and CI results are recorded
+Focused validation passed 99 tests before the later emulator reproduction.
+The emulator regression failed on the old finite-lifetime behavior as expected.
+All 100 focused tests passed with the emulator fix.
+Final full-suite and CI results are recorded
 in the release PR and the private local rollout receipt.
 
 Single final review caught an overly broad automatic persistence change: an

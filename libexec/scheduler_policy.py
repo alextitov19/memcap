@@ -763,7 +763,7 @@ def classification_code(command):
     return 2  # other unsupported command/options
 
 
-def persistent_shell(command, expo_only=False):
+def persistent_shell(command, direct_only=False):
     """One known persistent command with literal cd/env/redirection wrappers.
 
     It still goes through admission; only finite-job completion waits exclude it.
@@ -833,7 +833,12 @@ def persistent_shell(command, expo_only=False):
         own_args = words[2:words.index('--')] if '--' in words else words[2:]
         return ('shell:' + text if words[1:2] == ['start']
                 and not any(a in {'--help', '-h', '--version'} for a in own_args) else '')
-    if expo_only:
+    if (name == 'emulator' and args[:1] == ['-avd'] and len(args) >= 2
+            and re.fullmatch(r'[A-Za-z0-9_.-]+', args[1])
+            and not args[1].startswith('-')
+            and all(a in {'-no-audio', '-no-window', '-no-boot-anim'} for a in args[2:])):
+        return 'shell:' + text
+    if direct_only:
         return ''
     if re.fullmatch(r"python(?:3(?:\.[0-9]+)?)?", name):
         if "--help" in args or "-h" in args:
