@@ -14,6 +14,7 @@ from analytics_store import read_rows
 
 
 def status(directory):
+    from command_trace import status as trace_status
     rows, health = read_rows(directory, time.time() - 86400)
     try:
         heartbeat = json.loads((directory / "heartbeat.json").read_text())
@@ -23,6 +24,7 @@ def status(directory):
                 recorder_live=0 <= time.time() - heartbeat.get("at", 0) < 15,
                 enforcement_paused=(directory.parent / "paused").is_file(),
                 heartbeat=heartbeat, observed_events=len(rows), storage=health,
+                command_trace=trace_status(directory.parent/'command-trace'),
                 capabilities={"current_sessions": "existing feedback hooks record at next invocation; no hook command/trust changes",
                               "claude_native": "configured startup environment required; already-running agents may need restart",
                               "codex": "hooks only; API/token accounting unknown; no transcript scraping"},

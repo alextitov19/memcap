@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.29.0 — 2026-10-07
+
+- Preserve diagnostic events ahead of routine hook/API volume under the existing
+  disk cap. Show per-event coverage and save bounded private incident bundles
+  separately from rolling raw history; never publish raw commands.
+- Record the direct runner's actual memory-demand decision, including native
+  execution, so hook classification can be distinguished from explicit wrappers.
+- Inspect Python script contents instead of treating a `test_` filename as heavy
+  evidence. Actual test-framework invocations and nested builds remain managed.
+- Separate hook and runner decision counts and report complete/incomplete learning
+  for successful jobs independently from nonzero exits.
+- Allow sampler handoff up to one second outside the registry lock, covering
+  measured probe duration without duplicate probes or extending sample freshness.
+- Recover complete learning after a child born during a probe is subsequently
+  measured. Missing/exited/reused children and incomplete reads retain protection.
+- In adaptive mode, assess requests above the planning target using physical
+  capacity and pressure. Strict mode retains its hard single-request limit.
+- Protect exact-device drivers owned directly by live agents as well as drivers
+  attached through MCP. Preserve foreign ownership, uncertainty and idle guards.
+- Distinguish disabled, mismatched and untrusted/modified Codex runtime hooks.
+  The installer never approves trust. Show trace expiry and retire expired raw
+  records through collector maintenance without renewing capture.
+- Correct stale 30-minute wait documentation. Existing supervisors retain loaded
+  code; new commands adopt this release. Refresh only an enabled analytics
+  collector for the new retention behavior. No VM or owner policy changes.
+
 ## v0.28.2 — 2026-10-06
 
 - Add private sampler call, cache/handoff path and busy-retry timing to distinguish

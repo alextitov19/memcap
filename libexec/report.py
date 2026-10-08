@@ -308,6 +308,12 @@ class Reporter:
         )
         write_private(draft, body)
         result = {"status": "draft", "draft": str(draft)}
+        # Local-only detailed evidence survives raw event rotation. Never add its
+        # path or contents to the public body or transport parameters.
+        from incident_evidence import capture as capture_evidence
+        evidence = capture_evidence(self.directory.parent, now=now)
+        if evidence:
+            result['local_evidence'] = evidence
         if dry_run or not self.enabled():
             return result
         try:

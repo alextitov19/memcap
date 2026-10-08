@@ -9,6 +9,11 @@ from analytics_events import sanitize
 
 LIMIT_BYTES = 256 * 1024 * 1024
 RAW_DAYS = 14
+# High-volume host hook/API bookkeeping must not evict the very decisions needed
+# to explain a queue incident. This remains a bounded ring, not unlimited history.
+EVIDENCE_EVENTS = ('classification', 'route', 'hook_timing', 'sampling', 'sample',
+                   'reservation', 'queued', 'admitted', 'completed', 'cancelled',
+                   'stalled', 'action', 'stop_wait')
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
   producer TEXT NOT NULL, seq INTEGER NOT NULL, wall REAL NOT NULL,
@@ -140,6 +145,14 @@ class Store:
         result["rollup_bins"] = self.db.execute("SELECT count(*) FROM hourly").fetchone()[0]
         return result
 
+    def evict(self, count):
+        placeholders = ','.join('?' for _ in EVIDENCE_EVENTS)
+        return self.db.execute(
+            'DELETE FROM events WHERE (producer,seq) IN '
+            '(SELECT producer,seq FROM events ORDER BY '
+            f'CASE WHEN event IN ({placeholders}) THEN 1 ELSE 0 END,wall LIMIT ?)',
+            (*EVIDENCE_EVENTS, count)).rowcount
+
     def maintain(self, now=None):
         now = time.time() if now is None else now
         self.db.execute("DELETE FROM job_events WHERE job IN (SELECT job FROM job_events GROUP BY job HAVING max(wall)<?)", (now - RAW_DAYS * 86400,))
@@ -154,11 +167,7 @@ class Store:
             # Reuse freed pages; do not raise the cap or unlink live DB/WAL files.
             count = self.db.execute("SELECT count(*) FROM events").fetchone()[0]
             batch = min(20000, max(1, (count + 4) // 5))
-            deleted += self.db.execute(
-                "DELETE FROM events WHERE (producer,seq) IN "
-                "(SELECT producer,seq FROM events ORDER BY wall LIMIT ?)",
-                (batch,),
-            ).rowcount
+            deleted += self.evict(batch)
         deleted += self.db.execute("DELETE FROM events WHERE wall<?", (now - RAW_DAYS * 86400,)).rowcount
         self.db.execute("DELETE FROM hourly WHERE hour<?", (int((now - 365 * 86400) // 3600),))
         # Bound dimension cardinality as well as elapsed retention.
@@ -166,13 +175,13 @@ class Store:
             (SELECT hour,build,policy,family,metric,bucket FROM hourly ORDER BY hour DESC LIMIT -1 OFFSET 100000)""")
         count = self.db.execute("SELECT count(*) FROM events").fetchone()[0]
         if count > 100000:
-            deleted += self.db.execute("DELETE FROM events WHERE (producer,seq) IN (SELECT producer,seq FROM events ORDER BY wall LIMIT ?)", (count - 100000,)).rowcount
+            deleted += self.evict(count - 100000)
         self.count("evicted_events", deleted)
         self.db.commit()
         self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         size = self.health()["disk_bytes"]
         if size > self.limit * .8:
-            deleted = self.db.execute("DELETE FROM events WHERE (producer,seq) IN (SELECT producer,seq FROM events ORDER BY wall LIMIT 20000)").rowcount
+            deleted = self.evict(20000)
             self.count("evicted_events", deleted)
             self.db.commit()
             self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -192,6 +201,9 @@ def read_rows(directory, since=0, limit=100000):
         health.update(retained_events=db.execute("SELECT count(*) FROM events").fetchone()[0],
                       query_limit=limit, possibly_truncated=len(rows) == limit,
                       raw_oldest_wall=db.execute("SELECT min(wall) FROM events").fetchone()[0])
+        health['coverage_by_event'] = {event: dict(count=count, oldest_wall=oldest, newest_wall=newest)
+            for event, count, oldest, newest in db.execute(
+                'SELECT event,count(*),min(wall),max(wall) FROM events GROUP BY event')}
         if db.execute("SELECT 1 FROM sqlite_master WHERE name='job_events'").fetchone():
             checkpoints = [json.loads(r[0]) for r in db.execute(
                 "SELECT data FROM job_events WHERE job IN (SELECT job FROM job_events WHERE wall>=?)", (since,))]

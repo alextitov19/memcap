@@ -102,7 +102,7 @@ class AdaptiveSchedulerTests(unittest.TestCase):
                      patch('scheduler_metrics.time.sleep', side_effect=lambda seconds:clock.__setitem__(0, clock[0]+seconds)):
                     result = shared_sample(self.root, "different", reader)
                 self.assertTrue(result["busy"])
-                self.assertLessEqual(clock[0] - 100, .250001)
+                self.assertLessEqual(clock[0] - 100, 1.000001)
             self.assertEqual(len(calls), 1)
 
     def test_observed_peak_growth_survives_a_later_memory_lull(self):

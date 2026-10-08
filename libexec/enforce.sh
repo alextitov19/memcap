@@ -1286,15 +1286,15 @@ mc_sim_device_tracked() {
 
 # CoreSimulator owns launchd_sim, so its ancestry cannot reveal the live MCP
 # client holding the device. Maestro's native driver names the exact UDID.
-# Fresh same-user driver -> MCP -> classified agent evidence protects only that
-# device, even when the MCP server is CPU-flat while its agent waits in queue.
+# Fresh same-user driver -> classified agent ancestry protects only that device,
+# directly or via MCP, even while its agent waits in queue.
 mc_sim_device_held() {
   local udid="$1" table verdict
   [ -n "${AGENTPIDS+x}" ] || return 0
   table=$(ps -Ao pid=,ppid=,uid=,command= 2>/dev/null) || return 0
   [ -n "$table" ] || return 0
   verdict=$(printf '%s\n' "$table" | awk -v device="$udid" -v uid="$(id -u)" \
-      -v agents=" $AGENTPIDS " -v srv="$MC_HELD_SERVER_PATTERN" '
+      -v agents=" $AGENTPIDS " '
     {
       # argv can contain newlines. Ignore continuation lines without a PID,
       # but retain a known driver if any row in its own ancestry is missing.
@@ -1312,7 +1312,7 @@ mc_sim_device_held() {
       if(!valid || uid !~ /^[0-9]+$/) { print "unknown"; exit }
       for(p in D) {
         if(U[p]!=uid) continue
-        cur=p; holder=0
+        cur=p
         for(i=0;i<128;i++) {
           if(cur=="0" || cur=="1") break
           if(!(cur in PP)) { print "unknown"; exit }
@@ -1320,10 +1320,11 @@ mc_sim_device_held() {
           if(U[cur]!=uid) break
           if(index(agents," " cur " ")) {
             exe=C[cur]; sub(/[[:space:]].*$/, "", exe); sub(/^.*\//, "", exe)
-            if(holder && (exe=="claude" || exe=="codex")) { print "held " p; exit }
+            # Both direct agent drivers and MCP-mediated drivers retain the
+            # device. A live owner need not have an intermediate MCP process.
+            if(exe=="claude" || exe=="codex") { print "held " p; exit }
             break
           }
-          if(cur!=p && C[cur] ~ srv) holder=1
           cur=PP[cur]
         }
         if(i==128) { print "unknown"; exit }

@@ -46,13 +46,17 @@ def split_command(command, executable, session_key='', wait=86400):
     return ' '.join(parts)
 
 
-def native_command(argv, cwd):
+def command_decision(argv, cwd):
     from demand_policy import classify
     if len(argv) >= 3 and Path(argv[0]).name in {'bash', 'sh', 'zsh'} and argv[1] in {'-c', '-lc'}:
         command = argv[2]
     else:
         command = shlex.join(argv)
-    return classify(command, cwd).kind == 'light'
+    return classify(command, cwd)
+
+
+def native_command(argv, cwd):
+    return command_decision(argv, cwd).kind == 'light'
 
 
 def staged_script(argv, cwd, executable, session_key='', wait=86400):

@@ -60,6 +60,15 @@ the disabled marker. Re-enable with `enable --service` to start it again.
 
 ## Interpreting a report
 
+- From v0.29, hook classification counts and direct-runner classification counts
+  are separate; adding them would count some commands twice. Successful-job
+  learning coverage excludes nonzero exits from its denominator and leaves
+  missing historical completeness unknown.
+- Storage status reports retained coverage by event type. Diagnostic records have
+  priority under the existing cap, but no event type has unlimited retention.
+  Reports can save a private 30-minute incident bundle (up to 2,000 sanitized
+  events, twenty files, 1 MiB each, seven-day retention). Truncation is explicit;
+  raw commands remain in separately owner-enabled, expiring command tracing.
 - **Job-wait time** sums observed waits. **Queue exposure** unions concurrent wait
   intervals within each boot. Neither is counterfactual developer time saved.
   Completion-path wait remains unknown without dependency evidence.

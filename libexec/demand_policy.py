@@ -216,6 +216,8 @@ class Classifier:
                 pending += functions[node.func.id].body
             name = node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id if isinstance(node.func, ast.Name) else ''
             target = aliases.get(node.func.value.id, '') + '.' + name if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) else aliases.get(name, '')
+            if target in {'unittest.main', 'pytest.main'}:
+                return 'test-script'
             if target in {'subprocess.run', 'subprocess.Popen', 'subprocess.call', 'subprocess.check_call', 'subprocess.check_output', 'os.system', 'os.execv', 'os.execvp', 'os.execvpe'} and node.args:
                 try:
                     value = ast.literal_eval(node.args[0])
@@ -364,8 +366,6 @@ class Classifier:
             if script:
                 if Path(script).name == 'manage.py' and args[args.index(script)+1:args.index(script)+2] == ['test']:
                     return 'python-workload'
-                if Path(script).name.startswith('test_'):
-                    return 'test-script'
                 return self.script(script, cwd, depth, name)
             self.uncertain = True
             return None

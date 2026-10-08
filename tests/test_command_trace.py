@@ -68,7 +68,8 @@ class CommandTraceTests(unittest.TestCase):
         trace.record('command', command='one')
         with patch.object(trace.time, 'time', return_value=trace.deadline(trace.root()) + 1):
             trace.record('command', command='expired')
-        self.assertEqual(len(self.rows()), 1)
+        # The expired writer also retires records older than the 24h retention.
+        self.assertEqual(self.rows(), [])
         self.action('clear')
         trace.record('command', command='after clear')
         self.assertEqual(self.rows(), [])

@@ -4,7 +4,9 @@ Temporary command investigation: `memcap trace on` records shell commands seen b
 the installed hooks plus queue requests, blockers and completion statuses locally.
 It also snapshots identity-checked existing queue supervisors. Capture expires
 after 24 hours; three rotating files retain at most 24 MiB. Old files are pruned
-on the next trace access. `memcap trace show` displays the latest 200 records;
+by the analytics collector or the next trace access. `memcap analytics status`
+shows whether capture is active, expired or off; expiry never renews itself.
+`memcap trace show` displays the latest 200 records;
 `memcap trace show JOB_ID` filters them to one queued job.
 `memcap trace clear` stops capture and deletes them. Logging is best effort and
 never blocks admission on a busy trace lock. Raw trace data is separate from
@@ -20,6 +22,14 @@ startup. Before upgrading, save an immutable local baseline with
 `memcap analytics snapshot ~/memcap-before --days 1`; compare a later snapshot
 using `memcap analytics release-compare ~/memcap-before ~/memcap-after`.
 See [analytics setup, interpretation, and benchmarks](docs/analytics.md).
+
+Since v0.29.0, reports also preserve a bounded private incident bundle when local
+analytics is available: up to 2,000 sanitized decision events from the preceding
+30 minutes, with explicit truncation and coverage. At most twenty compressed
+bundles of at most 1 MiB are retained, for seven days, under memcap's private state
+directory. Raw commands never enter these bundles or public reports. Storage
+pressure preferentially evicts routine hook/API records before diagnostic events;
+per-event coverage remains visible because neither tier is unlimited.
 
 [![CI](https://github.com/alextitov19/memcap/actions/workflows/ci.yml/badge.svg)](https://github.com/alextitov19/memcap/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -541,15 +551,20 @@ probe from the queue sample and include effective reservation totals when known.
 See [the September 24 feedback audit](docs/feedback-2026-09-24.md) for coverage
 and the release's issue dispositions.
 
-Reservations larger than the entire budget fail immediately. Waiting defaults
-to 1,800 seconds, then exits **75** without launching. Notices go to stderr;
+Strict policy rejects a request larger than its entire budget. Adaptive policy
+uses fresh physical capacity and headroom; its planning target is not a hard
+single-request ceiling. Large requests retain their full allowance while waiting.
+Waiting defaults to 86,400 seconds (24 hours), then exits **75** without launching.
+Explicit shorter deadlines remain authoritative. Notices go to stderr;
 the command retains stdin, stdout, stderr and exit status. `--wait-forever` polls
 until admission or cancellation without a queue deadline. Admissions rotate
 between sessions, across finite jobs and persistent resources. A session that
 just started work goes behind other waiting sessions; requests within a session
 keep their enqueue order. A request that does not fit can be passed initially,
-but after 60 seconds at the front of the rotation it holds back new admissions
-while finite jobs are running. This lets a larger request accumulate capacity.
+but after 60 seconds it can hold back new admissions while finite jobs are running.
+Adaptive mode uses bounded drain windows so eligible smaller jobs can still
+progress; when no finite running job can drain, the aged request does not block
+fitting peers. This lets a larger request accumulate capacity.
 At most 64 requests may wait. Rotation history is shared and survives completed
 jobs; older requests without a session key are grouped by project.
 

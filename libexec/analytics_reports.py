@@ -195,6 +195,9 @@ def completion_evidence(jobs):
                 learning_complete=sum(r.get('learning_complete') == 1 for r in ends),
                 learning_incomplete=sum(r.get('learning_complete') == 0 for r in ends),
                 learning_unknown=sum('learning_complete' not in r for r in ends),
+                successful_learning_complete=sum(r.get('exit_code') == 0 and r.get('learning_complete') == 1 for r in ends),
+                successful_learning_incomplete=sum(r.get('exit_code') == 0 and r.get('learning_complete') == 0 for r in ends),
+                successful_learning_unknown=sum(r.get('exit_code') == 0 and 'learning_complete' not in r for r in ends),
                 diagnostics_jobs=sum('learning_samples' in r for r in ends),
                 learning_unverified_scope_jobs=sum(r.get('learning_unverified_scope', 0) for r in ends),
                 diagnostic_samples={key: sum(r.get(key, 0) for r in ends) for key in
@@ -403,9 +406,11 @@ def summarize(rows, health=None, now=None, include_monitoring=False):
         "routes": dict(route_counts),
         "runner_routes": dict(collections.Counter(r.get('route', 'unknown') for r in rows if r['event'] == 'route' and r.get('source') == 'scheduler')),
         "classification": dict(
-            decisions=dict(collections.Counter(r.get('demand', 'unknown') for r in rows if r['event'] == 'classification')),
-            reasons=dict(collections.Counter(r.get('demand_reason', 'unknown') for r in rows if r['event'] == 'classification')),
-            duration_ms=distribution([r['classifier_ms'] for r in rows if r['event'] == 'classification' and 'classifier_ms' in r])),
+            decisions=dict(collections.Counter(r.get('demand', 'unknown') for r in rows if r['event'] == 'classification' and r.get('source') != 'scheduler')),
+            reasons=dict(collections.Counter(r.get('demand_reason', 'unknown') for r in rows if r['event'] == 'classification' and r.get('source') != 'scheduler')),
+            runner_decisions=dict(collections.Counter(r.get('demand', 'unknown') for r in rows if r['event'] == 'classification' and r.get('source') == 'scheduler')),
+            runner_reasons=dict(collections.Counter(r.get('demand_reason', 'unknown') for r in rows if r['event'] == 'classification' and r.get('source') == 'scheduler')),
+            duration_ms=distribution([r['classifier_ms'] for r in rows if r['event'] == 'classification' and r.get('source') != 'scheduler' and 'classifier_ms' in r])),
         "native_memory": dict(
             observed_ends=sum(r['event'] == 'native_memory' for r in rows),
             ends_without_samples=sum(r['event'] == 'native_memory' and not r.get('count') for r in rows),
@@ -507,6 +512,7 @@ def text_report(report):
              f"Queue wait median: {number(report['queue_wait_ms']['median'], ' ms')}; p95: {number(report['queue_wait_ms']['p95'], ' ms')}; n={report['queue_wait_ms']['n']}.",
              f"Completed jobs only: wait median {number(report['completed_evidence']['queue_wait_ms']['median'], ' ms')}; p95 {number(report['completed_evidence']['queue_wait_ms']['p95'], ' ms')}; {report['completed_evidence']['waited_over_10m']} waited over ten minutes.",
              f"Completed-job learning: {report['completed_evidence']['learning_complete']} complete, {report['completed_evidence']['learning_incomplete']} incomplete, {report['completed_evidence']['learning_unknown']} unknown; {report['completed_evidence']['explicit_requests']} fixed requests.",
+             f"Successful-job learning: {report['completed_evidence']['successful_learning_complete']} complete, {report['completed_evidence']['successful_learning_incomplete']} incomplete, {report['completed_evidence']['successful_learning_unknown']} unknown.",
              f"Admissions below startup prior: {number(learning.get('admissions_below_prior'))}; reusable compiler profiles: {number(learning.get('compiler_profile_admissions'))}; known admissions: {learning.get('known_admissions', 0)}.",
              f"Sampling decisions: busy {number(learning.get('sampling_busy_count'))}; expired {number(learning.get('sampling_expired_count'))}; incompatible cache {number(learning.get('sample_cache_mismatch_count'))}.",
              f"Pressure observed: {number(machine['observed_seconds'], ' s')}; red: {number(machine['red_seconds'], ' s')}; yellow: {number(machine['yellow_seconds'], ' s')}.",

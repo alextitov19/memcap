@@ -58,6 +58,21 @@ def deadline(path):
         return 0
 
 
+def status(path=None, now=None):
+    path = root() if path is None else Path(path)
+    now = time.time() if now is None else now
+    if not path.exists():
+        return dict(enabled=False, state='off', expires_at=0, retained_segments=0)
+    try:
+        private_directory(path)
+        until = deadline(path)
+        return dict(enabled=until>now, state='active' if until>now else 'expired' if until else 'off',
+                    expires_at=until, max_bytes=3*SEGMENT_BYTES,
+                    retained_segments=sum((path/name).is_file() and not (path/name).is_symlink() for name in FILES))
+    except (OSError, ValueError):
+        return dict(enabled=False, state='unavailable')
+
+
 def prune(path, now):
     for name in FILES:
         file = path / name
@@ -68,6 +83,19 @@ def prune(path, now):
             pass
 
 
+def maintain(path=None, now=None):
+    """Retire expired records even after capture stops; never renew consent."""
+    path = root() if path is None else Path(path)
+    try:
+        if not path.exists():
+            return
+        private_directory(path)
+        with locked(path):
+            prune(path, time.time() if now is None else now)
+    except (OSError, ValueError):
+        pass
+
+
 def record(event, **fields):
     """Best effort. Never changes permissions, admission, leases or command status."""
     try:
@@ -75,6 +103,7 @@ def record(event, **fields):
         private_directory(path)
         now = time.time()
         if deadline(path) <= now:
+            maintain(path, now)
             return
         row = dict(event=event, at=now, **fields)
         payload = (json.dumps(row, ensure_ascii=True) + '\n').encode()
@@ -180,8 +209,7 @@ def main():
                     pass
             print(''.join(lines), end='')
         else:
-            print(json.dumps(dict(enabled=deadline(path) > time.time(), expires_at=deadline(path),
-                                  directory=str(path), max_bytes=3 * SEGMENT_BYTES)))
+            print(json.dumps({**status(path), 'directory':str(path)}))
     if args.action == 'on':
         snapshot_pending()
 

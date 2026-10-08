@@ -5,6 +5,12 @@ setup() {
   export MC_DRY_RUN=1
 }
 
+@test "BACKLOG: retained incident evidence and bounded sampling handoff" {
+  run python3 "$MEMCAP_ROOT/tests/test_backlog.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" OK
+}
+
 @test "ANALYTICS: passive sampler and hook timing preserves behavior" {
   run python3 "$MEMCAP_ROOT/tests/test_passive_timing.py"
   [ "$status" = 0 ]
