@@ -1846,12 +1846,17 @@ def main():
                  **{k: v for k, v in scheduler.analytics_metadata.items() if k != 'purpose'})
             os.chdir(Path(args.cwd or os.getcwd()).resolve(strict=True))
             os.execvpe(argv[0], argv, os.environ)
-        if args.shell_command is not None and not args.wait_forever and args.wait == WAIT_SECONDS and stable_shell(args.shell, args.login):
+        # Explicit Expo startup gets the same persistent lifetime as a hook
+        # launch. It still reserves memory and is supervised. Do not infer a
+        # persistent lifetime from arbitrary package scripts named start/dev.
+        from scheduler_policy import persistent_shell
+        args.resource = persistent_shell(args.shell_command or shlex.join(argv), expo_only=True)
+        if not args.resource and args.shell_command is not None and not args.wait_forever and args.wait == WAIT_SECONDS and stable_shell(args.shell, args.login):
             staged = split_command(args.shell_command, str(ROOT / 'bin/memcap'), args.session_key, args.wait)
             if staged:
                 os.chdir(Path(args.cwd or os.getcwd()).resolve(strict=True))
                 os.execvpe(args.shell, [args.shell, '-lc' if args.login else '-c', staged], os.environ)
-        if args.shell_command is None and not args.wait_forever and args.wait == WAIT_SECONDS:
+        if not args.resource and args.shell_command is None and not args.wait_forever and args.wait == WAIT_SECONDS:
             staged = staged_script(argv, args.cwd, str(ROOT / 'bin/memcap'), args.session_key, args.wait)
             if staged:
                 os.chdir(Path(args.cwd or os.getcwd()).resolve(strict=True))

@@ -763,7 +763,7 @@ def classification_code(command):
     return 2  # other unsupported command/options
 
 
-def persistent_shell(command):
+def persistent_shell(command, expo_only=False):
     """One known persistent command with literal cd/env/redirection wrappers.
 
     It still goes through admission; only finite-job completion waits exclude it.
@@ -804,7 +804,9 @@ def persistent_shell(command):
     if not all(len(s) == 2 and s[0] == "cd" for s in segments[:-1]):
         return ""
     words = segments[-1]
-    while words and re.fullmatch(r"(?:PORT|HOST|NODE_ENV)=[A-Za-z0-9_.:-]+", words[0]):
+    if words[:1] == ['env']:
+        words = words[1:]
+    while words and re.fullmatch(r"(?:PORT|HOST|NODE_ENV|EXPO_[A-Za-z0-9_]+)=[A-Za-z0-9_./:-]+", words[0]):
         words = words[1:]
     if words[:1] == ["exec"]:
         words = words[1:]
@@ -823,6 +825,16 @@ def persistent_shell(command):
             return ""
     name = Path(words[0]).name
     args = words[1:]
+    if name in {'pnpm', 'npm', 'yarn'} and args[:1] == ['exec']:
+        words = args[1:]
+    elif name == 'npx' and args and not args[0].startswith('-'):
+        words = args
+    if words and Path(words[0]).name == 'expo':
+        own_args = words[2:words.index('--')] if '--' in words else words[2:]
+        return ('shell:' + text if words[1:2] == ['start']
+                and not any(a in {'--help', '-h', '--version'} for a in own_args) else '')
+    if expo_only:
+        return ''
     if re.fullmatch(r"python(?:3(?:\.[0-9]+)?)?", name):
         if "--help" in args or "-h" in args:
             return ""
@@ -906,6 +918,11 @@ def worker_argv(argv: list[str], cwd: Path, workers: int) -> list[str]:
     if not argv:
         return argv
     name = Path(argv[0]).name
+    if name == 'expo' and argv[1:2] == ['start']:
+        own_args = argv[2:argv.index('--')] if '--' in argv else argv[2:]
+        if any(a in {'--help', '-h', '--version'} for a in own_args):
+            return argv
+        return cap_flags(argv, ('--max-workers',), '--max-workers', workers)
     if name in {"vitest", "jest"}:
         if name == 'jest':
             options = argv[1:argv.index('--')] if '--' in argv else argv[1:]
@@ -1059,7 +1076,12 @@ def hook_response(payload: dict, executable: str, agent: str = "codex", observat
                 "permissionDecisionReason": POLL_GUIDANCE,
             }
         }
-    cwd = original.get("workdir") or original.get("cwd") or payload.get("cwd")
+    requested_cwd = original.get("workdir") or original.get("cwd")
+    cwd = requested_cwd or payload.get("cwd")
+    # Codex's Bash-compatible hook can expose the session directory while the
+    # actual exec tool runs in a requested subdirectory. Inherit that directory
+    # at execution unless the hook carries an explicit tool-level workdir.
+    execution_cwd = requested_cwd if agent == 'codex' else cwd
     from demand_policy import classify
     import time
     started = time.monotonic()
@@ -1148,11 +1170,21 @@ def hook_response(payload: dict, executable: str, agent: str = "codex", observat
         observable_shell = (isinstance(native_shell, str) and native_shell in {'/bin/bash', '/bin/sh', '/bin/dash'}
                             and not original.get("login", agent == "codex")
                             and not any(os.environ.get(k) for k in ('BASH_ENV', 'ENV')))
+        # Claude's isolated-agent guard must see the original native command:
+        # an opaque shell observer can make ordinary reads fail its git/worktree
+        # check. Forgo optional unknown-demand telemetry in this scope only;
+        # positive heavy evidence and learned promotions still reach admission.
+        cwd_parts = Path(cwd).parts if isinstance(cwd, str) else ()
+        isolated_claude = agent == "claude" and (
+            bool(payload.get("agent_id"))
+            or any(cwd_parts[i:i + 2] == ('.claude', 'worktrees')
+                   for i in range(len(cwd_parts) - 1)))
         # Ordinary calls stay byte-for-byte native. Unfamiliar calls can be
         # observed by an exec-only shim; never reserve memory or force background.
         # A Codex host requiring a permission rewrite keeps its original request.
         if (kind == "light" and not already_wrapped and decision.confidence == "unknown"
                 and (agent != "codex" or payload.get("permission_mode") == "bypassPermissions")
+                and not isolated_claude
                 and observable_shell and available()):
             shell = original.get("shell") or (os.environ.get("SHELL", "/bin/bash") if agent == "codex" else "/bin/bash")
             if not isinstance(shell, str) or not Path(shell).is_absolute():
@@ -1161,8 +1193,8 @@ def hook_response(payload: dict, executable: str, agent: str = "codex", observat
                     "--session-key", session_key, "--shell", shell]
             if original.get("login", agent == "codex"):
                 args.append("--login")
-            if isinstance(cwd, str):
-                args += ["--cwd", cwd]
+            if isinstance(execution_cwd, str):
+                args += ["--cwd", execution_cwd]
             args += ["--shell-command", command]
             updated = {**original, "command": shlex.join(args)}
             updated.pop("cmd", None)
@@ -1180,8 +1212,8 @@ def hook_response(payload: dict, executable: str, agent: str = "codex", observat
         args.append("--login")
     if resource:
         args += ["--resource", resource]
-    if isinstance(cwd, str):
-        args += ["--cwd", cwd]
+    if isinstance(execution_cwd, str):
+        args += ["--cwd", execution_cwd]
     args += ["--wait", str(WAIT_SECONDS)]
     if isinstance(payload.get("session_id"), str) and payload["session_id"]:
         args += [

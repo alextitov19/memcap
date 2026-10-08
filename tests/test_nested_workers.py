@@ -117,6 +117,17 @@ class NestedWorkers(unittest.TestCase):
         result = subprocess.run(['node', str(file)], env=self.env, capture_output=True, text=True, timeout=10)
         self.assertEqual((result.returncode, result.stdout), (0, '[]\n'))
 
+    def test_expo_entrypoint_limits_startup_only(self):
+        file = self.cli('expo', 'bin/cli')
+        self.assertEqual(self.execute(file, ['start', '--clear'], workers=2),
+                         ['start', '--clear', '--max-workers=2'])
+        self.assertEqual(self.execute(file, ['start', '--max-workers', '1']),
+                         ['start', '--max-workers=1'])
+        for args in [['config', '--json'], ['start', '--help'], ['--version']]:
+            self.assertEqual(self.execute(file, args), args)
+        helper = self.cli('ordinary-app', 'bin/cli')
+        self.assertEqual(self.execute(helper, ['start']), ['start'])
+
     def test_low_headroom_launch_bounds_actual_nested_workers(self):
         from scheduler import Scheduler
         file = self.cli()

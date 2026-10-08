@@ -21,6 +21,8 @@ function runner() {
       if ((name === 'jest' || name === 'jest-cli') && entry === 'bin/jest.js') return 'jest';
       if (name === 'vitest' && entry === 'vitest.mjs') return 'vitest';
       if (['playwright', '@playwright/test'].includes(name) && entry === 'cli.js') return 'playwright';
+      if (name === 'expo' && entry === 'bin/cli') return 'expo';
+      if (name === '@expo/cli' && entry === 'build/bin/cli') return 'expo';
       return null; // Do not attribute a nested package's entrypoint to its parent.
     } catch (error) {
       if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') return null;
@@ -88,10 +90,11 @@ function apply() {
     if (serial) return;
   }
   if (kind === 'playwright' && args[0] !== 'test') return;
+  if (kind === 'expo' && (args[0] !== 'start' || options.some(arg => ['--help', '-h', '--version'].includes(arg)))) return;
   const flags = kind === 'playwright' ? ['--workers', '-j'] :
-    kind === 'jest' ? ['--maxWorkers', '--max-workers', '-w'] : ['--maxWorkers', '--max-workers'];
+    kind === 'expo' ? ['--max-workers'] : kind === 'jest' ? ['--maxWorkers', '--max-workers', '-w'] : ['--maxWorkers', '--max-workers'];
   let result = cap(args, flags,
-                   kind === 'playwright' ? '--workers' : '--maxWorkers', Number(raw));
+                   kind === 'playwright' ? '--workers' : kind === 'expo' ? '--max-workers' : '--maxWorkers', Number(raw));
   if (!result) return;
   if (kind === 'vitest' && options.some(arg => ['--minWorkers', '--min-workers'].some(flag => arg === flag || arg.startsWith(`${flag}=`)))) {
     result = cap(result.args, ['--minWorkers', '--min-workers'], '--minWorkers', result.limit);

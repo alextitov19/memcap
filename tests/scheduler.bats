@@ -2,6 +2,12 @@
 # shellcheck disable=SC2034,SC2329
 load helper
 
+@test "QUEUE: October 8 incident regressions" {
+  run python3 "$MEMCAP_ROOT/tests/test_v030_incidents.py"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" OK
+}
+
 @test "QUEUE: remaining open issue reproductions" {
   run python3 "$MEMCAP_ROOT/tests/test_open_issues.py"
   [ "$status" -eq 0 ]

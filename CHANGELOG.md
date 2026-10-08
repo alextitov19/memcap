@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.30.0 — 2026-10-08
+
+- Keep Xcode's version-only query native, including in compound inspections and
+  through xcrun; actual builds and executable substitutions retain admission.
+- Keep shell executable lookups native instead of treating the named tool as
+  a workload launch. Real launches and nested builds still require admission.
+- Preserve original lightweight commands in isolated Claude agents so optional
+  passive observation does not obstruct the host's worktree guard. Unknown-call
+  telemetry is omitted there; heavy classification and admission are unchanged.
+- Preserve Codex's tool execution directory when its Bash-compatible hook only
+  exposes the session directory. Explicit tool workdirs remain authoritative.
+- Stop queue feedback from manufacturing lightweight/polling incidents after
+  completed builds and tests. Real inspection delays still require reports.
+  Handle lane-labelled pending messages without an extra memory probe and use
+  the final tool status instead of waiting again on completed work.
+- Admit known Expo startup/build operations and limit Metro startup workers,
+  preserving smaller explicit limits. Track known persistent Expo servers in explicit
+  runners as well as hook launches so finite completion waits can finish.
+- Keep memory budgets, headroom, pressure gates and termination rules unchanged.
+  Existing servers and supervisors are not restarted or adopted.
+
 ## v0.29.0 — 2026-10-07
 
 - Preserve diagnostic events ahead of routine hook/API volume under the existing

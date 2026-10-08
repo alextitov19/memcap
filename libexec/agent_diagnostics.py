@@ -308,7 +308,7 @@ def guidance(payload, state, refresh=False, brief=False):
         not mobile
         and not MEMORY.search(text)
         and re.search(
-            r"^memcap: (?:queued [a-f0-9]+:|admitted [a-f0-9]+; command started)",
+            r"^memcap: (?:queued [a-f0-9]+(?: \((?:heavy|small) lane\))?:|admitted [a-f0-9]+; command started)",
             text,
             re.M,
         )
@@ -320,21 +320,20 @@ def guidance(payload, state, refresh=False, brief=False):
     ):
         if brief:
             return (
-                "Queue transition, not final task status. Use the existing task's blocking wait up to 60 seconds; "
-                "read final output/exit status. MUST report delayed inspection once with memcap report lightweight-queued "
-                "and excessive polling once with memcap report polling-overhead; reuse existing incident URLs. "
-                "Existing protection guidance still applies; do not duplicate work or bypass memcap."
+                "Queue messages describe admission history. If the tool provides a final exit status, use it; do not wait again. "
+                "Otherwise, while pending, block on the existing task up to 60 seconds. "
+                "Only if inspection was actually delayed, MUST report once with memcap report lightweight-queued, even if it succeeded. "
+                "Only if polling was excessive, report once with memcap report polling-overhead. "
+                "A heavy admission wait alone proves neither. Reuse incident URLs; do not duplicate work or bypass memcap."
             )
         return (
-            "Memcap reported a queue transition, not a workload result. Await native completion "
-            "notifications without polling when supported; otherwise use one blocking wait up to "
-            "60 seconds on the existing task. Read final output/status before dependent work. "
-            "If Stop has blocked ending the turn, use that blocking wait instead of trying to finish for a notification. "
-            "You MUST report a delayed inspection once with memcap report lightweight-queued, "
-            "even if it succeeded; report excessive polling once with memcap report polling-overhead. "
-            "Reuse existing incident URLs; do not duplicate reports or jobs. "
-            "Capacity waiting for genuinely heavy work alone is not a defect. "
-            "Do not use memcap off to unblock work. " + PROTECTION_GUIDANCE
+            "Queue messages are admission history. Use the tool's final exit status if present; do not wait again. "
+            "While pending, await native completion without polling when supported; otherwise block on the existing "
+            "task up to 60 seconds. A blocked Stop hook requires that blocking wait. Read final output/status. "
+            "Only if inspection was actually delayed, MUST report once with memcap report lightweight-queued, even if it succeeded. "
+            "Only if polling was excessive, report once with memcap report polling-overhead. "
+            "Capacity waiting for genuinely heavy work alone is not a defect; never label it a delayed search/read. "
+            "Reuse incident URLs; do not duplicate reports or jobs. Do not use memcap off. " + PROTECTION_GUIDANCE
         )
     lines = [
         "memcap diagnostic context at "

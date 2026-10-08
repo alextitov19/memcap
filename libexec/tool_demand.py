@@ -114,6 +114,12 @@ def just_task(worker, cwd, name, depth, filename=None):
 def inspect_tool(worker, name, args, cwd, depth):
     """Return (handled, positive evidence); None alone never certifies low demand."""
     own_args = args[:args.index('--')] if '--' in args else args
+    if name == 'xcodebuild' and args == ['-version']:
+        return True, None
+    if name == 'expo':
+        if any(arg in {'--help', '-h', '--version'} for arg in own_args):
+            return True, None
+        return True, 'known-workload' if args[:1] in (['start'], ['export'], ['run:ios'], ['run:android'], ['prebuild']) else None
     if name in {'gotestsum', 'staticcheck', 'deadcode', 'vhs', 'air', 'trivy', 'k6',
                 'whisper-cli', 'whisper-server', 'fastlane', 'pod', 'sqlc', 'eas'}:
         if any(arg in {'--help', '-h', '--version'} for arg in own_args):
