@@ -248,6 +248,14 @@ class Classifier:
         name, args = Path(words[0]).name, words[1:]
         if words[0] in self.functions:
             return self.shell(self.functions[words[0]], cwd, depth + 1)
+        if name == 'command':
+            # -v/-V look up names; they do not execute the following program.
+            # Shell substitutions have already been inspected by shell().
+            for option in args:
+                if not re.fullmatch(r'-[pvV]+', option):
+                    break
+                if 'v' in option or 'V' in option:
+                    return None
         if name in {'env', 'command', 'exec', 'nohup', 'time', 'nice', 'sudo'}:
             if name == 'env' and args[:1] in (['-S'], ['--split-string']) and len(args) > 1:
                 try:
