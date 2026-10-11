@@ -27,7 +27,7 @@ mc_job_feedback() {
       message:("memcap requested termination of oversized agent job PID " + $pid +
         " (agent PID " + $owner + "): " + (($kb|tonumber)/1048576|tostring) +
         " GB footprint exceeds the " + $limit + " GB per-process limit. Command identity: " + $command +
-        ". Split the workload into smaller batches or test files, reduce parallel workers, and investigate unbounded allocation. Do not retry the identical job or increase/disable the cap to get around this. Exit 137/143 may be memcap, not a Docker OOM. This notice is shared with agents working in this project; it may refer to another session.")}') || return 1
+        ". Split the workload into smaller batches or test files, reduce parallel workers, and investigate unbounded allocation. A single TypeScript compiler is not reduced by a worker-count setting: inspect its effective tsconfig includes, generated files, and project references; use incremental/project checks where valid. Increasing Node heap is not a fix for a physical-footprint limit. Waiting for green pressure does not change this per-process limit. Do not retry the identical job or increase/disable the cap to get around this. If the workload cannot fit, report its measured requirement to the owner instead of repeating the failed launch. Exit 137/143 may be memcap, not a Docker OOM. This notice is shared with agents working in this project; it may refer to another session.")}') || return 1
   mc_state_write "$dir/$MC_JOB_PID.json" "$body" || return 1
   mc_feedback_trim "$dir"
 }

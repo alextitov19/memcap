@@ -215,7 +215,28 @@ def learning_effectiveness(jobs, rows):
     sampled = [j['completed'] for j in jobs if 'sampling_decisions' in j.get('completed', {})
                and 'sampling_busy_count' in j['completed']]
     decisions = sum(r['sampling_decisions'] for r in sampled)
+    outcomes = collections.Counter()
+    for row in completions:
+        if row.get('learning_complete') == 1:
+            outcomes['complete'] += 1
+        elif row.get('exit_code') != 0:
+            outcomes['unsuccessful_or_unknown_exit'] += 1
+        elif row.get('observation_fault',0) or row.get('learning_fault_samples',0):
+            outcomes['probe_fault'] += 1
+        elif row.get('learning_unverified_scope'):
+            outcomes['unverified_scope'] += 1
+        elif row.get('learning_samples') == 0 and row.get('runtime_ms',float('inf')) < 1000:
+            outcomes['short_without_samples'] += 1
+        elif row.get('observation_gap',0):
+            outcomes['observation_gap'] += 1
+        elif row.get('learning_missing_samples',0) or row.get('observation_refresh',0):
+            outcomes['missing_process_observations'] += 1
+        else:
+            outcomes['other_incomplete'] += 1
     return dict(known_admissions=len(admissions),
+                observation_outcomes={key:outcomes[key] for key in ('complete', 'unsuccessful_or_unknown_exit',
+                    'probe_fault', 'unverified_scope', 'short_without_samples', 'observation_gap',
+                    'missing_process_observations', 'other_incomplete')},
                 sampling_decisions=decisions if sampled else None,
                 sampling_busy_fraction=sum(r['sampling_busy_count'] for r in sampled)/decisions if decisions else None,
                 sampling_handoff_count=count('sampling_handoff_count'),
@@ -275,6 +296,8 @@ def summarize(rows, health=None, now=None, include_monitoring=False):
             if admission and admission.get("boot") != "0" * 32:
                 exposures[admission["boot"]].append((admission["mono"] - wait / 1000, admission["mono"]))
             worst.append(dict(job=job["job"], wait_ms=wait, runtime_ms=runtime,
+                              blocker_observed_ms={key[len('blocked_'):-3]:value for key,value in
+                                  (end or admission).items() if key.startswith('blocked_') and key.endswith('_ms')},
                               family=admission.get("family", "unknown"), outcome=end.get("event") if end else "unfinished"))
         if runtime is not None:
             runtimes.append(runtime)
@@ -359,6 +382,10 @@ def summarize(rows, health=None, now=None, include_monitoring=False):
                         if r['event'] == 'hook' and r.get('phase') in {'PostToolUse', 'PostToolUseFailure'}
                         and (r.get('session'), r.get('operation')) in native_operations]
     return {
+        "cancellations": dict(requests=sum(r.get('cancellation_stage') == 1 for r in rows if r['event']=='cancellation'),
+                              guarded_attempts_refused=sum(r.get('cancellation_stage') == 2 for r in rows if r['event']=='cancellation'),
+                              guarded_attempts_succeeded=sum(r.get('cancellation_stage') == 3 for r in rows if r['event']=='cancellation'),
+                              interpretation='Supervisor-received signals and guarded cancellation results; sender and host timeout/user intent are unknown unless supplied by the host. A guarded result is not a workload exit.'),
         "jobs": dict(counts), "queue_wait_ms": distribution(waits), "runtime_ms": distribution(runtimes),
         "completed_evidence": completion_evidence(jobs),
         "timing": timing_evidence(jobs),

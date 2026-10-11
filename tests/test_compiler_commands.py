@@ -84,6 +84,19 @@ class CompilerCommandTests(unittest.TestCase):
         (self.app/'.npmrc').write_text('script-shell=custom\n')
         self.assertIsNone(self.profile(argv))
 
+    def test_node_typescript_js_entrypoint_changes_invalidate_profile(self):
+        package=self.app/'node_modules'/'typescript'
+        (package/'bin').mkdir(parents=True);(package/'lib').mkdir()
+        compiler=package/'bin'/'tsc';compiler.write_text('compiler launcher')
+        script=package/'lib'/'tsc.js';script.write_text('first compiler implementation')
+        (package/'package.json').write_text('{"name":"typescript"}')
+        local=self.app/'node_modules'/'.bin'/'tsc';local.parent.mkdir();local.symlink_to(compiler)
+        argv=['/bin/sh','-c','cd app && node node_modules/typescript/lib/tsc.js --noEmit']
+        first=self.profile(argv)
+        self.assertIsNotNone(first)
+        script.write_text('changed compiler implementation, unchanged launcher')
+        self.assertNotEqual(first['key'],self.profile(argv)['key'])
+
     def test_explicit_package_manager_identity_uses_invoked_executable(self):
         self.package({'typecheck':'tsc --noEmit'})
         installed=self.root/'other'/'bin';installed.mkdir(parents=True)
@@ -102,6 +115,43 @@ class CompilerCommandTests(unittest.TestCase):
         diagnostics={}
         compiler_profile(['/bin/sh','-lc','go build .'],self.root,1,{},diagnostics=diagnostics)
         self.assertEqual(diagnostics['reason'],2)
+
+    def test_direct_node_local_typescript_records_runtime_identity(self):
+        package=self.app/'node_modules'/'typescript'
+        (package/'bin').mkdir(parents=True)
+        compiler=package/'bin'/'tsc';compiler.write_text('compiler fixture')
+        (package/'package.json').write_text('{"name":"typescript"}')
+        local=self.app/'node_modules'/'.bin'/'tsc';local.parent.mkdir()
+        local.symlink_to(compiler)
+        argv=['/bin/sh','-c','cd app && node node_modules/.bin/tsc --noEmit']
+        first=self.profile(argv)
+        self.assertIsNotNone(first)
+        self.tool.write_text('changed Node runtime')
+        self.assertNotEqual(first['key'],self.profile(argv)['key'])
+        for text in ['cd app && node --require preload.js node_modules/.bin/tsc --noEmit',
+                     'cd app && node custom.js',
+                     'cd app && node node_modules/.bin/tsc --noEmit; node heavy.js']:
+            self.assertIsNone(self.profile(['/bin/sh','-c',text]))
+        self.assertIsNone(self.profile(argv,{'NODE_OPTIONS':'--require custom.js'}))
+
+    def test_node_local_compiler_learns_repeated_complete_runs_only(self):
+        from compiler_profiles import predict, record_profile
+        package=self.app/'node_modules'/'typescript'
+        (package/'bin').mkdir(parents=True)
+        compiler=package/'bin'/'tsc';compiler.write_text('compiler fixture')
+        (package/'package.json').write_text('{"name":"typescript"}')
+        local=self.app/'node_modules'/'.bin'/'tsc';local.parent.mkdir();local.symlink_to(compiler)
+        profile=self.profile(['/bin/sh','-c','cd app && node node_modules/.bin/tsc --noEmit'])
+        self.assertIsNotNone(profile)
+        history={}
+        for at in [10,20,30]:
+            record_profile(history,profile,300000,False,at)
+        self.assertNotEqual(predict(history,profile,1048576,31)[1],1)
+        for at in [40,50,60]:
+            record_profile(history,profile,300000,True,at)
+        prediction,reason=predict(history,profile,1048576,61)
+        self.assertEqual(reason,1)
+        self.assertEqual(prediction,524288)
 
 
 if __name__=='__main__':unittest.main()

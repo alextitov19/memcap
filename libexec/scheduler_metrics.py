@@ -15,8 +15,9 @@ from functools import lru_cache
 from job_timing import FIELDS as TIMING_FIELDS
 
 BLOCKERS = ("unknown", "budget", "headroom", "slots", "pressure_or_measurement", "measurement", "fairness", "startup", "stabilizing", "paging", "sampling")
-EVENTS = {"sample", "sampling", "queued", "admitted", "completed", "cancelled", "stalled", "reservation"}
+EVENTS = {"sample", "sampling", "queued", "admitted", "completed", "cancelled", "stalled", "reservation", "cancellation"}
 FIELDS = {
+    'cancellation_signal', 'cancellation_stage',
     'sampling_path', 'sample_call_ms', 'sample_ready_age_ms', 'sampler_retry_ms',
     'sampler_ready_to_retry_ms',
     'sampling_decisions', 'sampling_handoff_count', 'sampling_handoff_ms',
@@ -113,6 +114,15 @@ def completion_fields(result, cancelled=0):
         signal=-result if result < 0 else 0,
         completion_kind=3 if cancelled else (2 if result < 0 else 1),
     )
+
+
+def cancellation_fields(received_signal, stage):
+    """1=request received, 2=guard refused, 3=guard succeeded; sender unknown.
+
+    A successful guarded cancellation is not a workload exit observation.
+    These fields never authorize a signal or release a reservation.
+    """
+    return dict(cancellation_signal=received_signal, cancellation_stage=stage)
 
 
 def number(value):

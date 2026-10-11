@@ -1,5 +1,40 @@
 # memcap
 
+### v0.31 incident diagnostics
+
+Android emulator listings (`emulator -list-avds`) stay native; real boots still
+require admission. Heavy hook feedback names the positive demand evidence and
+explains compound commands. An explicit `memcap wait; cat ...` waits for earlier
+work before reading; use a separate call for independent inspection.
+
+Cancellation telemetry records the signal received by the supervisor and whether
+guarded cancellation succeeded. Scheduled signal records share its opaque job
+identity. This does not identify the signal sender or prove a user cancellation,
+host timeout, or final workload exit. Existing signal/ownership checks are intact.
+
+Reports accept `--operation TOOL_CALL_ID` when the original host ID is available.
+It selects private local evidence only; neither that ID nor commands are published.
+Incident bundles prioritize matching decisions and lifecycle events over sample
+volume, and explicitly mark truncation. Raw tracing still requires owner opt-in.
+Compact lifecycle and termination checkpoints retain up to 90 days, bounded by
+4,096 jobs and 4,096 diagnostic events and the existing database size limit.
+Release comparisons now include matching-workload cohorts, and long-wait examples
+include observed blocker durations. These are observations, not causal claims.
+
+Direct local `node node_modules/.bin/tsc` invocations can learn a reusable compiler
+profile when their configuration is supported; arbitrary JS/preloads remain
+unsupported. Incomplete measurements cannot lower predictions. Learning reports
+separate short runs without samples, probe faults, missing process observations
+and complete runs. Sample-unavailability retries use a bounded shorter backoff;
+the two-second freshness limit and final pressure check are unchanged.
+
+The configured per-process oversized limit still applies in green pressure. A
+single TypeScript checker is not made smaller by limiting parallel workers. After
+an oversized termination, inspect its effective project inputs and generated
+sources, use incremental/project checks when valid, and report the measured need
+if it cannot fit. Do not repeat the identical failing launch or raise Node's heap
+to evade the footprint limit. This release changes no owner limits or kill eligibility.
+
 Temporary command investigation: `memcap trace on` records shell commands seen by
 the installed hooks plus queue requests, blockers and completion statuses locally.
 It also snapshots identity-checked existing queue supervisors. Capture expires

@@ -116,6 +116,8 @@ def inspect_tool(worker, name, args, cwd, depth):
     own_args = args[:args.index('--')] if '--' in args else args
     if name == 'xcodebuild' and args == ['-version']:
         return True, None
+    if name == 'emulator' and args == ['-list-avds']:
+        return True, None
     if name == 'expo':
         if any(arg in {'--help', '-h', '--version'} for arg in own_args):
             return True, None

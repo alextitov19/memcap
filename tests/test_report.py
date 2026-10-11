@@ -104,6 +104,19 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(self.github.gets, 0)
         self.assertEqual(Path(result["draft"]).stat().st_mode & 0o777, 0o600)
 
+    def test_operation_selection_is_local_only_and_not_a_dedup_dimension(self):
+        self.reporter.consent(True)
+        with patch('incident_evidence.capture', return_value='/private/fixture') as capture:
+            first=self.reporter.report('lightweight-queued', operation='tool_private_id')
+            self.assertEqual(capture.call_args.kwargs['operation'],'tool_private_id')
+            second=self.reporter.report('lightweight-queued', operation='different_private_id')
+        self.assertEqual(first['status'],'published')
+        self.assertEqual(second['status'],'deduplicated')
+        self.assertNotIn('tool_private_id',self.github.issues[0]['body'])
+        self.assertNotIn('different_private_id',Path(second['draft']).read_text())
+        with self.assertRaises(ValueError):
+            self.reporter.report('lightweight-queued', operation='raw command /private')
+
     def test_opt_in_publishes_once_and_other_install_contributes_once(self):
         self.reporter.consent(True)
         first = self.reporter.report("queue-lock")

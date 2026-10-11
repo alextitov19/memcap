@@ -291,6 +291,17 @@ def guidance(payload, state, refresh=False, brief=False):
             if isinstance(request, dict)
             else ""
         )
+        from session_identity import scope_waits
+        from demand_policy import classify
+        if (command and 'memcap' in command and 'wait' in command
+                and scope_waits(command, 'memcap', 'diagnostic') is not None
+                and classify(command, payload.get('cwd')).kind == 'light'):
+            return (
+                'This command contains an explicit wait for previously submitted work. '
+                'The elapsed wait does not establish that its following file read was queued. '
+                'Use a separate tool call for independent reads or edits; a read after the wait runs only when it returns. '
+                'Read the original workload result and exit status. Report any independently observed inspection delay.'
+            )
         actual_queue_notice = any(
             line.startswith("memcap: ") and QUEUE.search(line)
             for line in text.splitlines()

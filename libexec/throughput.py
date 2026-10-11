@@ -21,6 +21,15 @@ def wait_summary(ident, jobs, now):
             + "Read original task output for workload progress and final exit status.")
 
 
+def admission_retry_delay(poll, admission):
+    """Retry a sampler handoff promptly, outside the registry lock.
+
+    This never extends sample freshness or changes capacity/pressure backoff.
+    The shared sampler still elects one probe; other waiters reuse its result.
+    """
+    return min(poll, .5) if admission.get('reason') == 'sampling' else poll
+
+
 def fixed_learning_scope(argv, resource=False):
     """Only direct compiler invocations have a known local memory boundary.
 

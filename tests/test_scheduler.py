@@ -342,6 +342,17 @@ class SchedulerTests(unittest.TestCase):
         self.assertFalse(marker.exists())
         self.assertEqual(q.status(), [])
 
+    def test_received_signal_provenance_is_retained_without_claiming_sender(self):
+        q = self.queue()
+        q.handle_signal(15, None)
+        q.record_cancellation('abcdef1234567890', 1)
+        events = [json.loads(line) for line in (q.directory/'events.jsonl').read_text().splitlines()]
+        self.assertEqual(events[-1]['event'], 'cancellation')
+        self.assertEqual(events[-1]['cancellation_signal'], 15)
+        self.assertEqual(events[-1]['cancellation_stage'], 1)
+        self.assertNotIn('exit_code', events[-1])
+        self.assertNotIn('sender', events[-1])
+
     def test_nested_lease_needs_actual_process_ancestry(self):
         q = self.queue()
         table = {
