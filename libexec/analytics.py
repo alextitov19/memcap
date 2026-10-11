@@ -126,6 +126,7 @@ def main(argv=None):
     p.add_argument("result", type=int)
     p.add_argument("count", type=int)
     p.add_argument("identity")
+    p.add_argument('--job-ref', type=int)
     p = sub.add_parser("benchmark")
     p.add_argument("--repetitions", type=int, default=10)
     p.add_argument("--output", type=Path, required=True)
@@ -145,7 +146,9 @@ def main(argv=None):
         return 0
     if args.action == "_signal":
         emit("action", source="enforcement", scope=args.scope, signal=args.signal,
-             signal_result=args.result, target_count=args.count, action=args.identity)
+             signal_result=args.result, target_count=args.count, action=args.identity,
+             **({'job':str(args.job_ref)} if args.scope=='scheduled' and args.job_ref is not None
+                 and 0<=args.job_ref<2**52 else {}))
         return 0
     if args.action == "_collect":
         from analytics_collector import collect

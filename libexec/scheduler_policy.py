@@ -1239,6 +1239,8 @@ def hook_response(payload: dict, executable: str, agent: str = "codex", observat
         from report import PERFORMANCE_GUIDANCE
 
         context = (
+            f"memcap found positive heavyweight evidence ({decision.reason}) in this shell command. "
+            "A compound command can include lightweight edits/reads and heavy execution; use separate tool calls for independent inspection. "
             "memcap keeps this task queued until memory is available, then starts it automatically. "
             "Await native completion notifications without polling when supported. Otherwise use TaskOutput with block=true and timeout=60000 for one blocking wait of up to 60 seconds. If TaskOutput is unavailable, use memcap wait JOB_ID --timeout 60 with the existing ID from memcap queue; it creates no job or reservation. Repeat once per minute while pending; do not repeatedly read output files or emit holding messages. "
             "If Stop has blocked ending the turn, use that blocking wait instead of trying to finish for a notification. "

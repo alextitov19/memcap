@@ -62,6 +62,35 @@ def resolve(argv, cwd, env, diagnostics, lookup):
         if not argv:
             return reject(1)
         name = Path(argv[0]).name
+        if name == 'node':
+            # Observe only a direct local TypeScript entrypoint. Arbitrary JS,
+            # preloads and Node execution flags do not establish compiler scope.
+            if len(argv) < 2 or argv[1].startswith('-') or env.get('NODE_OPTIONS'):
+                return reject(3)
+            package = cwd/'node_modules'/'typescript'
+            script = (cwd/argv[1]).resolve(strict=True)
+            if (not package.is_dir() or package.is_symlink()
+                    or script not in {(package/'bin'/'tsc').resolve(), (package/'lib'/'tsc.js').resolve()}
+                    or not script.is_file()):
+                return reject(4)
+            runtime = Path(lookup(argv[0], path=env.get('PATH')) or argv[0]).resolve(strict=True)
+            info = runtime.stat()
+            wrappers['node'] = [str(runtime), info.st_size, info.st_mtime_ns]
+            manifest = package/'package.json'
+            if manifest.is_symlink() or manifest.stat().st_size > 65536:
+                return reject(4)
+            raw = manifest.read_bytes()
+            if json.loads(raw).get('name') != 'typescript':
+                return reject(4)
+            wrappers['typescript_package'] = hashlib.sha256(raw).hexdigest()
+            entry_info = script.stat()
+            wrappers['typescript_entrypoint'] = [str(script), entry_info.st_size, entry_info.st_mtime_ns]
+            # Use the same project-local executable identity as a direct tsc.
+            local = cwd/'node_modules'/'.bin'/'tsc'
+            if not local.is_file() or local.resolve() != (package/'bin'/'tsc').resolve():
+                return reject(4)
+            argv = [str(local)] + argv[2:]
+            name = 'tsc'
         if name == 'go' and len(argv)>3 and argv[1]=='-C':
             cwd = (cwd/argv[2]).resolve(strict=True)
             argv = [argv[0]]+argv[3:]

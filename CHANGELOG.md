@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.31.0 — 2026-10-10
+
+- Keep exact Android emulator listings native; actual emulator launches remain managed.
+- Explain positive heavyweight classification in compound commands and distinguish
+  explicit completion waits from independent inspection delays.
+- Record supervisor cancellation signals and guarded attempt outcomes without
+  inferring the sender, workload exit, or new cancellation authority.
+- Preserve bounded action and job checkpoints for up to 90 days, prioritize rare
+  incident evidence, and allow private tool-call selection in incident reports.
+- Include observed finite-slot occupants and blocker durations in diagnostics;
+  retry sampling-only admission handoffs within 500 ms without relaxing freshness.
+- Support bounded local Node/TypeScript compiler prediction and explain incomplete
+  learning. Give single-process compiler recovery guidance without raising limits.
+- Add matched-workload comparisons to immutable release analytics. Historical
+  cancellation provenance remains unknown where the host supplied no evidence.
+- Preserve memory, concurrency, pressure and termination policies.
+
 ## v0.30.0 — 2026-10-08
 
 - Keep Xcode's version-only query native, including in compound inspections and

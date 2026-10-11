@@ -9,7 +9,7 @@ import tempfile
 import time
 
 from analytics_events import sanitize
-from analytics_reports import summarize
+from analytics_reports import summarize, compare
 
 
 def version(number):
@@ -107,7 +107,13 @@ def compare_snapshots(baseline, candidate):
         return {key: dict(baseline=before[key], candidate=after[key],
                           delta=after[key] - before[key] if before[key] is not None and after[key] is not None else None)
                 for key in before}
+    def archived_rows(path):
+        # load() above verified these archives. Only sanitized events enter the
+        # matching report, even for snapshots produced by an older recorder.
+        with gzip.open(Path(path)/'events.jsonl.gz', 'rt') as stream:
+            return [clean for line in stream if (clean := sanitize(json.loads(line)))]
     return dict(causal=False, deltas=changes(a['summary'], b['summary']),
+                matched_workloads=compare(archived_rows(baseline), archived_rows(candidate)),
                 baseline=dict(since=a['since'], until=a['until'], cohorts=a['cohorts']),
                 candidate=dict(since=b['since'], until=b['until'], cohorts=b['cohorts']),
                 interpretation='Descriptive differences, not proof of improvement. Compare equal windows and similar workload/worker, policy, enforcement and host conditions. Positive delay/pressure deltas warrant investigation. p95 needs 20 observations. Queue-hook response excludes teardown and other hook types; sample-ready-to-retry is an observed upper bound, not causal wasted time. Pending age is censored and liveness unverified; unknown values stay null.')

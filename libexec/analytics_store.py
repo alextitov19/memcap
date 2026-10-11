@@ -9,11 +9,12 @@ from analytics_events import sanitize
 
 LIMIT_BYTES = 256 * 1024 * 1024
 RAW_DAYS = 14
+CHECKPOINT_DAYS = 90
 # High-volume host hook/API bookkeeping must not evict the very decisions needed
 # to explain a queue incident. This remains a bounded ring, not unlimited history.
 EVIDENCE_EVENTS = ('classification', 'route', 'hook_timing', 'sampling', 'sample',
                    'reservation', 'queued', 'admitted', 'completed', 'cancelled',
-                   'stalled', 'action', 'stop_wait')
+                   'stalled', 'action', 'stop_wait', 'cancellation')
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
   producer TEXT NOT NULL, seq INTEGER NOT NULL, wall REAL NOT NULL,
@@ -35,6 +36,10 @@ CREATE TABLE IF NOT EXISTS hourly (
   family TEXT NOT NULL, metric TEXT NOT NULL, bucket INTEGER NOT NULL,
   count INTEGER NOT NULL, total REAL NOT NULL, minimum REAL NOT NULL, maximum REAL NOT NULL,
   PRIMARY KEY(hour, build, policy, family, metric, bucket)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS diagnostics (
+  producer TEXT NOT NULL, seq INTEGER NOT NULL, wall REAL NOT NULL, data TEXT NOT NULL,
+  PRIMARY KEY(producer,seq)
 ) WITHOUT ROWID;
 PRAGMA user_version=1;
 """
@@ -96,6 +101,9 @@ class Store:
         cursor = self.db.execute("INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (*values, json.dumps(row, separators=(",", ":")), row.get("delivery")))
         if cursor.rowcount == 0:
             return False
+        if row['event'] in {'action', 'cancellation'}:
+            self.db.execute('INSERT OR IGNORE INTO diagnostics VALUES (?,?,?,?)',
+                            (row['producer'], row['seq'], row['wall'], json.dumps(row, separators=(',', ':'))))
         if row.get("job") and row["event"] in {"queued", "admitted", "completed", "cancelled", "stalled", "claim"}:
             # Small lifecycle checkpoints survive eviction of high-rate samples.
             # One row per job/phase; a stalled job never creates an unbounded log.
@@ -155,8 +163,11 @@ class Store:
 
     def maintain(self, now=None):
         now = time.time() if now is None else now
-        self.db.execute("DELETE FROM job_events WHERE job IN (SELECT job FROM job_events GROUP BY job HAVING max(wall)<?)", (now - RAW_DAYS * 86400,))
+        self.db.execute("DELETE FROM job_events WHERE job IN (SELECT job FROM job_events GROUP BY job HAVING max(wall)<?)", (now - CHECKPOINT_DAYS * 86400,))
         self.db.execute("DELETE FROM job_events WHERE job IN (SELECT job FROM job_events GROUP BY job ORDER BY max(wall) DESC LIMIT -1 OFFSET 4096)")
+        self.db.execute('DELETE FROM diagnostics WHERE wall<?', (now-CHECKPOINT_DAYS*86400,))
+        self.db.execute('DELETE FROM diagnostics WHERE (producer,seq) IN '
+                        '(SELECT producer,seq FROM diagnostics ORDER BY wall DESC LIMIT -1 OFFSET 4096)')
         deleted = 0
         pages = self.db.execute("PRAGMA page_count").fetchone()[0]
         free = self.db.execute("PRAGMA freelist_count").fetchone()[0]
@@ -210,6 +221,11 @@ def read_rows(directory, since=0, limit=100000):
             merged = {(r['producer'], r['seq']): r for r in rows + checkpoints}
             rows = list(merged.values())
             health['job_checkpoints'] = len(checkpoints)
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='diagnostics'").fetchone():
+            diagnostic_rows = [json.loads(r[0]) for r in db.execute(
+                'SELECT data FROM diagnostics WHERE wall>=?', (since,))]
+            rows = list({(r['producer'],r['seq']):r for r in rows+diagnostic_rows}.values())
+            health['diagnostic_checkpoints'] = len(diagnostic_rows)
         return sorted(rows, key=lambda r: (r['wall'], r['seq'])), health
     finally:
         db.close()

@@ -240,10 +240,12 @@ class Reporter:
         write_private(self.directory / "ledger.json", json.dumps(ledger) + "\n")
 
     def report(
-        self, kind, *, dry_run=False, wait_seconds=None, context=None, symptom=None
+        self, kind, *, dry_run=False, wait_seconds=None, context=None, symptom=None, operation=None
     ):
         if kind not in KINDS:
             raise ValueError("unknown report category")
+        if operation is not None and (not isinstance(operation,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,256}',operation)):
+            raise ValueError('operation must be an original tool-call identifier, not a command or path')
         if symptom is not None and symptom not in SYMPTOMS:
             raise ValueError(
                 "unknown report symptom; use a fixed value, never private text"
@@ -258,14 +260,14 @@ class Reporter:
             raise ValueError("wait seconds must be a whole number from 0 to 604800")
         try:
             with self.locked():
-                return self._report(kind, dry_run, wait_seconds, context, symptom)
+                return self._report(kind, dry_run, wait_seconds, context, symptom, operation)
         except BlockingIOError:
             return {
                 "status": "busy",
                 "message": "Another report is being handled; continue work.",
             }
 
-    def _report(self, kind, dry_run, wait_seconds=None, context=None, symptom=None):
+    def _report(self, kind, dry_run, wait_seconds=None, context=None, symptom=None, operation=None):
         identity = f"1:{self.version}:{kind}" + (f":{context}" if context else "")
         if symptom:
             identity += f":symptom:{symptom}"
@@ -311,7 +313,7 @@ class Reporter:
         # Local-only detailed evidence survives raw event rotation. Never add its
         # path or contents to the public body or transport parameters.
         from incident_evidence import capture as capture_evidence
-        evidence = capture_evidence(self.directory.parent, now=now)
+        evidence = capture_evidence(self.directory.parent, now=now, operation=operation)
         if evidence:
             result['local_evidence'] = evidence
         if dry_run or not self.enabled():
@@ -418,6 +420,7 @@ def main():
     parser.add_argument("--memcap-version", required=True)
     parser.add_argument("action", choices=["enable", "disable", "status", *KINDS])
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument('--operation', help='Original tool-call ID for private local evidence only; never published')
     parser.add_argument(
         "--symptom",
         choices=sorted(SYMPTOMS),
@@ -434,6 +437,8 @@ def main():
         help="Observed wait, whole seconds (0–604800); omit if unknown",
     )
     args = parser.parse_args()
+    if args.operation and args.action not in KINDS:
+        parser.error('--operation requires a report category')
     if args.symptom and args.action not in KINDS:
         parser.error("--symptom requires a report category")
     if args.context and args.action not in KINDS:
@@ -477,6 +482,7 @@ def main():
                 wait_seconds=args.wait_seconds,
                 context=args.context,
                 symptom=args.symptom,
+                operation=args.operation,
             )
             print(json.dumps(result))
             if "url" not in result:

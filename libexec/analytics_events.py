@@ -18,7 +18,7 @@ import uuid
 from job_timing import FIELDS as TIMING_FIELDS
 
 EVENTS = frozenset(("hook", "hook_timing", "sampling", "route", "queued", "admitted", "completed", "cancelled", "native_memory", "classification",
-                    "stalled", "reservation", "sample", "stop_wait", "action",
+                    "stalled", "reservation", "sample", "stop_wait", "action", "cancellation",
                     "api", "native_tool", "native_hooks", "work", "observer", "experiment", "claim", "feedback"))
 ENUMS = {
     "purpose": {"project", "monitoring", "unknown"},
@@ -42,6 +42,7 @@ ENUMS = {
 }
 IDS = {"session", "parent", "turn", "operation", "job", "project", "work", "action", "model", "agent_version", "workload", "compiler_context", "delivery", "resource"}
 NUMBERS = {
+    'cancellation_signal', 'cancellation_stage',
     'sampling_path', 'sample_call_ms', 'sample_ready_age_ms', 'sampler_retry_ms',
     'sampler_ready_to_retry_ms', 'hook_timing_version',
     'sampling_decisions', 'sampling_handoff_count', 'sampling_handoff_ms',

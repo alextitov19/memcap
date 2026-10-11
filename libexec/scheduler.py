@@ -846,6 +846,7 @@ class Scheduler:
         child = None
         analytics_claimed = False
         registered = False
+        cancellation_reported = False
         job = {}
         estimate_key = ""
         from orphan_recovery import agent_identity
@@ -1169,7 +1170,8 @@ class Scheduler:
                             )
                             last_notice = time.monotonic()
                 if child is None:
-                    time.sleep(self.poll)
+                    from throughput import admission_retry_delay
+                    time.sleep(admission_retry_delay(self.poll, job.get('admission', {})))
             last_cancel_notice = 0.0
             while True:
                 result = child.poll()
@@ -1273,6 +1275,9 @@ class Scheduler:
                         )
                     self.save(data)
                 if self.cancelled:
+                    if not cancellation_reported:
+                        self.record_cancellation(ident, 1)
+                        cancellation_reported = True
                     if not members:
                         return 128 + self.cancelled
                     try:
@@ -1286,6 +1291,7 @@ class Scheduler:
                         )
                     except (OSError, subprocess.SubprocessError):
                         cancelled = False
+                    self.record_cancellation(ident, 3 if cancelled else 2)
                     if not cancelled:
                         if time.monotonic() - last_cancel_notice >= 60:
                             print(
@@ -1303,6 +1309,8 @@ class Scheduler:
                     interval = min(interval, .25 if time.monotonic()-job.get('start_monotonic',0)<5 else 1)
                 time.sleep(interval)
         finally:
+            if registered and self.cancelled and not cancellation_reported:
+                self.record_cancellation(ident, 1)
             if registered:
                 if child is None and not analytics_claimed:
                     from command_trace import job as trace_job
@@ -1513,6 +1521,13 @@ class Scheduler:
             if read_fd >= 0:
                 os.close(read_fd)
             os.close(write_fd)
+
+    def record_cancellation(self, ident, stage):
+        from scheduler_metrics import cancellation_fields
+        from command_trace import job as trace_job
+        fields = cancellation_fields(self.cancelled, stage)
+        append_event(self.directory, dict(event='cancellation', job_ref=int(ident[:13],16), **fields))
+        trace_job(self.directory, 'cancellation', job=ident, **fields)
 
     def handle_signal(self, sig, _frame):
         self.cancelled = sig
