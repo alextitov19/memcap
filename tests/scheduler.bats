@@ -8,6 +8,12 @@ load helper
   assert_contains "$output" OK
 }
 
+@test "QUEUE: wrapped dev servers and simulator status waits" {
+  run python3 "$MEMCAP_ROOT/tests/test_v032_incidents.py"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" OK
+}
+
 @test "QUEUE: remaining open issue reproductions" {
   run python3 "$MEMCAP_ROOT/tests/test_open_issues.py"
   [ "$status" -eq 0 ]

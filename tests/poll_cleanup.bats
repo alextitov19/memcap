@@ -81,3 +81,41 @@ setup() {
   [ "$status" = 0 ]
   assert_contains "$output" 'would kill (synthetic polling loop cleanup):  30'
 }
+
+@test "FEEDBACK-PRUNE: stale orphan, recent, live-job and held-lock behavioral suite" {
+  run python3 "$MEMCAP_ROOT/tests/test_feedback_prune.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" OK
+}
+
+prune_fixture() {
+  dir="$MEMCAP_STATE_HOME/memcap/job-feedback"
+  mkdir -p "$dir"
+  printf '{"at":"1","cwd":"/p","message":"m"}\n' > "$dir/123.json"
+  touch -t 202001010000 "$dir/123.json"
+  printf 'recent\n' > "$dir/124.json"
+}
+
+@test "FEEDBACK-PRUNE: the watchdog poll pass prunes hourly and logs only a count" {
+  prune_fixture
+  mc_reap_poll_loops
+  [ ! -e "$dir/123.json" ]
+  [ -f "$dir/124.json" ]
+  assert_contains "$(cat "$MEMCAP_STATE_HOME/memcap/actions.log")" 'feedback: pruned 1 stale job-feedback files'
+  # Within the hour, a new stale file waits for the next window.
+  printf '{"at":"1","cwd":"/p","message":"m"}\n' > "$dir/125.json"
+  touch -t 202001010000 "$dir/125.json"
+  mc_reap_poll_loops
+  [ -f "$dir/125.json" ]
+  printf '1\n' > "$MEMCAP_STATE_HOME/memcap/feedback-prune"
+  mc_reap_poll_loops
+  [ ! -e "$dir/125.json" ]
+}
+
+@test "FEEDBACK-PRUNE: an owner pause leaves job-feedback untouched" {
+  prune_fixture
+  touch "$MEMCAP_STATE_HOME/memcap/paused"
+  mc_reap_poll_loops
+  [ -f "$dir/123.json" ]
+  [ ! -e "$MEMCAP_STATE_HOME/memcap/feedback-prune" ]
+}

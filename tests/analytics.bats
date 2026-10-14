@@ -11,6 +11,12 @@ setup() {
   assert_contains "$output" OK
 }
 
+@test "ANALYTICS: dense layout, page reclaim and sampling-before-incident eviction" {
+  run python3 "$MEMCAP_ROOT/tests/test_analytics_retention.py"
+  [ "$status" = 0 ]
+  assert_contains "$output" OK
+}
+
 @test "BACKLOG: retained incident evidence and bounded sampling handoff" {
   run python3 "$MEMCAP_ROOT/tests/test_backlog.py"
   [ "$status" = 0 ]

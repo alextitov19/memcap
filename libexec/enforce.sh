@@ -425,6 +425,31 @@ mc_pid_identity() {
   ps -o lstart=,command= -p "$1" 2>/dev/null | tr -s '[:space:]' ' '
 }
 
+# Start time of a pid, normalized exactly like mc_pid_identity's prefix, and
+# whether it is the start time a recorded identity began with. Used only to
+# choose a log line after an identity mismatch; it never authorizes a signal.
+mc_pid_same_start() {
+  local start
+  start=$(ps -o lstart= -p "$1" 2>/dev/null | tr -s '[:space:]' ' ')
+  start="${start# }"; start="${start% }"
+  [ -n "$start" ] || return 1
+  case "${2# }" in "$start "*) return 0 ;; esac
+  return 1
+}
+
+# A process that exited after SIGTERM but has not been reaped keeps its pid and
+# start time while ps reports its command as `<defunct>` and its state as Z, so
+# the identity no longer matches. Measured on macOS: `ps -o stat=,lstart=,command=`
+# for such a pid prints `ZN <original lstart> <defunct>`. Only a Z state with the
+# recorded start time counts; a Z with any other start time is a different pid.
+mc_pid_unreaped() {
+  local st
+  st=$(ps -o stat= -p "$1" 2>/dev/null)
+  st="${st//[[:space:]]/}"
+  case "$st" in Z*) ;; *) return 1 ;; esac
+  mc_pid_same_start "$1" "$2"
+}
+
 mc_identity_lookup() {
   local want="$1" line
   while IFS= read -r line; do
@@ -500,10 +525,24 @@ mc_kill_pids() {
     now_ident=$(mc_pid_identity "$p")
     was_ident=$(mc_identity_lookup "$p" "$idents") || was_ident=""
     if [ -z "$now_ident" ] || [ "$now_ident" != "$was_ident" ]; then
-      # The number is alive but it is not the process that was TERMed. This is
-      # the widest snapshot-to-action window in the codebase; a shorter sleep
-      # narrows it without closing it, an identity check closes it.
-      mc_log "$reason: pid $p was reused between SIGTERM and SIGKILL -- not escalating"
+      # Every branch here skips the SIGKILL; they differ only in what is logged.
+      # The zombie test can therefore only ever remove a pid from escalation.
+      if [ -z "$now_ident" ]; then
+        mc_log "$reason: pid $p could not be re-identified after SIGTERM -- not escalating"
+      elif mc_pid_unreaped "$p" "$was_ident"; then
+        # It honoured the TERM; its parent (often the supervisor blocked on this
+        # very cancellation) has not reaped it yet. A signal cannot reach it.
+        mc_log "$reason: pid $p exited after SIGTERM and awaits reaping by its parent -- no SIGKILL needed"
+      elif mc_pid_same_start "$p" "$was_ident"; then
+        # Same pid and start second, different argv: an argv rewrite or a reuse
+        # within the same second. lstart cannot tell those apart, so fail closed.
+        mc_log "$reason: pid $p changed its command line after SIGTERM (start time unchanged) -- not escalating"
+      else
+        # The number is alive but it is not the process that was TERMed. This is
+        # the widest snapshot-to-action window in the codebase; a shorter sleep
+        # narrows it without closing it, an identity check closes it.
+        mc_log "$reason: pid $p was reused between SIGTERM and SIGKILL -- not escalating"
+      fi
       continue
     fi
     alive="$alive $p"

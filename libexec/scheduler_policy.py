@@ -763,11 +763,13 @@ def classification_code(command):
     return 2  # other unsupported command/options
 
 
-def persistent_shell(command, direct_only=False):
+def persistent_shell(command, direct_only=False, _depth=0):
     """One known persistent command with literal cd/env/redirection wrappers.
 
     It still goes through admission; only finite-job completion waits exclude it.
     A subsequent test/build or unknown shell expansion must remain a finite job.
+    A single trailing '&' only backgrounds that same command, and an explicit
+    `memcap run [--wait/--cwd] --` wrapper is judged by the command it runs.
     """
     text = normalized_lines(command).strip()
     if not literal_shell(text):
@@ -792,6 +794,8 @@ def persistent_shell(command, direct_only=False):
             i += 1
             if i >= len(tokens):
                 return ""
+        elif raw == "&" and i == len(tokens) - 1 and words:
+            break  # `server > log &`: the group still lives exactly as long.
         elif raw in {"|", "||", "&"} or not raw:
             return ""
         else:
@@ -803,12 +807,36 @@ def persistent_shell(command, direct_only=False):
     segments.append(words)
     if not all(len(s) == 2 and s[0] == "cd" for s in segments[:-1]):
         return ""
-    words = segments[-1]
-    if words[:1] == ['env']:
+    return _persistent_words(segments[-1], text, direct_only, _depth)
+
+
+# Options that change neither the executed command nor its lifetime policy.
+# --memory/--resource/--shell keep today's explicit finite-job semantics.
+_RUN_VALUE_OPTIONS = {"--wait", "--cwd", "--purpose", "--session-key"}
+
+
+def _plain_run_options(options):
+    i = 0
+    while i < len(options):
+        option = options[i]
+        if option in _RUN_VALUE_OPTIONS and i + 1 < len(options):
+            i += 2
+        elif option == "--wait-forever" or option.split("=", 1)[0] in _RUN_VALUE_OPTIONS and "=" in option:
+            i += 1
+        else:
+            return False
+    return True
+
+
+def _persistent_words(words, text, direct_only, depth=0, argv_form=False):
+    # argv_form: words are exec'd directly by `memcap run --`, so shell-only
+    # prefixes (VAR=value, exec) cannot apply unless env supplies them.
+    had_env = words[:1] == ['env']
+    if had_env:
         words = words[1:]
-    while words and re.fullmatch(r"(?:PORT|HOST|NODE_ENV|EXPO_[A-Za-z0-9_]+)=[A-Za-z0-9_./:-]+", words[0]):
+    while (had_env or not argv_form) and words and re.fullmatch(r"(?:PORT|HOST|NODE_ENV|EXPO_[A-Za-z0-9_]+)=[A-Za-z0-9_./:-]+", words[0]):
         words = words[1:]
-    if words[:1] == ["exec"]:
+    if not argv_form and words[:1] == ["exec"]:
         words = words[1:]
         if words[:1] == ["--"]:
             words = words[1:]
@@ -816,6 +844,20 @@ def persistent_shell(command, direct_only=False):
             return ""
     if not words:
         return ""
+    if Path(words[0]).name == "memcap" and words[1:2] == ["run"]:
+        # Same unwrapping as demand classification. The nested runner joins
+        # this lease without a second reservation, so the outer hook job must
+        # carry the inner server's persistent lifetime.
+        from demand_policy import memcap_run_target
+        target = memcap_run_target(words[2:])
+        if depth >= 4 or not target or not _plain_run_options(target[0]):
+            return ""
+        _, form, payload = target
+        if form == "shell":
+            inner = persistent_shell(payload, direct_only, depth + 1)
+        else:
+            inner = _persistent_words(payload, text, direct_only, depth + 1, argv_form=True)
+        return "shell:" + text if inner else ""
     # These wrappers retain admission and reservation accounting. Only known
     # long-running commands are excluded from finite completion; source scripts,
     # custom interpreter flags and mixed build/server chains remain finite.

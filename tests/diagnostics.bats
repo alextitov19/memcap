@@ -189,6 +189,98 @@ watch_fixture() {
   [ ! -f "$BATS_TEST_TMPDIR/tier2" ]
 }
 
+swap_reading() {
+  # One pass of the watchdog's host-pressure step at a given swap-used value.
+  SWAP_FIXTURE="$1"
+  sysctl() { printf 'total = 16.00G used = %s free = 1.00G\n' "$SWAP_FIXTURE"; }
+  mc_host_pressure
+  # Dry-run stays exported; the stubbed notifier only records, for this one call.
+  MC_DRY_RUN=0 mc_host_report
+}
+
+swap_fixture() {
+  NOTES="$BATS_TEST_TMPDIR/notifications"
+  : > "$NOTES"
+  mc_notify() { printf '%s\n' "$1" >> "$NOTES"; }
+  LOG="$MEMCAP_STATE_HOME/memcap/actions.log"
+}
+
+@test "PRESSURE: swap at the threshold warns and notifies once per episode" {
+  swap_fixture
+  swap_reading 8.10G
+  [ "$MC_HOST_PRESSURE" = 1 ]
+  [ "$(wc -l < "$NOTES" | tr -d ' ')" = 1 ]
+  assert_contains "$(cat "$LOG")" 'swap used 8.10 GB'
+  swap_reading 9.00G
+  swap_reading 8.50G
+  [ "$MC_HOST_PRESSURE" = 1 ]
+  [ "$(wc -l < "$NOTES" | tr -d ' ')" = 1 ]
+}
+
+@test "PRESSURE: swap hovering just under the threshold does not flap" {
+  swap_fixture
+  for value in 8.10G 7.95G 8.02G 7.40G 8.20G 7.10G 8.05G; do
+    swap_reading "$value"
+    [ "$MC_HOST_PRESSURE" = 1 ]
+  done
+  assert_not_contains "$(cat "$LOG")" 'warning cleared'
+  [ "$(awk '/pressure: disk/ {n++} END {print n+0}' "$LOG")" = 1 ]
+  [ "$(wc -l < "$NOTES" | tr -d ' ')" = 1 ]
+  assert_contains "$MC_HOST_SUMMARY" 'held until below 7.00 GB'
+}
+
+@test "PRESSURE: swap clears only below the margin and stays quiet if it soon returns" {
+  swap_fixture
+  swap_reading 8.50G
+  swap_reading 6.90G
+  [ "$MC_HOST_PRESSURE" = 0 ]
+  assert_contains "$(cat "$LOG")" 'host warning cleared'
+  # Below the threshold and no longer held: no warning without a new crossing.
+  swap_reading 7.90G
+  [ "$MC_HOST_PRESSURE" = 0 ]
+  # A new crossing within the hour logs, but does not notify again.
+  swap_reading 8.30G
+  [ "$MC_HOST_PRESSURE" = 1 ]
+  [ "$(wc -l < "$NOTES" | tr -d ' ')" = 1 ]
+  [ "$(awk '/pressure: disk/ {n++} END {print n+0}' "$LOG")" = 2 ]
+  # After the cooldown, a new episode notifies.
+  swap_reading 6.00G
+  printf '1\n' > "$MEMCAP_STATE_HOME/memcap/log-throttle/host-pressure-notified"
+  swap_reading 8.30G
+  [ "$(wc -l < "$NOTES" | tr -d ' ')" = 2 ]
+}
+
+@test "PRESSURE: zero swap threshold disables the warning and its held state" {
+  swap_fixture
+  swap_reading 9.00G
+  [ "$MC_HOST_PRESSURE" = 1 ]
+  HOST_MAX_SWAP_GB=0
+  swap_reading 15.00G
+  [ "$MC_HOST_PRESSURE" = 0 ]
+  [ "$MC_HOST_SWAP_HIGH" = 0 ]
+  [ ! -f "$MEMCAP_STATE_HOME/memcap/log-throttle/host-swap-held" ]
+  assert_contains "$MC_HOST_SUMMARY" 'swap >= 0 GB; 0 disables'
+}
+
+@test "PRESSURE: an unavailable swap probe neither clears nor creates the held state" {
+  swap_fixture
+  swap_reading 8.50G
+  sysctl() { printf 'not a swap reading\n'; }
+  mc_host_pressure
+  MC_DRY_RUN=0 mc_host_report
+  [ -f "$MEMCAP_STATE_HOME/memcap/log-throttle/host-swap-held" ]
+  swap_reading 7.50G
+  [ "$MC_HOST_PRESSURE" = 1 ]
+}
+
+@test "PRESSURE: status reads the held state without writing it" {
+  swap_fixture
+  sysctl() { printf 'total = 16.00G used = 7.50G free = 1.00G\n'; }
+  mc_host_pressure
+  [ "$MC_HOST_PRESSURE" = 0 ]
+  [ ! -e "$MEMCAP_STATE_HOME/memcap/log-throttle/host-swap-held" ]
+}
+
 @test "PRESSURE: an unavailable probe cannot announce recovery" {
   MC_HOST_FAULT=0; MC_HOST_PRESSURE=1; MC_HOST_SUMMARY='low disk'
   mc_host_report
