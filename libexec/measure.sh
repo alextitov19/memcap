@@ -33,6 +33,12 @@ set -uo pipefail
 #   MC_MEASURE_ROWS      pids measured in total. Always reported, flag or not,
 #                        so a consumer can render "12 of 558" without anything
 #                        having to trip.
+#   MC_MEASURE_ZOMBIES   exited, unreaped pids (ps state Z). top never lists
+#                        them and they hold no memory, so they are counted
+#                        here instead of in MISSING or ROWS. An emulator that
+#                        never reaps its children once left 135 of them, which
+#                        crossed the missing-rows threshold and held the whole
+#                        queue while pressure was green.
 #
 # On PARTIAL versus TOTAL degradation: they are NOT the same event and must not
 # share a trip point. A pid that started or exited between the `top` and `ps`
@@ -50,6 +56,7 @@ MC_MEASURE_FAULT=0
 MC_MEASURE_REASON=none
 MC_MEASURE_MISSING=0
 MC_MEASURE_ROWS=0
+MC_MEASURE_ZOMBIES=0
 
 # top's memory column, converted to KB. Shared verbatim by mc_ps_snapshot and
 # mc_footprint_kb -- it used to be copy-pasted between them, and the copy is
@@ -131,6 +138,7 @@ mc_measure_reset() {
   MC_MEASURE_REASON=none
   MC_MEASURE_MISSING=0
   MC_MEASURE_ROWS=0
+  MC_MEASURE_ZOMBIES=0
 }
 
 # The enforcing caller needs this sample's health even when the state volume
@@ -141,12 +149,12 @@ mc_snapshot_capture() {
   bundle=$(
     mc_measure_reset
     mc_ps_snapshot || mc_measure_mark top-failed 1
-    printf '\nMEMCAP_HEALTH %s %s %s %s %s' "$MC_MEASURE_DEGRADED" "$MC_MEASURE_FAULT" \
-      "$MC_MEASURE_REASON" "$MC_MEASURE_MISSING" "$MC_MEASURE_ROWS"
+    printf '\nMEMCAP_HEALTH %s %s %s %s %s %s' "$MC_MEASURE_DEGRADED" "$MC_MEASURE_FAULT" \
+      "$MC_MEASURE_REASON" "$MC_MEASURE_MISSING" "$MC_MEASURE_ROWS" "$MC_MEASURE_ZOMBIES"
   )
   meta="${bundle##*$'\n'}"
   MC_CAPTURE_SNAPSHOT="${bundle%$'\n'*}"
-  read -r marker MC_MEASURE_DEGRADED MC_MEASURE_FAULT MC_MEASURE_REASON MC_MEASURE_MISSING MC_MEASURE_ROWS <<< "$meta"
+  read -r marker MC_MEASURE_DEGRADED MC_MEASURE_FAULT MC_MEASURE_REASON MC_MEASURE_MISSING MC_MEASURE_ROWS MC_MEASURE_ZOMBIES <<< "$meta"
   if [ "$marker" != MEMCAP_HEALTH ] || [ -z "$MC_CAPTURE_SNAPSHOT" ]; then
     mc_measure_mark top-failed 1
   fi
@@ -166,6 +174,7 @@ mc_measure_persist() {
     printf 'reason=%s\n' "$MC_MEASURE_REASON"
     printf 'missing=%s\n' "$MC_MEASURE_MISSING"
     printf 'rows=%s\n' "$MC_MEASURE_ROWS"
+    printf 'zombies=%s\n' "$MC_MEASURE_ZOMBIES"
     printf 'at=%s\n' "$(date +%s)"
   } > "$tmp" 2>/dev/null; then
     mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp" 2>/dev/null
@@ -189,6 +198,7 @@ mc_measure_status_load() {
       fault)    MC_MEASURE_FAULT=$(mc_measure_num "$v" 0 fault) ;;
       missing)  MC_MEASURE_MISSING=$(mc_measure_num "$v" 0 missing) ;;
       rows)     MC_MEASURE_ROWS=$(mc_measure_num "$v" 0 rows) ;;
+      zombies)  MC_MEASURE_ZOMBIES=$(mc_measure_num "$v" 0 zombies) ;;
       reason)
         case "$v" in
           no-top|mktemp-failed|top-failed|top-empty|bad-units|missing-rows) MC_MEASURE_REASON="$v" ;;
@@ -204,6 +214,13 @@ mc_measure_status_load() {
 # than in status.sh so the wording of a measurement fault stays with the code
 # that can actually produce it.
 mc_measure_summary() {
+  mc_measure_summary_reason
+  if [ "${MC_MEASURE_ZOMBIES:-0}" -gt 0 ] 2>/dev/null; then
+    printf '; %s exited unreaped processes excluded' "$MC_MEASURE_ZOMBIES"
+  fi
+}
+
+mc_measure_summary_reason() {
   case "$MC_MEASURE_REASON" in
     none)
       if [ "$MC_MEASURE_MISSING" -gt 0 ]; then
@@ -241,7 +258,7 @@ mc_measure_summary() {
 # Measured cost: 0.43s per call, versus 0.05s for bare ps. At one call per 60s pass on
 # a background-priority daemon, that is not a meaningful trade against correctness.
 mc_ps_snapshot() {
-  local tmpd raw counts errs st rows seen missing bad sample pct_max reason errline
+  local tmpd raw counts errs st rows seen missing bad sample zombies pct_max reason errline
   mc_measure_reset
 
   if [ "${MC_NO_TOP:-0}" = "1" ]; then
@@ -308,11 +325,22 @@ mc_ps_snapshot() {
     return 0
   fi
 
-  ps -Ao pid=,ppid=,rss=,command= | awk -v mf="$raw" -v cf="$counts" "$MC_TOP_KB_AWK"'
+  # stat is read only to recognise zombies and is not emitted, so every consumer
+  # still sees `pid ppid kb command`. top never lists a zombie and a zombie holds
+  # no memory, so counting one as a missing row reported a measurement fault that
+  # did not exist: an Android emulator that never reaped its children pushed 135
+  # of them past the threshold and blocked every heavy admission at green
+  # pressure. They stay in the table at their (zero) RSS and are counted apart.
+  ps -Ao pid=,ppid=,rss=,stat=,command= | awk -v mf="$raw" -v cf="$counts" "$MC_TOP_KB_AWK"'
     BEGIN { while ((getline l < mf) > 0) { split(l, a, " "); fp[a[1]] = a[2] } }
     {
-      pid=$1; ppid=$2; kb=$3
-      cmd=$0; sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, "", cmd)
+      pid=$1; ppid=$2; kb=$3; st=$4
+      cmd=$0; sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+[0-9]+[[:space:]]+[^[:space:]]+[[:space:]]*/, "", cmd)
+      if (st ~ /^Z/ && !(pid in fp)) {
+        zombies++
+        printf "%s %s %d %s\n", pid, ppid, kb, cmd
+        next
+      }
       seen++
       if (pid in fp) {
         v = mc_top_kb(fp[pid])
@@ -324,15 +352,17 @@ mc_ps_snapshot() {
       } else missing++
       printf "%s %s %d %s\n", pid, ppid, kb, cmd
     }
-    END { printf "%d %d %d %s\n", seen+0, missing+0, bad+0, (sample == "" ? "-" : sample) > cf }'
+    END { printf "%d %d %d %s %d\n", seen+0, missing+0, bad+0, (sample == "" ? "-" : sample), zombies+0 > cf }'
 
-  seen=0; missing=0; bad=0; sample="-"
-  read -r seen missing bad sample < "$counts" 2>/dev/null || true
+  seen=0; missing=0; bad=0; sample="-"; zombies=0
+  read -r seen missing bad sample zombies < "$counts" 2>/dev/null || true
   seen=$(mc_measure_num "$seen" 0 seen)
   missing=$(mc_measure_num "$missing" 0 missing)
   bad=$(mc_measure_num "$bad" 0 bad)
+  zombies=$(mc_measure_num "$zombies" 0 zombies)
   MC_MEASURE_ROWS="$seen"
   MC_MEASURE_MISSING="$missing"
+  MC_MEASURE_ZOMBIES="$zombies"
 
   if [ "$bad" -gt 0 ]; then
     # Even one is a fault, regardless of count: it means top's format is not the

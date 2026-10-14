@@ -15,13 +15,20 @@ CHECKPOINT_DAYS = 90
 EVIDENCE_EVENTS = ('classification', 'route', 'hook_timing', 'sampling', 'sample',
                    'reservation', 'queued', 'admitted', 'completed', 'cancelled',
                    'stalled', 'action', 'stop_wait', 'cancellation')
+# Routine high-rate observations stay in incident bundles while retained, but
+# under page pressure they are evicted before rarer decisions. Their latency
+# metrics are already preserved in the hourly histograms at insertion time.
+ROUTINE_EVIDENCE = ('sampling',)
+PROTECTED_EVENTS = tuple(e for e in EVIDENCE_EVENTS if e not in ROUTINE_EVIDENCE)
+# Free-list pages returned to the filesystem per maintenance pass.
+RECLAIM_PAGES = 8192
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
   producer TEXT NOT NULL, seq INTEGER NOT NULL, wall REAL NOT NULL,
   mono REAL NOT NULL, boot TEXT NOT NULL, event TEXT NOT NULL,
   session TEXT, job TEXT, operation TEXT, build TEXT NOT NULL, policy TEXT NOT NULL,
   data TEXT NOT NULL, delivery TEXT, PRIMARY KEY(producer, seq)
-) WITHOUT ROWID;
+);
 CREATE INDEX IF NOT EXISTS events_time ON events(wall);
 CREATE INDEX IF NOT EXISTS events_session ON events(session, wall);
 CREATE INDEX IF NOT EXISTS events_job ON events(job, wall);
@@ -30,7 +37,7 @@ CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, value INTEGER NOT NU
 CREATE TABLE IF NOT EXISTS job_events (
   job TEXT NOT NULL, event TEXT NOT NULL, wall REAL NOT NULL, data TEXT NOT NULL,
   PRIMARY KEY(job,event)
-) WITHOUT ROWID;
+);
 CREATE TABLE IF NOT EXISTS hourly (
   hour INTEGER NOT NULL, build TEXT NOT NULL, policy TEXT NOT NULL,
   family TEXT NOT NULL, metric TEXT NOT NULL, bucket INTEGER NOT NULL,
@@ -40,9 +47,28 @@ CREATE TABLE IF NOT EXISTS hourly (
 CREATE TABLE IF NOT EXISTS diagnostics (
   producer TEXT NOT NULL, seq INTEGER NOT NULL, wall REAL NOT NULL, data TEXT NOT NULL,
   PRIMARY KEY(producer,seq)
-) WITHOUT ROWID;
+);
 PRAGMA user_version=1;
 """
+# Event JSON is usually 0.7-2 KB. In a WITHOUT ROWID (index) b-tree on 4 KiB
+# pages, payload above ~1 KB spills to a private overflow page, so each row
+# occupied a mostly empty page and the cap held about a quarter of its data.
+# Ordinary rowid tables keep these rows on shared leaf pages. The schema
+# version is unchanged: older readers and writers accept either layout.
+ROWID_TABLES = {
+    'events': ('producer,seq,wall,mono,boot,event,session,job,operation,build,policy,data,delivery',
+               """CREATE TABLE events_compact (
+  producer TEXT NOT NULL, seq INTEGER NOT NULL, wall REAL NOT NULL,
+  mono REAL NOT NULL, boot TEXT NOT NULL, event TEXT NOT NULL,
+  session TEXT, job TEXT, operation TEXT, build TEXT NOT NULL, policy TEXT NOT NULL,
+  data TEXT NOT NULL, delivery TEXT, PRIMARY KEY(producer, seq))"""),
+    'job_events': ('job,event,wall,data', """CREATE TABLE job_events_compact (
+  job TEXT NOT NULL, event TEXT NOT NULL, wall REAL NOT NULL, data TEXT NOT NULL,
+  PRIMARY KEY(job,event))"""),
+    'diagnostics': ('producer,seq,wall,data', """CREATE TABLE diagnostics_compact (
+  producer TEXT NOT NULL, seq INTEGER NOT NULL, wall REAL NOT NULL, data TEXT NOT NULL,
+  PRIMARY KEY(producer,seq))"""),
+}
 
 
 def private_directory(directory):
@@ -67,15 +93,52 @@ class Store:
         if self.db.execute("PRAGMA user_version").fetchone()[0] not in (0, 1):
             self.db.close()
             raise ValueError("unsupported analytics schema; existing history preserved")
+        # Takes effect immediately for a new file; an existing file converts
+        # during the one-time compaction below.
+        self.db.execute("PRAGMA auto_vacuum=INCREMENTAL")
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.execute("PRAGMA busy_timeout=0")
         self.db.execute("PRAGMA cache_size=-1024")
         self.db.execute("PRAGMA wal_autocheckpoint=256")
         self.db.execute("PRAGMA journal_size_limit=1048576")
+        # Compact before applying the cap: a full legacy file must still be
+        # able to copy its rows. Failure keeps the legacy layout working.
+        self.compact()
         self.db.execute(f"PRAGMA max_page_count={int(self.limit * .65) // 4096}")
         self.db.executescript(SCHEMA)
         self.last_sample = None
+
+    def compact(self):
+        """One-time, collector-startup conversion; never runs on the insert path."""
+        try:
+            legacy = [name for name, sql in self.db.execute(
+                "SELECT name,sql FROM sqlite_master WHERE type='table' AND name IN (?,?,?)",
+                tuple(ROWID_TABLES)) if sql and 'WITHOUT ROWID' in sql.upper()]
+            if legacy:
+                self.db.execute("BEGIN IMMEDIATE")
+                for name in legacy:
+                    columns, create = ROWID_TABLES[name]
+                    self.db.execute(f"DROP TABLE IF EXISTS {name}_compact")
+                    self.db.execute(create)
+                    self.db.execute(f"INSERT OR IGNORE INTO {name}_compact ({columns}) SELECT {columns} FROM {name}")
+                    self.db.execute(f"DROP TABLE {name}")
+                    self.db.execute(f"ALTER TABLE {name}_compact RENAME TO {name}")
+                self.db.commit()
+            if legacy or self.db.execute("PRAGMA auto_vacuum").fetchone()[0] != 2:
+                # VACUUM applies incremental auto-vacuum to an existing file and
+                # returns the converted tables' pages to the filesystem.
+                self.db.execute("VACUUM")
+                self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error:
+            if self.db.in_transaction:
+                self.db.rollback()
+            try:
+                self.db.executescript(SCHEMA)
+                self.count("compaction_failures")
+                self.db.commit()
+            except sqlite3.Error:
+                pass
 
     def __enter__(self):
         return self
@@ -154,12 +217,33 @@ class Store:
         return result
 
     def evict(self, count):
-        placeholders = ','.join('?' for _ in EVIDENCE_EVENTS)
+        # Unclassified volume first, then routine high-rate evidence, then the
+        # rare decisions an incident report needs; oldest first in each tier.
+        protected = ','.join('?' for _ in PROTECTED_EVENTS)
+        routine = ','.join('?' for _ in ROUTINE_EVIDENCE)
         return self.db.execute(
             'DELETE FROM events WHERE (producer,seq) IN '
             '(SELECT producer,seq FROM events ORDER BY '
-            f'CASE WHEN event IN ({placeholders}) THEN 1 ELSE 0 END,wall LIMIT ?)',
-            (*EVIDENCE_EVENTS, count)).rowcount
+            f'CASE WHEN event IN ({protected}) THEN 2 WHEN event IN ({routine}) THEN 1 ELSE 0 END,'
+            'wall LIMIT ?)',
+            (*PROTECTED_EVENTS, *ROUTINE_EVIDENCE, count)).rowcount
+
+    def reclaim(self):
+        """Return bounded free-list pages so the file does not stay at its cap."""
+        try:
+            if self.db.execute("PRAGMA auto_vacuum").fetchone()[0] != 2:
+                return 0
+            free = self.db.execute("PRAGMA freelist_count").fetchone()[0]
+            if not free:
+                return 0
+            self.db.execute(f"PRAGMA incremental_vacuum({min(free, RECLAIM_PAGES)})").fetchall()
+            self.db.commit()
+            self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            return free - self.db.execute("PRAGMA freelist_count").fetchone()[0]
+        except sqlite3.Error:
+            if self.db.in_transaction:
+                self.db.rollback()
+            return 0
 
     def maintain(self, now=None):
         now = time.time() if now is None else now
@@ -190,12 +274,14 @@ class Store:
         self.count("evicted_events", deleted)
         self.db.commit()
         self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        self.reclaim()
         size = self.health()["disk_bytes"]
         if size > self.limit * .8:
             deleted = self.evict(20000)
             self.count("evicted_events", deleted)
             self.db.commit()
             self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self.reclaim()
         # Never unlink a WAL or database to reclaim space. A pinned external reader
         # causes collection to drop until its transaction closes.
 

@@ -45,6 +45,26 @@ mc_feedback_trim() {
   return 0
 }
 
+# Hourly, bounded pruning of stale notices, receipts and unheld receipt locks.
+# State housekeeping like mc_feedback_trim: it signals nothing, so dry-run does
+# not suppress it; an owner pause does. A live registry job keeps its notice.
+mc_feedback_prune() {
+  local stamp now last python removed
+  mc_is_paused && return 0
+  [ "${MC_CONFIG_BROKEN:-0}" != 1 ] || return 0
+  [ -d "$(mc_state_dir)/job-feedback" ] || return 0
+  stamp="$(mc_state_dir)/feedback-prune"
+  now=$(date +%s)
+  last=$(cat "$stamp" 2>/dev/null || echo 0)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  [ $((now - last)) -ge 3600 ] || return 0
+  python=$(command -v python3) || return 0
+  mc_state_write "$stamp" "$now" || return 0
+  removed=$("$python" "$LIB/feedback_prune.py" "$(mc_state_dir)" 2>/dev/null) || return 0
+  case "$removed" in ''|*[!0-9]*|0) return 0 ;; esac
+  mc_log "feedback: pruned $removed stale job-feedback files"
+}
+
 mc_feedback_hook() {
   local jqbin payload event cwd session key dir file message messages="" at now receipt token canonical python guidance_token
   jqbin=$(mc_feedback_jq) || { echo 'memcap feedback requires jq' >&2; return 1; }

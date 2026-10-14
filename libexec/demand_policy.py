@@ -43,6 +43,24 @@ ORDINARY = {'git', 'gh', 'aws', 'gcloud', 'az', 'curl', 'wget', 'ssh', 'scp',
             'memcap', 'pdftotext', 'pdfinfo', 'open'}
 
 
+def memcap_run_target(args):
+    """Split `memcap run` arguments (after 'run') into (options, form, payload).
+
+    form is 'shell' with --shell-command TEXT or 'argv' with the words after
+    '--'. Only the option section before '--' can name --shell-command; words
+    after '--' belong to the wrapped program. None when neither form applies.
+    Shared by demand and persistence classification; it never executes anything.
+    """
+    end = args.index('--') if '--' in args else len(args)
+    options = list(args[:end])
+    if '--shell-command' in options and options.index('--shell-command') + 1 < len(options):
+        i = options.index('--shell-command')
+        return options[:i] + options[i + 2:], 'shell', options[i + 1]
+    if end < len(args):
+        return options, 'argv', list(args[end + 1:])
+    return None
+
+
 @dataclass(frozen=True)
 class Decision:
     kind: str
@@ -287,10 +305,11 @@ class Classifier:
         if name in {'ssh', 'aws', 'gh', 'gcloud', 'az'}:
             return None  # Remote command payloads do not run on this Mac.
         if name == 'memcap' and args[:1] == ['run']:
-            if '--shell-command' in args and args.index('--shell-command') + 1 < len(args):
-                return self.shell(args[args.index('--shell-command') + 1], cwd, depth + 1)
-            if '--' in args:
-                return self.argv(args[args.index('--') + 1:], cwd, depth + 1)
+            target = memcap_run_target(args[1:])
+            if target and target[1] == 'shell':
+                return self.shell(target[2], cwd, depth + 1)
+            if target:
+                return self.argv(target[2], cwd, depth + 1)
         if name == 'memcap' and args[:2] == ['environment', 'run']:
             options = args[2:args.index('--') if '--' in args else len(args)]
             if any(arg in {'--help', '-h'} for arg in options):
@@ -386,7 +405,11 @@ class Classifier:
             return self.script(script, cwd, depth, name) if script else None
         if name == 'xcrun' and args:
             return self.argv(args, cwd, depth + 1)
-        if name == 'simctl' and args and args[0] in {'boot', 'bootstatus'}:
+        # bootstatus only reports/waits unless -b (alone or combined, e.g. -bd)
+        # asks it to boot the device as well.
+        if name == 'simctl' and args and (args[0] == 'boot' or (
+                args[0] == 'bootstatus'
+                and any(re.fullmatch(r'-[A-Za-z]*b[A-Za-z]*', a) for a in args[1:]))):
             return 'simulator-start'
         if name == 'docker' and args[:1] == ['compose']:
             return 'container-workload' if any(a in {'up', 'build', 'run', 'start'} for a in args[1:]) else None

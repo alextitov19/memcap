@@ -1,7 +1,9 @@
 # Every single-quoted block handed to stub_bin below is the SOURCE of a stubbed
 # binary, not shell to run here: `$@`, `$1` and `$STUB_TOP_VALUE` inside one must
 # reach the stub literally and be expanded by it, never by the test's own shell.
-# shellcheck disable=SC2016
+# Each @test body is its own subshell, so MC_MEASURE_* set in one test never
+# reaches another; SC2030/SC2031 cannot see that boundary.
+# shellcheck disable=SC2016,SC2030,SC2031
 load helper
 setup() {
   setup_common
@@ -214,8 +216,8 @@ stub_bad_unit_sample() {
   # A live PID chosen by row number can exit between the top and ps probes,
   # removing the invalid reading from the merge before the assertion sees it.
   stub_bin ps '#!/bin/sh
-[ "$*" = "-Ao pid=,ppid=,rss=,command=" ] || exit 1
-printf "4242 1 12345 fixture-one\n4243 1 12345 fixture-two\n4244 1 12345 fixture-three\n"'
+[ "$*" = "-Ao pid=,ppid=,rss=,stat=,command=" ] || exit 1
+printf "4242 1 12345 S fixture-one\n4243 1 12345 S fixture-two\n4244 1 12345 S fixture-three\n"'
   stub_bin top '#!/bin/sh
 printf "PID MEM\n4242 100M\n4243 100M\n4244 1.5X\n"'
 }
@@ -363,6 +365,71 @@ exit 1'
     [ -n "$out" ]
     assert_not_contains "$out" "unknown"
   done
+}
+
+# --- Zombies are not missing measurements ------------------------------------
+
+# A fixed table rather than the live one: whether this machine happens to hold
+# zombies must not decide the result. 20 live processes that top reports, plus
+# 30 exited-but-unreaped children of one parent -- the shape of an Android
+# emulator that never reaps. top never lists a zombie.
+stub_zombie_table() {
+  stub_bin ps '#!/bin/sh
+[ "$*" = "-Ao pid=,ppid=,rss=,stat=,command=" ] || exit 1
+i=5000; while [ $i -lt 5020 ]; do printf "%s 1 2048 S fixture live %s\n" $i $i; i=$((i+1)); done
+i=6000; while [ $i -lt 6030 ]; do printf "%s 5000 0 %s <defunct>\n" $i "${ZSTAT:-Z}"; i=$((i+1)); done'
+  stub_bin top '#!/bin/sh
+echo "PID MEM"
+i=5000; while [ $i -lt 5020 ]; do printf "%s 100M\n" $i; i=$((i+1)); done'
+}
+
+@test "unreaped zombies are not counted as missing rows and raise no fault" {
+  stub_zombie_table
+  mc_ps_snapshot > "$SNAP"
+  [ "$MC_MEASURE_FAULT" = "0" ]
+  [ "$MC_MEASURE_DEGRADED" = "0" ]
+  [ "$MC_MEASURE_REASON" = "none" ]
+  [ "$MC_MEASURE_MISSING" = "0" ]
+  [ "$MC_MEASURE_ROWS" = "20" ]
+  [ "$MC_MEASURE_ZOMBIES" = "30" ]
+}
+
+@test "zombie rows stay in the table at zero memory with the command intact" {
+  stub_zombie_table
+  mc_ps_snapshot > "$SNAP"
+  run awk '$1 == 6007' "$SNAP"
+  [ "$output" = "6007 5000 0 <defunct>" ]
+  run awk '$1 == 5003' "$SNAP"
+  [ "$output" = "5003 1 102400 fixture live 5003" ]
+}
+
+# Negative control: the same table with the exited pids in an ordinary state
+# must still trip. Excluding zombies must not exclude processes top lost.
+@test "the same pids missing in a live state are still a fault" {
+  stub_zombie_table
+  ZSTAT=S mc_ps_snapshot > "$SNAP"
+  [ "$MC_MEASURE_FAULT" = "1" ]
+  [ "$MC_MEASURE_REASON" = "missing-rows" ]
+  [ "$MC_MEASURE_MISSING" = "30" ]
+  [ "$MC_MEASURE_ZOMBIES" = "0" ]
+}
+
+@test "the zombie count survives persistence and appears in the summary" {
+  stub_zombie_table
+  mc_ps_snapshot > "$SNAP"
+  mc_measure_status_load
+  [ "$MC_MEASURE_ZOMBIES" = "30" ]
+  run mc_measure_summary
+  assert_contains "$output" "30 exited unreaped processes excluded"
+  assert_not_contains "$output" "had no row"
+}
+
+@test "the zombie count is carried through the capture pipe" {
+  stub_zombie_table
+  mc_snapshot_capture
+  [ "$MC_MEASURE_FAULT" = "0" ]
+  [ "$MC_MEASURE_ZOMBIES" = "30" ]
+  assert_contains "$MC_CAPTURE_SNAPSHOT" "6029 5000 0 <defunct>"
 }
 
 # --- Temp file hygiene on the paths detect.bats does not reach ----------------

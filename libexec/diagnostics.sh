@@ -3,7 +3,7 @@
 set -uo pipefail
 
 mc_host_pressure() {
-  local disk swap min_disk max_swap
+  local disk swap min_disk max_swap held
   MC_HOST_DISK_KB=unknown
   MC_HOST_SWAP_KB=unknown
   MC_HOST_PRESSURE=0
@@ -27,9 +27,22 @@ mc_host_pressure() {
   case "$swap" in ''|*[!0-9]*) MC_HOST_FAULT=1 ;; *) MC_HOST_SWAP_KB="$swap" ;; esac
   min_disk=$(mc_num "${HOST_MIN_DISK_GB:-10}" 10 HOST_MIN_DISK_GB)
   max_swap=$(mc_num "${HOST_MAX_SWAP_GB:-8}" 8 HOST_MAX_SWAP_GB)
-  MC_HOST_PRESSURE=$(awk -v d="$MC_HOST_DISK_KB" -v s="$MC_HOST_SWAP_KB" -v md="$min_disk" -v ms="$max_swap" \
-    'BEGIN {print ((d!="unknown" && md>0 && d<md*1048576) || (s!="unknown" && ms>0 && s>=ms*1048576)) ? 1 : 0}')
+  # Accumulated swap drifts around the threshold for hours. Once a warning is
+  # held, it clears only below the threshold minus 1 GB (at most half the
+  # threshold), so a reading hovering at the line is one episode, not dozens.
+  # Reading the marker is side-effect free; only mc_host_report writes it.
+  held=0
+  [ -f "$(mc_log_throttle_dir)/host-swap-held" ] && held=1
+  MC_HOST_SWAP_HIGH=$(awk -v s="$MC_HOST_SWAP_KB" -v ms="$max_swap" -v h="$held" \
+    'BEGIN {t=ms*1048576; m=(t/2<1048576)?t/2:1048576
+            print (s!="unknown" && ms>0 && (s>=t || (h==1 && s>=t-m))) ? 1 : 0}')
+  MC_HOST_PRESSURE=$(awk -v d="$MC_HOST_DISK_KB" -v md="$min_disk" -v sh="$MC_HOST_SWAP_HIGH" \
+    'BEGIN {print ((d!="unknown" && md>0 && d<md*1048576) || sh==1) ? 1 : 0}')
   MC_HOST_SUMMARY="disk available $(mc_diag_gb "$MC_HOST_DISK_KB"), swap used $(mc_diag_gb "$MC_HOST_SWAP_KB") (warning thresholds: disk < ${min_disk} GB, swap >= ${max_swap} GB; 0 disables a threshold)"
+  if [ "$held" = 1 ] && [ "$MC_HOST_SWAP_HIGH" = 1 ]; then
+    MC_HOST_SUMMARY="$MC_HOST_SUMMARY; swap warning held until below $(awk -v ms="$max_swap" \
+      'BEGIN {m=(ms/2<1)?ms/2:1; printf "%.2f", ms-m}') GB"
+  fi
 }
 
 mc_diag_gb() {
@@ -42,9 +55,28 @@ mc_host_report() {
   else
     mc_log_throttle_clear host-probe
   fi
+  local dir now last
+  dir="$(mc_log_throttle_dir)"
+  # The swap hysteresis marker follows readings, never an unavailable probe.
+  if [ "${MC_HOST_SWAP_HIGH:-0}" = 1 ]; then
+    [ -f "$dir/host-swap-held" ] || { mkdir -p "$dir" && mc_state_write "$dir/host-swap-held" 1; } || :
+  elif [ "${MC_HOST_SWAP_KB:-unknown}" != unknown ]; then
+    rm -f "$dir/host-swap-held"
+  fi
   if [ "$MC_HOST_PRESSURE" = 1 ]; then
+    # Notify when a warning episode begins, not on every pass while it holds,
+    # and not again for an episode that resumes within an hour of the last one.
+    if [ ! -f "$dir/host-pressure" ]; then
+      now=$(date +%s)
+      last=$(cat "$dir/host-pressure-notified" 2>/dev/null || echo 0)
+      case "$last" in ''|*[!0-9]*) last=0 ;; esac
+      if [ $((now - last)) -ge 3600 ]; then
+        mkdir -p "$dir"
+        mc_state_write "$dir/host-pressure-notified" "$now" || :
+        [ "${MC_DRY_RUN:-0}" = 1 ] || mc_notify "Memory/storage pressure: $MC_HOST_SUMMARY"
+      fi
+    fi
     mc_log_throttled host-pressure "pressure: $MC_HOST_SUMMARY -- reduce workload or free disk space; memcap cannot reclaim protected work or Docker memory"
-    [ "${MC_DRY_RUN:-0}" = 1 ] || mc_notify "Memory/storage pressure: $MC_HOST_SUMMARY"
   elif [ "$MC_HOST_FAULT" = 0 ]; then
     if [ -f "$(mc_log_throttle_dir)/host-pressure" ]; then
       mc_log "pressure: host warning cleared -- $MC_HOST_SUMMARY"

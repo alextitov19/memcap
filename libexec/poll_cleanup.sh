@@ -38,6 +38,8 @@ mc_reap_poll_loops() {
   MC_POLL_RECLAIMED=0
   mc_is_paused && return 0
   [ "${MC_CONFIG_BROKEN:-0}" != 1 ] || return 0
+  # Same pass, same pause gate: notices this cleanup writes are pruned here too.
+  if command -v mc_feedback_prune >/dev/null 2>&1; then mc_feedback_prune || :; fi
   [ -f "$(mc_state_dir)/queue/jobs.json" ] || return 0
   mc_protection_ready || return 0
   MC_POLL_PYTHON=$(command -v python3) || return 0

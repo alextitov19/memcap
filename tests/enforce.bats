@@ -2602,6 +2602,131 @@ MC_UDID_Y="0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9"
   [ "$gone" -eq 1 ]
 }
 
+# --- Escalation after TERM: an unreaped zombie is not a reused pid ------------
+# actions.log on a live machine logged "pid N was reused between SIGTERM and
+# SIGKILL" 18 times in 7 days after supervisor cancellations. A TERMed process
+# that exits before its parent reaps it keeps its pid and start time, but ps then
+# reports its command as `<defunct>` (state Z), so the identity stopped matching.
+# Every pid here is synthetic: ps is a PATH stub driven by a TERM marker, and
+# `kill` is a shell function that records calls and can signal nothing.
+escalation_fixture() {
+  # $1: state after TERM -- zombie | zombie-other-start | live | rewritten | reused
+  fakebin="$BATS_TEST_TMPDIR/fakebin"
+  mkdir -p "$fakebin"
+  export FAKE_PS_MODE="$1" FAKE_PS_TERMED="$BATS_TEST_TMPDIR/termed"
+  cat > "$fakebin/ps" <<'SCRIPT'
+#!/usr/bin/env bash
+# Synthetic process table for pid 4242 only. Original start: 10:00:00.
+fmt="" pid=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) fmt="$2"; shift 2 ;;
+    -p) pid="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ "$pid" = 4242 ] || exit 1
+start='Wed Oct 14 10:00:00 2026' stat=S cmd='/usr/bin/node mock-server.js'
+if [ -f "$FAKE_PS_TERMED" ]; then
+  case "$FAKE_PS_MODE" in
+    zombie) stat=ZN; cmd='<defunct>' ;;
+    zombie-other-start) start='Wed Oct 14 10:00:02 2026'; stat=ZN; cmd='<defunct>' ;;
+    rewritten) cmd='node: shutting down' ;;
+    reused) start='Wed Oct 14 10:00:02 2026'; cmd='/bin/zsh -c innocent-bystander' ;;
+    live) ;;
+  esac
+fi
+case "$fmt" in
+  '') printf '  PID TTY TIME CMD\n 4242 ?? 0:00.01 %s\n' "$cmd" ;;
+  pid=,rss=,command=) printf ' 4242   1000 %s\n' "$cmd" ;;
+  lstart=,command=) printf '%s     %s\n' "$start" "$cmd" ;;
+  lstart=) printf '%s\n' "$start" ;;
+  stat=) printf '%s\n' "$stat" ;;
+  *) exit 1 ;;
+esac
+SCRIPT
+  chmod +x "$fakebin/ps"
+  PATH="$fakebin:$PATH"
+  kill() {
+    printf '%s\n' "$*" >> "$BATS_TEST_TMPDIR/signals"
+    [ "$1" = -TERM ] && touch "$FAKE_PS_TERMED"
+    return 0
+  }
+  sleep() { :; }
+  mc_self_ancestry() { printf ' 99 '; }
+  mc_pid_is_evidence() { return 1; }
+  MC_VETO_EVIDENCE_PIDS=''
+  AGENTPIDS=''
+  PROTECTEDPIDS=''
+  MC_DRY_RUN=0
+}
+
+@test "ESCALATE: a zombie after TERM is logged as exited, gets no KILL, and is not called reused" {
+  escalation_fixture zombie
+  run mc_kill_pids 4242 'queued job cancelled by its supervisor'
+  [ "$status" -eq 0 ]
+  signals=$(cat "$BATS_TEST_TMPDIR/signals")
+  log=$(cat "$(mc_state_dir)/actions.log")
+  assert_contains "$signals" '-TERM 4242'
+  assert_not_contains "$signals" '-KILL'
+  assert_contains "$log" 'pid 4242 exited after SIGTERM and awaits reaping by its parent -- no SIGKILL needed'
+  assert_not_contains "$log" 'reused'
+}
+
+@test "ESCALATE: the zombie rule also holds in the supervisor cancellation scope" {
+  escalation_fixture zombie
+  mc_scheduled_allowed() { return 0; }
+  run mc_kill_pids 4242 'queued job cancelled by its supervisor' scheduled
+  [ "$status" -eq 0 ]
+  signals=$(cat "$BATS_TEST_TMPDIR/signals")
+  log=$(cat "$(mc_state_dir)/actions.log")
+  assert_contains "$signals" '-TERM 4242'
+  assert_not_contains "$signals" '-KILL'
+  assert_contains "$log" 'awaits reaping by its parent'
+  assert_not_contains "$log" 'reused'
+}
+
+@test "ESCALATE: negative control -- a different start time is still reuse, zombie or not, and gets no KILL" {
+  for mode in reused zombie-other-start; do
+    rm -f "$BATS_TEST_TMPDIR/signals" "$BATS_TEST_TMPDIR/termed" "$(mc_state_dir)/actions.log"
+    escalation_fixture "$mode"
+    run mc_kill_pids 4242 'queued job cancelled by its supervisor'
+    [ "$status" -eq 0 ]
+    signals=$(cat "$BATS_TEST_TMPDIR/signals")
+    log=$(cat "$(mc_state_dir)/actions.log")
+    assert_contains "$signals" '-TERM 4242'
+    assert_not_contains "$signals" '-KILL'
+    assert_contains "$log" 'pid 4242 was reused between SIGTERM and SIGKILL -- not escalating'
+    assert_not_contains "$log" 'awaits reaping'
+  done
+}
+
+@test "ESCALATE: a live process with an unchanged identity is still KILLed" {
+  escalation_fixture live
+  run mc_kill_pids 4242 'queued job cancelled by its supervisor'
+  [ "$status" -eq 0 ]
+  signals=$(cat "$BATS_TEST_TMPDIR/signals")
+  log=$(cat "$(mc_state_dir)/actions.log")
+  assert_contains "$signals" '-TERM 4242'
+  assert_contains "$signals" '-KILL 4242'
+  assert_not_contains "$log" 'not escalating'
+  assert_not_contains "$log" 'awaits reaping'
+}
+
+@test "ESCALATE: a live argv rewrite with the same start second fails closed without being called reuse" {
+  # lstart has one-second resolution, so this cannot be told apart from a reuse
+  # within the same second. Recorded decision: no KILL for a live mismatch.
+  escalation_fixture rewritten
+  run mc_kill_pids 4242 'queued job cancelled by its supervisor'
+  [ "$status" -eq 0 ]
+  signals=$(cat "$BATS_TEST_TMPDIR/signals")
+  log=$(cat "$(mc_state_dir)/actions.log")
+  assert_contains "$signals" '-TERM 4242'
+  assert_not_contains "$signals" '-KILL'
+  assert_contains "$log" 'pid 4242 changed its command line after SIGTERM (start time unchanged) -- not escalating'
+  assert_not_contains "$log" 'awaits reaping'
+}
+
 # --- The protection filter itself must not fail open -------------------------
 @test "PROTECT: an unset PROTECTEDPIDS refuses the kill instead of protecting nothing" {
   sleep 600 & victim=$!

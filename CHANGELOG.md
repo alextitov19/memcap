@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.32.0 — 2026-10-14
+
+- Stop counting exited, unreaped (zombie) processes as missing footprint rows.
+  `top` never lists them and they hold no memory, but an Android emulator that
+  never reaps its children left 135 of them, crossed the 10% missing-rows
+  threshold and marked every sample faulty. That held all heavy admission at
+  green pressure. Zombies stay in the process table at zero memory, and
+  `memcap status` shows how many were excluded. Processes `top` genuinely lost
+  still count as missing and still fault at the same threshold.
+- Register dev servers launched through an explicit `memcap run` wrapper, or
+  backgrounded with a single trailing `&`, as persistent resources instead of
+  finite jobs that hold a finite slot indefinitely. Wrappers with `--memory`,
+  `--resource` or `--shell`, and `&` followed by further commands, stay finite.
+- Queue `simctl bootstatus` as a simulator start only with `-b`; without it the
+  command only reports boot status. `simctl boot` is unchanged.
+- Log a process that exited after SIGTERM but awaits reaping as exited, not as
+  PID reuse. No SIGKILL is sent in that case. A changed command line with an
+  unchanged start time is logged separately and still not escalated, because
+  one-second start times cannot exclude reuse.
+- Store analytics events in compact rowid tables; most rows previously took
+  their own overflow page, so the page cap held about 90 minutes of events.
+  Existing files convert once at collector startup and fall back to the old
+  layout on failure. Eviction reclaims pages incrementally and removes routine
+  events before high-rate sampling events, then incident evidence. The page cap
+  is unchanged, so retention grows but does not reach 14 days.
+- Hold the swap-used warning until swap drops 1 GB below the threshold, and
+  notify once per episode, with no repeat within an hour.
+- Prune job-feedback guidance receipts, orphaned locks and notices older than
+  seven days, hourly from the watchdog pass. Held locks and notices for jobs in
+  the queue registry are kept; the pass stops while memcap is paused.
+- Admission, pressure, reservation and termination policies are unchanged.
+
 ## v0.31.0 — 2026-10-10
 
 - Keep exact Android emulator listings native; actual emulator launches remain managed.
