@@ -28,7 +28,7 @@ FIELDS = {
     "compiler_complete_runs",
     "estimate_reuse_reason", "estimate_prior_kb", "compiler_profile_used",
     "learning_protocol", "observation_probe_ms", "sampling_busy_count",
-    "sampling_expired_count", "sample_cache_mismatch_count", "sampling_reason",
+    "sampling_expired_count", "sampling_refreshed_count", "sample_cache_mismatch_count", "sampling_reason",
     "learning_unverified_scope",
     "learning_samples", "learning_fault_samples", "learning_missing_samples", "learning_detached_samples",
     "capacity_stalled",
@@ -206,6 +206,29 @@ def measurement_signature(config, environ, source):
     return hashlib.sha256(str(config.resolve()).encode()
                           + (config.read_bytes() if config.exists() else b'')
                           + json.dumps(context).encode() + source.encode()).hexdigest()
+
+
+def newer_cached_sample(directory: Path, key: str, held: dict) -> dict:
+    """Adopt a newer published sample after waiting for the registry lock.
+
+    A sample taken before a contended lock can age past the two-second limit
+    while other waiters publish newer ones. This only reads the cache: it never
+    probes, never extends freshness and never replaces a non-busy fault.
+    """
+    try:
+        value = json.loads((directory / "sample.json").read_text())
+        sample = value["sample"]
+        stamp = sample["monotonic"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return held
+    if (value.get("key") != key or not number(stamp)
+            or not 0 <= time.monotonic() - stamp < 2
+            or (held.get("fault") and not held.get("busy"))
+            or (not held.get("busy") and number(held.get("monotonic"))
+                and stamp <= held["monotonic"])):
+        return held
+    handoff = {k: held[k] for k in ("sampling_handoff_count", "sampling_handoff_ms") if k in held}
+    return {**sample, **handoff, "sampling_path": 1, "sampling_refreshed_count": 1}
 
 
 def shared_sample(directory: Path, key: str, sampler) -> dict:

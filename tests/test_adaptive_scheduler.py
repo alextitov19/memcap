@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -104,6 +105,89 @@ class AdaptiveSchedulerTests(unittest.TestCase):
                 self.assertTrue(result["busy"])
                 self.assertLessEqual(clock[0] - 100, 1.000001)
             self.assertEqual(len(calls), 1)
+
+    def publish(self, q, key, age=0.0, **fields):
+        q.directory.mkdir(parents=True, exist_ok=True)
+        published = {**sample(), "monotonic": time.monotonic() - age, **fields}
+        # Atomic like shared_sample: a torn read would look like a stale sample.
+        staged = q.directory / f".sample-{threading.get_ident()}"
+        staged.write_text(json.dumps(dict(key=key, sample=published)))
+        os.replace(staged, q.directory / "sample.json")
+
+    def test_newer_cached_sample_never_extends_freshness_or_hides_faults(self):
+        from scheduler_metrics import newer_cached_sample
+        q = self.queue()
+        held = {**sample(), "monotonic": time.monotonic() - 2.5}
+        self.publish(q, "sig", age=0.1, available_kb=3 * GIB)
+        self.assertEqual(newer_cached_sample(q.directory, "sig", held)["available_kb"], 3 * GIB)
+        self.assertIs(newer_cached_sample(q.directory, "other", held), held)
+        busy = dict(busy=True, fault=True, pressure=0, monotonic=time.monotonic())
+        self.assertEqual(newer_cached_sample(q.directory, "sig", busy)["available_kb"], 3 * GIB)
+        fault = dict(fault=True, pressure=0, monotonic=time.monotonic() - 5)
+        self.assertIs(newer_cached_sample(q.directory, "sig", fault), fault)
+        newer = {**sample(), "monotonic": time.monotonic()}
+        self.assertIs(newer_cached_sample(q.directory, "sig", newer), newer)
+        self.publish(q, "sig", age=2.0)
+        self.assertIs(newer_cached_sample(q.directory, "sig", held), held)
+        (q.directory / "sample.json").write_text("{")
+        self.assertIs(newer_cached_sample(q.directory, "sig", held), held)
+
+    def test_host_measurement_records_the_signature_used_for_lock_refresh(self):
+        import scheduler
+        q = self.queue()
+        q.sampler = scheduler.sample_host
+        with patch("scheduler.shared_sample", return_value=sample()) as shared:
+            q.measure()
+        self.assertTrue(q.sample_signature)
+        self.assertEqual(shared.call_args.args[1], q.sample_signature)
+
+    def contended_run(self, wait=8, **published):
+        # The waiter's own sample is already past the limit when it gets the
+        # registry lock, as under a long lock queue; another supervisor keeps
+        # republishing. Only the published sample can make admission possible.
+        import scheduler_metrics
+        reasons = []
+        account = scheduler_metrics.account_blocker
+        patcher = patch("scheduler_metrics.account_blocker",
+                        side_effect=lambda job, reason, now: (reasons.append(reason), account(job, reason, now)))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        q = self.queue()
+        q.sampler = lambda: {**sample(), "monotonic": time.monotonic() - 2.5}
+        q.sample_signature = "sig"
+        stop = threading.Event()
+
+        def publisher():
+            while not stop.is_set():
+                self.publish(q, **{"key": "sig", **published})
+                stop.wait(0.1)
+        self.publish(q, **{"key": "sig", **published})
+        thread = threading.Thread(target=publisher)
+        thread.start()
+        self.addCleanup(lambda: (stop.set(), thread.join()))
+        marker = self.root / "ran"
+        result = q.run([sys.executable, "-c", f'open({str(marker)!r},"w").close()'], wait=wait)
+        stop.set()
+        thread.join()
+        completed = [json.loads(line) for line in (q.directory / "events.jsonl").read_text().splitlines()
+                     if '"completed"' in line] if (q.directory / "events.jsonl").exists() else []
+        return result, marker.exists(), set(reasons), completed
+
+    def test_contended_waiter_admits_on_fresher_published_sample(self):
+        result, ran, reasons, completed = self.contended_run()
+        self.assertEqual((result, ran), (0, True))
+        self.assertNotIn("sampling", reasons)
+        self.assertGreaterEqual(completed[-1]["sampling_refreshed_count"], 1)
+
+    def test_contended_waiter_never_admits_on_stale_red_or_foreign_samples(self):
+        # Red is adopted (it is fresher) and then denied on pressure; stale and
+        # foreign publications are never adopted, so the waiter still sees expiry.
+        for published, reason in ((dict(age=2.5), {"sampling"}),
+                                  (dict(pressure=4), {"pressure_or_measurement"}),
+                                  (dict(key="other"), {"sampling"})):
+            with self.subTest(published=published):
+                result, ran, reasons, _ = self.contended_run(wait=3, **published)
+                self.assertEqual((result, ran, reasons), (75, False, reason))
 
     def test_observed_peak_growth_survives_a_later_memory_lull(self):
         q = self.queue()

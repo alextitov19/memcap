@@ -19,7 +19,7 @@ from unittest.mock import Mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "libexec"))
 import analytics_events as events
 from analytics_store import Store
-from analytics_reports import summarize, compare, interval_union
+from analytics_reports import summarize, compare, interval_union, text_report
 from analytics_otlp import decode_logs
 from analytics_install import configure_profiles, initialize, telemetry_environment
 
@@ -154,6 +154,16 @@ class AnalyticsTests(unittest.TestCase):
                             self.row("claim", 2, job="request", resource="server", persistent=1)])
         self.assertEqual(report["jobs"]["started"], 0)
         self.assertEqual(report["persistent_resources"]["reuse_claims"], 1)
+
+    def test_text_report_survives_jobs_whose_queued_row_was_evicted(self):
+        # Retention can evict a pending job's queued row and keep only stalls.
+        rows = [self.row("stalled", 1, job="pending", queue_wait_ms=5000),
+                {**self.row("stalled", 2, job="legacy", queue_wait_ms=5000),
+                 "build": None, "policy": None}]
+        report = summarize(rows)
+        cohort = next(g for g in report["cohorts"] if g["build"] != "b" * 64)
+        self.assertEqual((cohort["build"], cohort["policy"]), ("unknown", "unknown"))
+        self.assertIn("b" * 12 + " / " + "c" * 12, text_report(report))
 
     def test_regression_negative_control_and_missing_cohorts(self):
         baseline = [self.row("completed", i, job=str(i), runtime_ms=1000,
