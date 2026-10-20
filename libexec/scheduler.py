@@ -285,6 +285,7 @@ class Scheduler:
         from scheduler_metrics import measurement_signature
         from analytics_events import build_digest
         signature = measurement_signature(config, os.environ, build_digest())
+        self.sample_signature = signature
         began = time.monotonic()
         try:
             sample = shared_sample(self.directory, signature, self.sampler)
@@ -299,6 +300,14 @@ class Scheduler:
         except Exception:
             pass
         return sample
+
+    def latest_sample(self, sample):
+        # Under the admission lock: a cache read only, never a host probe.
+        signature = getattr(self, "sample_signature", None)
+        if not signature or not sample:
+            return sample
+        from scheduler_metrics import newer_cached_sample
+        return newer_cached_sample(self.directory, signature, sample)
 
     def observe(self, data, sample):
         if not sample or sample.get("busy"):
@@ -957,6 +966,7 @@ class Scheduler:
                         waited = True
                         continue  # Top-of-loop owns deadline/cancellation results.
                     self.refresh(data, table)
+                    sample = self.latest_sample(sample)
                     self.observe(data, sample)
                     job = next(j for j in data["jobs"] if j["id"] == ident)
                     # Revalidate learned priority for the worker allocation that
@@ -1011,7 +1021,7 @@ class Scheduler:
                         allowed, reason = True, "memcap is paused"
                     else:
                         job['sampling_decisions'] = job.get('sampling_decisions', 0) + 1
-                        for field in ('sampling_handoff_count', 'sampling_handoff_ms'):
+                        for field in ('sampling_handoff_count', 'sampling_handoff_ms', 'sampling_refreshed_count'):
                             job[field] = job.get(field, 0) + sample.get(field, 0)
                         try:
                             if self.policy == 'strict' and sample.get("cap_kb") and memory > sample["cap_kb"]:
@@ -1263,6 +1273,7 @@ class Scheduler:
                                    if job.get('learning_protocol') == 2 else {}),
                                 sampling_busy_count=job.get('sampling_busy_count',0),
                                 sampling_expired_count=job.get('sampling_expired_count',0),
+                                sampling_refreshed_count=job.get('sampling_refreshed_count',0),
                                 sampling_decisions=job.get('sampling_decisions',0),
                                 sampling_handoff_count=job.get('sampling_handoff_count',0),
                                 sampling_handoff_ms=job.get('sampling_handoff_ms',0),

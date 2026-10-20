@@ -115,7 +115,11 @@ def delay_breakdown(jobs, by_cohort=False, by_lane=False):
         end = job.get("completed") or job.get("cancelled") or {}
         admission = job.get("admitted", {})
         meta = {**job.get("queued", {}), **end, **admission}
-        key = ((meta.get("build"), meta.get("policy"), enforcement_state(observations))
+        # Retention can evict the queued row of a pending job; any surviving row
+        # still identifies its cohort. Rows without one stay explicitly unknown.
+        cohort = [next((r[k] for r in [meta, *observations] if r.get(k)), "unknown")
+                  for k in ("build", "policy")]
+        key = ((*cohort, enforcement_state(observations))
                if by_cohort else ({1: "small", 2: "heavy"}.get(meta.get("lane_code"), "unknown"),)
                if by_lane else (meta.get("family", "unknown"),))
         group = groups.setdefault(key, dict(jobs=0, waits=[], runtimes=[], amplification=[],
@@ -256,6 +260,7 @@ def learning_effectiveness(jobs, rows):
                 owned_observation_complete=sum(r['learning_protocol']==2 and r.get('learning_complete')==1 for r in completions) if completions else None,
                 owned_probe_ms=distribution([r['observation_probe_ms'] for r in completions if r['learning_protocol']==2 and 'observation_probe_ms' in r]),
                 sampling_busy_count=count('sampling_busy_count'), sampling_expired_count=count('sampling_expired_count'),
+                sampling_refreshed_count=count('sampling_refreshed_count'),
                 sample_cache_mismatch_count=count('sample_cache_mismatch_count'),
                 shared_probe_ms=distribution([r['sample_duration_ms'] for r in rows if r['event']=='sample' and 'sample_duration_ms' in r]),
                 interpretation='Observed admissions below their startup prior, not counterfactual time saved. Unknown historical fields stay unknown. Busy and expired counts are decisions, not durations. Shared sample rows can repeat a probe duration.')
@@ -541,7 +546,7 @@ def text_report(report):
              f"Completed-job learning: {report['completed_evidence']['learning_complete']} complete, {report['completed_evidence']['learning_incomplete']} incomplete, {report['completed_evidence']['learning_unknown']} unknown; {report['completed_evidence']['explicit_requests']} fixed requests.",
              f"Successful-job learning: {report['completed_evidence']['successful_learning_complete']} complete, {report['completed_evidence']['successful_learning_incomplete']} incomplete, {report['completed_evidence']['successful_learning_unknown']} unknown.",
              f"Admissions below startup prior: {number(learning.get('admissions_below_prior'))}; reusable compiler profiles: {number(learning.get('compiler_profile_admissions'))}; known admissions: {learning.get('known_admissions', 0)}.",
-             f"Sampling decisions: busy {number(learning.get('sampling_busy_count'))}; expired {number(learning.get('sampling_expired_count'))}; incompatible cache {number(learning.get('sample_cache_mismatch_count'))}.",
+             f"Sampling decisions: busy {number(learning.get('sampling_busy_count'))}; expired {number(learning.get('sampling_expired_count'))}; refreshed under lock {number(learning.get('sampling_refreshed_count'))}; incompatible cache {number(learning.get('sample_cache_mismatch_count'))}.",
              f"Pressure observed: {number(machine['observed_seconds'], ' s')}; red: {number(machine['red_seconds'], ' s')}; yellow: {number(machine['yellow_seconds'], ' s')}.",
              f"Paging at least 1 MiB/s: {number(machine['paging_ge_1MiB_s_seconds'], ' s')}.",
              f"Wired memory peak: {number(machine['wired_kb']['max'], ' KiB')}; kernel counters are allocation evidence, not process attribution.",

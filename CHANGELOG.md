@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.32.1 — 2026-10-20
+
+- Stop queued work from losing its turn to sample expiry under lock
+  contention. Waiters sample memory before taking the queue's registry lock;
+  with about 40 waiters the lock wait alone exceeded the two-second freshness
+  limit, so admission denied with "sampling" over and over while other
+  supervisors were publishing fresh samples. v0.32.0 recorded 21,445 such
+  denials, and short jobs waited about an hour on October 19. After taking the
+  lock, a waiter now adopts a newer published sample of the same configuration
+  that is still under two seconds old. It only reads the cache and never probes
+  under the lock. A failed measurement is never replaced, and red pressure,
+  headroom, slots and the launch-time pressure recheck are unchanged.
+  `memcap analytics today` reports how often this happens as "refreshed under
+  lock".
+- Fix `memcap analytics today` crashing when a retained job had no build, for
+  example a pending job whose queued row was evicted. Such jobs now report
+  their build from any surviving row, or as "unknown".
+
 ## v0.32.0 — 2026-10-14
 
 - Stop counting exited, unreaped (zombie) processes as missing footprint rows.
