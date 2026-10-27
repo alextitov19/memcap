@@ -205,6 +205,7 @@ from footprint; neither is used for admission.
 Source references: [Claude hooks](https://code.claude.com/docs/en/hooks),
 [Claude monitoring](https://code.claude.com/docs/en/monitoring-usage),
 [SQLite WAL](https://www.sqlite.org/wal.html).
+
 # Classifier redesign comparisons
 
 Before changing admission policy, preserve a consistent SQLite backup, analytics
@@ -228,6 +229,7 @@ Compare queue delay, successful runtime, prompt/task completion, polling cost,
 red-pressure exposure and paging within matching workload, worker, build, policy
 and pause cohorts. Measure hook and collector overhead separately. Do not claim
 that a paused candidate's zero queue delay proves active admission improvement.
+
 # Throughput reporting and retention
 
 Finite project jobs and jobs explicitly tagged `memcap run --purpose monitoring`
@@ -250,6 +252,7 @@ host background task. It never reserves RAM or certifies workload success. Keep
 the original task for its final output/status. Legacy hooks and hosts without
 resumable notifications continue using 60-second blocking polls; do not end a
 Stop-blocked turn in the expectation that memcap can resume the host.
+
 # Release baselines
 
 Save each observation window outside rolling retention before upgrading:
@@ -364,7 +367,10 @@ Old releases without these fields report unknown values rather than zero failure
 
 New commands through stable installed paths adopt the new runner. Existing queue
 supervisors retain their loaded code until completion; never resubmit their jobs.
-If analytics is enabled, refresh its collector after upgrade to accept the new
-fields. This does not require changing agent hooks or restarting enforcement.
+Since v0.32.2 the collector heartbeat records which installation the collector
+loaded, and the next watch pass restarts a collector still running replaced code,
+at most once per installation. Older releases needed a manual
+`launchctl kickstart -k gui/$(id -u)/com.memcap.analytics` after each upgrade.
+Neither changes agent hooks or restarts enforcement.
 Raw command tracing is separate, owner-enabled and expires after 24 hours; an
 empty recent trace is not proof that no commands ran. Keep raw evidence local.

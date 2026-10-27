@@ -272,3 +272,87 @@ teardown() {
   [ "$status" -eq 2 ]
   assert_contains "$output" "usage: memcap service install|uninstall|status"
 }
+
+# --- Analytics collector refresh -------------------------------------------
+# `brew upgrade` never restarts the long-lived analytics collector, so one kept
+# running deleted 0.31.0 code for two releases and silently dropped newer event
+# fields. Each watch pass compares the collector's recorded root with its own.
+
+collector_fixture() {  # $1 = root recorded in the heartbeat ("" for none)
+  mkdir -p "$MEMCAP_LAUNCHAGENT_DIR" "$MEMCAP_STATE_HOME/memcap/analytics"
+  echo "<plist/>" > "$MEMCAP_LAUNCHAGENT_DIR/com.memcap.analytics.plist"
+  if [ -n "$1" ]; then
+    printf '{"at": 1, "build": "x", "root": "%s", "received": 0}\n' "$1"
+  else
+    printf '{"at": 1, "build": "x", "received": 0}\n'
+  fi > "$MEMCAP_STATE_HOME/memcap/analytics/heartbeat.json"
+}
+
+refresh_collector() {  # A nonzero exit fails the calling test.
+  env MC_DRY_RUN=0 bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    source '$MEMCAP_ROOT/libexec/service.sh'
+    mc_refresh_analytics_collector
+  "
+}
+
+@test "watch restarts an analytics collector still running a replaced installation, once" {
+  collector_fixture "/opt/homebrew/Cellar/memcap/0.31.0"
+  refresh_collector
+  run cat "$FAKE_LAUNCHCTL_LOG"
+  assert_contains "$output" "kickstart -k gui/$(id -u)/com.memcap.analytics"
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_contains "$output" "analytics: restarted the collector running /opt/homebrew/Cellar/memcap/0.31.0"
+  # A collector that cannot adopt the new code is never restarted in a loop.
+  : > "$FAKE_LAUNCHCTL_LOG"
+  refresh_collector
+  [ ! -s "$FAKE_LAUNCHCTL_LOG" ]
+}
+
+@test "watch restarts a collector from before heartbeats recorded their root" {
+  collector_fixture ""
+  refresh_collector
+  run cat "$FAKE_LAUNCHCTL_LOG"
+  assert_contains "$output" "kickstart -k"
+}
+
+@test "watch leaves a current, stopped or uninstalled analytics collector alone" {
+  collector_fixture "$(cd "$MEMCAP_ROOT" && pwd -P)"
+  refresh_collector
+  [ ! -s "$FAKE_LAUNCHCTL_LOG" ]
+
+  collector_fixture "/old/root"
+  touch -t 202001010000 "$MEMCAP_STATE_HOME/memcap/analytics/heartbeat.json"
+  refresh_collector
+  [ ! -s "$FAKE_LAUNCHCTL_LOG" ]
+
+  collector_fixture "/old/root"
+  rm "$MEMCAP_LAUNCHAGENT_DIR/com.memcap.analytics.plist"
+  refresh_collector
+  [ ! -s "$FAKE_LAUNCHCTL_LOG" ]
+}
+
+@test "a dry-run watch pass records the collector refresh without calling launchctl" {
+  collector_fixture "/opt/homebrew/Cellar/memcap/0.31.0"
+  "$MEMCAP_ROOT/bin/memcap" off
+  run env MC_DRY_RUN=1 "$MEMCAP_ROOT/bin/memcap" watch
+  "$MEMCAP_ROOT/bin/memcap" on
+  run cat "$FAKE_LAUNCHCTL_LOG"
+  assert_not_contains "$output" "kickstart"
+  run cat "$MEMCAP_STATE_HOME/memcap/actions.log"
+  assert_contains "$output" "analytics: would restart the collector"
+}
+
+# --- Watchdog tool PATH ------------------------------------------------------
+
+@test "the watchdog appends Homebrew tool directories without shadowing system tools" {
+  mkdir -p "$BATS_TEST_TMPDIR/brew/bin"
+  run env PATH=/usr/bin:/bin MC_TOOL_DIRS="$BATS_TEST_TMPDIR/brew/bin /does/not/exist /bin" /bin/bash -c "
+    source '$MEMCAP_ROOT/libexec/common.sh'
+    mc_append_tool_path
+    mc_append_tool_path
+    printf '%s' \"\$PATH\"
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = "/usr/bin:/bin:$BATS_TEST_TMPDIR/brew/bin" ]
+}

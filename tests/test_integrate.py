@@ -321,6 +321,21 @@ class IntegrateTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("disableAllHooks", result.stdout)
 
+    def test_doctor_ignores_whitespace_only_guidance_edits_but_not_content_edits(self):
+        self.install()
+        doc = self.profile / "CLAUDE.md"
+        doc.write_text(doc.read_text().replace("<!-- memcap:begin -->\n", "<!-- memcap:begin -->\n\n", 1))
+        before = doc.read_bytes()
+        result = self.cli("doctor", "--claude-dir", str(self.profile))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("only in whitespace", result.stdout)
+        self.assertNotIn("WARN", result.stdout)
+        self.assertEqual(doc.read_bytes(), before)
+        doc.write_text(doc.read_text().replace("memcap shared-memory coordination", "memcap coordination", 1))
+        result = self.cli("doctor", "--claude-dir", str(self.profile))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing/stale integration (CLAUDE.md)", result.stdout)
+
     def test_custom_profile_environment_is_discovered(self):
         extra = self.home / "custom Claude"
         extra.mkdir()
