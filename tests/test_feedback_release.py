@@ -134,6 +134,42 @@ class FeedbackReleaseTests(unittest.TestCase):
                 int(7.5 * GIB),
             )
 
+    def observe_interleaved(self, job, start, seconds, measured=GIB // 4):
+        # Each supervisor samples before taking the registry lock, so every
+        # other fresh observation arrives 0.8 s older than the newest one.
+        reserve = job["reservation_kb"]
+        for i in range(int(seconds * 2)):
+            now = start + i * 0.5
+            stamp = now - (0.8 if i % 2 else 0)
+            sample = {**self.sample(stamp), "footprints": {"42": measured}}
+            with (
+                patch("scheduler.time.monotonic", return_value=now),
+                patch("scheduler.time.time", return_value=now),
+            ):
+                reserve = Scheduler.reservation(job, sample, measured, adaptive=True)
+            job["reservation_kb"] = reserve
+        return reserve
+
+    def test_slightly_older_fresh_samples_do_not_pin_a_retired_peak(self):
+        job = self.job()
+        self.assertEqual(self.observe_interleaved(job, 100, 50), 5 * GIB)
+        self.assertEqual(self.observe_interleaved(job, 150, 30), GIB // 2)
+
+    def test_slightly_older_fresh_samples_still_raise_the_allowance(self):
+        job = self.job()
+        self.observe_interleaved(job, 100, 70)
+        self.assertEqual(job["reservation_kb"], GIB // 2)
+        stamp = 170
+        job["reservation_window"][-1][0] = stamp
+        with (
+            patch("scheduler.time.monotonic", return_value=stamp + 0.5),
+            patch("scheduler.time.time", return_value=stamp + 0.5),
+        ):
+            reserve = Scheduler.reservation(
+                job, {**self.sample(stamp - 0.8), "footprints": {"42": 3 * GIB}}, 3 * GIB, adaptive=True
+            )
+        self.assertGreaterEqual(reserve, 3 * GIB)
+
     def test_stale_and_gapped_samples_never_decay(self):
         job = self.job()
         for stamp in (100, 102, 160, 162):
