@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.32.4 — 2026-10-27
+
+- Keep queued jobs moving across an upgrade. `brew upgrade` deletes the previous
+  installation while queued jobs are still waiting on it. Those supervisors
+  measured memory through their own, now deleted, copy of `memcap`, so every
+  sample failed. Each failure also reset the shared "healthy since" clock, which
+  held waiters from the new version at "stabilizing". On October 27 one upgrade
+  stalled nine jobs across several sessions for about 25 minutes at green
+  pressure. A supervisor now falls back to the installed `memcap` for sampling
+  and cancellation when its own copy is gone; the line-based protocols involved
+  have not changed since the queue was introduced. It also loads every module it
+  imports lazily when it starts, and computes the digest of its own code once
+  instead of re-reading every file on each measurement.
+
 ## v0.32.3 — 2026-10-27
 
 - Retire disposable test environments whose containers no longer exist. With
@@ -347,7 +361,7 @@ recorded on the release pull request.
   before writes, and update heartbeat health even after a write failure. Add
   per-lane delay reporting; unavailable historical observations remain unknown.
 
-See [local validation](docs/v0.21-validation.md) and [memory routing](docs/demand-classifier.md).
+See [local validation](docs/dev-notes/v0.21-validation.md) and [memory routing](docs/demand-classifier.md).
 CI and publication status are recorded on the release pull request.
 
 ## v0.20.0 — 2026-09-30
@@ -369,8 +383,8 @@ CI and publication status are recorded on the release pull request.
   executable even when Homebrew is absent from PATH. Preserve other sessions'
   leases and all existing enforcement protections.
 
-See [analytics](docs/analytics.md), [validation](docs/analytics-validation.md) and
-[issue evidence and remaining unknowns](docs/issues-259-266.md).
+See [analytics](docs/analytics.md), [validation](docs/dev-notes/analytics-validation.md) and
+[issue evidence and remaining unknowns](docs/dev-notes/issues-259-266.md).
 
 ## v0.19.0 — 2026-09-29
 
@@ -390,7 +404,7 @@ See [analytics](docs/analytics.md), [validation](docs/analytics-validation.md) a
   metadata, grouped reads and guarded finite remote helpers outside admission.
   Preserve shell validation branches and execute checked script bytes once.
 
-See [issue evidence](docs/open-issues-0.19.0.md).
+See [issue evidence](docs/dev-notes/open-issues-0.19.0.md).
 
 ## v0.18.4 — 2026-09-29
 
@@ -409,7 +423,7 @@ See [issue evidence](docs/open-issues-0.19.0.md).
   complete-run credit. Updating an existing estimate now refreshes its cache
   retention order instead of allowing a recently trained estimate to be evicted.
 
-See [issue reproductions and release evidence](docs/open-issues-0.18.4.md).
+See [issue reproductions and release evidence](docs/dev-notes/open-issues-0.18.4.md).
 
 ## v0.18.3 — 2026-09-28
 
@@ -437,7 +451,7 @@ See [issue reproductions and release evidence](docs/open-issues-0.18.4.md).
   informational. Doctor still checks actual hooks, timeouts, guidance and trust;
   a release bump alone no longer reports broken integration or requests profile edits.
 
-See [investigation, evidence and limits](docs/remaining-issue-investigation.md).
+See [investigation, evidence and limits](docs/dev-notes/remaining-issue-investigation.md).
 
 ## v0.18.2 — 2026-09-28
 
@@ -455,7 +469,7 @@ See [investigation, evidence and limits](docs/remaining-issue-investigation.md).
 - Isolate Docker settings in the test harness so dry-run watchdog tests never
   read the developer's real Docker settings or wait on macOS file consent.
 
-See [issue audit and activation details](docs/completion-0.18.2.md).
+See [issue audit and activation details](docs/dev-notes/completion-0.18.2.md).
 
 ## v0.18.1 — 2026-09-28
 
@@ -470,7 +484,7 @@ See [issue audit and activation details](docs/completion-0.18.2.md).
 - Preserve lightweight command handling and the existing memory policy. These are
   accounting/protection fixes, not a guarantee that macOS can never enter red.
 
-See [incident evidence and limits](docs/pressure-accounting-0.18.1.md).
+See [incident evidence and limits](docs/dev-notes/pressure-accounting-0.18.1.md).
 
 ## v0.18.0 — 2026-09-28
 
@@ -488,7 +502,7 @@ See [incident evidence and limits](docs/pressure-accounting-0.18.1.md).
   sampling duration and per-blocker elapsed intervals. Public reports remain
   opt-in and contain no commands, paths or process identities.
 
-See [investigation and limitations](docs/queue-productivity-0.18.md).
+See [investigation and limitations](docs/dev-notes/queue-productivity-0.18.md).
 
 ## v0.17.1 — 2026-09-25
 
@@ -580,7 +594,7 @@ See [investigation and limitations](docs/queue-productivity-0.18.md).
 - Distinguish shared-sampler contention from a failed memory measurement in
   admission notices, queue blockers and numeric event code 10.
 - Audit September 25 logs and reports #82–102, including retrospective incidents
-  and proposed improvements, in `docs/feedback-2026-09-25.md`.
+  and proposed improvements, in `docs/dev-notes/feedback-2026-09-25.md`.
 
 ## v0.16.3 — 2026-09-24
 
@@ -596,7 +610,7 @@ See [investigation and limitations](docs/queue-productivity-0.18.md).
 - Separate reporting-probe failures from queue-sample failures, and report effective
   reservations instead of making users infer them from original requests.
 - Audit the September 24 logs and reports #58–80; document reproduced fixes and
-  remaining limits of historical attribution in `docs/feedback-2026-09-24.md`.
+  remaining limits of historical attribution in `docs/dev-notes/feedback-2026-09-24.md`.
 
 ## v0.16.2 — 2026-09-23
 

@@ -1,127 +1,92 @@
 # memcap
 
-### v0.31 incident diagnostics
-
-Android emulator listings (`emulator -list-avds`) stay native; real boots still
-require admission. Heavy hook feedback names the positive demand evidence and
-explains compound commands. An explicit `memcap wait; cat ...` waits for earlier
-work before reading; use a separate call for independent inspection.
-
-Cancellation telemetry records the signal received by the supervisor and whether
-guarded cancellation succeeded. Scheduled signal records share its opaque job
-identity. This does not identify the signal sender or prove a user cancellation,
-host timeout, or final workload exit. Existing signal/ownership checks are intact.
-
-Reports accept `--operation TOOL_CALL_ID` when the original host ID is available.
-It selects private local evidence only; neither that ID nor commands are published.
-Incident bundles prioritize matching decisions and lifecycle events over sample
-volume, and explicitly mark truncation. Raw tracing still requires owner opt-in.
-Compact lifecycle and termination checkpoints retain up to 90 days, bounded by
-4,096 jobs and 4,096 diagnostic events and the existing database size limit.
-Release comparisons now include matching-workload cohorts, and long-wait examples
-include observed blocker durations. These are observations, not causal claims.
-
-Direct local `node node_modules/.bin/tsc` invocations can learn a reusable compiler
-profile when their configuration is supported; arbitrary JS/preloads remain
-unsupported. Incomplete measurements cannot lower predictions. Learning reports
-separate short runs without samples, probe faults, missing process observations
-and complete runs. Sample-unavailability retries use a bounded shorter backoff;
-the two-second freshness limit and final pressure check are unchanged.
-
-The configured per-process oversized limit still applies in green pressure. A
-single TypeScript checker is not made smaller by limiting parallel workers. After
-an oversized termination, inspect its effective project inputs and generated
-sources, use incremental/project checks when valid, and report the measured need
-if it cannot fit. Do not repeat the identical failing launch or raise Node's heap
-to evade the footprint limit. This release changes no owner limits or kill eligibility.
-
-Temporary command investigation: `memcap trace on` records shell commands seen by
-the installed hooks plus queue requests, blockers and completion statuses locally.
-It also snapshots identity-checked existing queue supervisors. Capture expires
-after 24 hours; three rotating files retain at most 24 MiB. Old files are pruned
-by the analytics collector or the next trace access. `memcap analytics status`
-shows whether capture is active, expired or off; expiry never renews itself.
-`memcap trace show` displays the latest 200 records;
-`memcap trace show JOB_ID` filters them to one queued job.
-`memcap trace clear` stops capture and deletes them. Logging is best effort and
-never blocks admission on a busy trace lock. Raw trace data is separate from
-analytics and is never included in public reports. Existing loaded supervisors
-need no cancellation, but only new runners emit subsequent trace transitions.
-
-Local performance analytics can record queue delay, native/paused hook activity,
-unfinished work, pressure/paging observations, and code/policy provenance without
-changing enforcement. Run `memcap analytics enable --service --claude`, then
-`memcap analytics today`. Data stays on your Mac. Existing hooks pick up recording
-at their next invocation; native Claude API/token telemetry applies at session
-startup. Before upgrading, save an immutable local baseline with
-`memcap analytics snapshot ~/memcap-before --days 1`; compare a later snapshot
-using `memcap analytics release-compare ~/memcap-before ~/memcap-after`.
-See [analytics setup, interpretation, and benchmarks](docs/analytics.md).
-
-Since v0.29.0, reports also preserve a bounded private incident bundle when local
-analytics is available: up to 2,000 sanitized decision events from the preceding
-30 minutes, with explicit truncation and coverage. At most twenty compressed
-bundles of at most 1 MiB are retained, for seven days, under memcap's private state
-directory. Raw commands never enter these bundles or public reports. Storage
-pressure preferentially evicts routine hook/API records before diagnostic events;
-per-event coverage remains visible because neither tier is unlimited.
-
 [![CI](https://github.com/alextitov19/memcap/actions/workflows/ci.yml/badge.svg)](https://github.com/alextitov19/memcap/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/alextitov19/memcap)](https://github.com/alextitov19/memcap/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#requirements)
 
-**Keep AI coding agents from eating your Mac.**
+**Run several AI coding agents on one Mac without it grinding to a halt.**
 
-memcap is a macOS command-line tool and background service that keeps AI coding
-agents, and the processes they spawn, inside a memory budget. It measures actual
-physical footprint on a roughly 60-second cycle and, when agents drift over budget,
-reaps processes in three narrowly-scoped tiers rather than a blanket sweep. It also
-sets Docker Desktop's VM memory as a hard ceiling, since that is the one limit macOS
-will actually enforce; everything else it does is a soft policy it polices itself.
+memcap gives every Claude Code and Codex session on your Mac one shared memory
+budget. Searches and file reads run immediately. Builds, test suites, simulators
+and containers wait in one shared queue until there is memory for them. A
+background watchdog cleans up the dev servers, simulators and browsers that
+agents leave behind.
 
-## Why this exists
+<p align="center">
+  <img src="docs/demo.gif" alt="memcap status, then memcap classifying searches as light and builds, tests and containers as heavy" width="880">
+</p>
 
-Agents leak processes. A session that restarts a dev server on every retry leaves
-the old ones orphaned; simulators and Playwright browsers outlive a crashed test
-run; Docker Desktop's VM balloons and never gives the memory back.
+## Why
 
-memcap was written after a 24 GB Mac hard-shut-down mid-workday with **388 orphaned
-`tsx` dev servers** holding 2.9 GB, Docker's VM ceiling set to 12 GB — half the
-machine — and 20.3 GB of 21.5 GB swap in use. Nothing had crashed. Two coding
-sessions had simply been left to accumulate.
+Each agent session decides on its own to start a typecheck, a test suite or a
+simulator. Two or three sessions doing that at once can push a Mac into swap,
+then into a freeze, while every individual command looked reasonable.
 
-The aim is to leave room for the rest of your work while keeping agents moving.
-The shared budget is a soft policy, not a hard guarantee against memory exhaustion.
+memcap was written after a 24 GB Mac hard-shut-down mid-workday with **388
+orphaned `tsx` dev servers** holding 2.9 GB, Docker's VM ceiling at 12 GB, and
+20.3 GB of 21.5 GB swap in use. Nothing had crashed. Two coding sessions had
+simply been left to accumulate.
 
-```
-$ memcap status
-memcap 0.13.0 — /Users/you/.config/memcap/memcap.conf
+## Quickstart
 
-  agents + everything they spawn   6.93 GB / shares 20 GB total (13.53 GB pool after measured Docker use)
-    of which leaked/orphaned       0.00 GB
-    of which sims/playwright       0.93 GB
-    net of sims (drives tier 2)    6.00 GB
-  docker VM + helpers              6.47 GB / 6 GB ceiling
-  ---------------------------------------------------------
-  combined                        13.40 GB / 20 GB budget (shared)
-  system memory available          25%
-  memory measured by               top footprint (569 processes)
-  last enforcement pass            3s ago
-  last pass outcome                enforced
-  background service               LaunchAgent loaded (com.alextitov19.memcap -- memcap's own, not a brew service)
+```bash
+brew install alextitov19/memcap/memcap
+memcap init      # proposes a budget for this Mac, installs the watchdog, offers agent hooks
+memcap doctor    # confirms the Claude Code and Codex integration
 ```
 
-The bottom four rows answer a question the earlier versions could not. A stopped
-memcap used to be indistinguishable from a quiet one: `status` printed a budget,
-nothing errored, and no notification fired, so a machine that had not enforced
-anything in 28 hours looked exactly like one with nothing to do. Worse, the
-states where memcap _refuses_ to act — an unparseable config, a Docker ceiling
-that leaves agents no budget — still stamped the heartbeat, so the freshness
-indicator actively vouched for them.
+Reload open agent sessions afterwards. `memcap status` shows the budget at any
+time, `memcap queue` shows what is waiting and why, and `memcap off` pauses
+everything instantly.
 
-Each of those now has its own row and its own remedy, because the fixes differ:
-a missing LaunchAgent is not a stale heartbeat, and `MC_NO_TOP=1` set on purpose
-is not a `top` that failed.
+## How it works
+
+- **Hooks, not wrappers.** Claude Code and Codex hooks see each shell command
+  before it runs. Ordinary commands such as searches, reads and `git status` run
+  natively and never touch the queue. Only commands with positive evidence of
+  heavy work go through admission: builds, test runners, simulators, containers.
+- **Admission on live measurements.** A queued command starts when macOS memory
+  pressure allows it, there is physical headroom for its reservation, and the
+  previous start has settled. Red pressure stops new heavy work.
+- **One queue for every session.** All sessions share the same slots and take
+  turns, so two agents do not start two full typechecks at the same moment.
+- **Learns from real usage.** Reservations follow measured peaks of earlier runs
+  of the same workload. Incomplete measurements never shrink an estimate.
+- **Cleans up what agents leave behind.** A launchd watchdog runs every minute
+  and retires orphaned dev servers, idle simulators and Playwright browsers in
+  narrowly scoped tiers. Live sessions and resources another session holds are
+  protected.
+- **Docker counts too.** Docker Desktop, Colima and OrbStack VM memory count
+  toward the same total.
+- **Observable and private.** `memcap status`, `memcap queue` and optional local
+  analytics (`memcap analytics today`) explain every wait. Nothing leaves your
+  Mac unless you opt in to agent reports.
+
+## Agent reports
+
+When an agent runs into a memcap problem, such as a quick search that got
+queued, a stalled queue or a wasteful polling loop, it files a report with
+`memcap report CATEGORY`. Reports carry fixed categories and numeric machine
+facts only: never commands, file paths or source code. They stay on your Mac
+until you opt in once with `memcap report enable`; after that they are filed to
+this repository through your own GitHub login and appear under the
+[`agent-report`](https://github.com/alextitov19/memcap/issues?q=label%3Aagent-report)
+label. Most recent releases were driven by them. Details are in
+[Agent reports to GitHub](#agent-reports-to-github).
+
+## Documentation
+
+- [Installation details](#installation-details) and [configuration](#configuration)
+- [What it kills, and why that is safe](#what-it-kills-and-why-that-is-safe)
+- [Disposable test environments](docs/environments.md) and [tool compatibility](docs/tool-compatibility.md)
+- [How commands are classified](docs/demand-classifier.md)
+- [Local analytics](docs/analytics.md)
+- [Changelog](CHANGELOG.md) and [older release notes](docs/release-notes.md)
+
+---
+
+# Reference
 
 ## Requirements
 
@@ -142,7 +107,7 @@ using only the standard library.
 See [installed tool compatibility](docs/tool-compatibility.md) for mise, task
 wrappers, additional build/test tools and migration limitations.
 
-## Agent reports to GitHub (v0.14.0)
+## Agent reports to GitHub
 
 Agents can report suspected memcap defects with `memcap report CATEGORY`. Setup
 offers a **one-time opt-in**, defaulting to no. Existing installations remain
@@ -259,7 +224,7 @@ probes has a half-second timeout; GitHub requests share an eight-second deadline
 not turn into another agent retry loop. Maintainers and other contributors can
 triage issues and propose fixes through the normal pull-request workflow.
 
-## One shared budget (v0.13.0)
+## One shared budget
 
 `TOTAL_BUDGET_GB` is shared by **measured Docker memory + agents and their children
 + simulators/browsers**. With a 20 GB total, Docker using 4 GB and agents using
@@ -284,7 +249,7 @@ activity can grow between samples; protected active work cannot always be safely
 reclaimed. Red-pressure admission checks, host headroom and per-job protections
 continue to apply. A hard aggregate limit would require stronger OS/VM isolation.
 
-## Queue recovery and portable waiting (v0.12.1)
+## Queue recovery and portable waiting
 
 Some Claude builds do not expose `TaskOutput`. Use the existing memcap job ID
 shown in queue output with `memcap wait JOB_ID --timeout 60` instead. This is a
@@ -361,7 +326,7 @@ job or prove an existing agent reloaded its settings. A parent session ending ca
 also terminate background work. Restart expired work only after confirming the
 original task ended, to avoid duplicate builds.
 
-## Agent setup and upgrades (v0.12.0)
+## Agent setup and upgrades
 
 `memcap init` detects Claude and Codex profiles and offers to install their
 integrations. Installation requires an explicit yes; unattended/EOF setup leaves
@@ -437,21 +402,6 @@ reload state are outside those global-profile checks.
 See the upstream [Claude hook settings](https://code.claude.com/docs/en/hooks)
 and [Codex hook trust documentation](https://learn.chatgpt.com/docs/hooks) for
 agent-specific activation and override behavior.
-
-## Faster admission in v0.11.0
-
-Automatic reservations adapt to measured usage after startup, admissions rotate
-between sessions, and the watchdog cancels confirmed stuck standalone simulator
-boot attempts. Bounded file-reading pipelines stay outside the expensive-work
-queue. Stop hooks use `feedback --wait` with `timeout: 75` and wait locally for up
-to a minute instead of repeatedly waking the model. `memcap integrate` installs
-these entries for both new and previously configured profiles.
-
-Green or yellow pressure does not guarantee admission: measured usage, outstanding
-reservations, configured headroom and job slots still matter. The aim is more useful
-concurrency, not a promise of zero waits or zero pressure spikes. The boot deadline
-releases a reservation only after its managed processes exit; it does not reset a
-simulator or prove that app tests ran. See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Queue expensive agent work before it starts
 
@@ -583,7 +533,7 @@ include headroom arithmetic and `reason_code`: 0 unknown, 1 budget, 2 headroom,
 3 slots, 4 pressure/measurement, 5 invalid measurement, 6 fairness, 7 startup,
 8 stabilization, 9 paging. Public reports distinguish the independent reporting
 probe from the queue sample and include effective reservation totals when known.
-See [the September 24 feedback audit](docs/feedback-2026-09-24.md) for coverage
+See [the September 24 feedback audit](docs/dev-notes/feedback-2026-09-24.md) for coverage
 and the release's issue dispositions.
 
 Strict policy rejects a request larger than its entire budget. Adaptive policy
@@ -797,7 +747,7 @@ new admissions. These are admission estimates, not OS memory limits, so rapid
 growth inside already-running jobs can still overshoot. Cleanup targets known
 idle resources; it does not promise to prevent every possible red-pressure event.
 
-## Install
+## Installation details
 
 ```bash
 brew install alextitov19/memcap/memcap
@@ -1528,7 +1478,7 @@ repository.
 
 MIT — see [LICENSE](LICENSE).
 
-## Adaptive throughput (0.16)
+## Adaptive throughput
 
 `memcap init` now writes the adaptive settings above. Existing configurations that
 omit `QUEUE_POLICY` keep `strict`; upgrading never silently migrates owner policy
@@ -1608,9 +1558,9 @@ lightweight queuing even if work eventually succeeds.
 Adaptive mode also prevents tier-2 cleanup solely for exceeding the footprint
 target while pressure is green/yellow. Orphan/ownership/age protections, explicit
 oversized-child limits, idle-helper policy and the pause switch remain in force.
-See [validation and incident coverage](docs/adaptive-throughput-validation.md).
+See [validation and incident coverage](docs/dev-notes/adaptive-throughput-validation.md).
 
-### Inspection and memory interpretation (0.16.1)
+### Inspection and memory interpretation
 
 Bare filename globs such as `rg -n pattern *.go` and the narrow
 `f=$(rg -l pattern src); sed -n 1,200p $f` form no longer reserve a heavy-job slot.
@@ -1650,7 +1600,7 @@ notification and read its final output and exit status. Updated hook context
 conveys this guidance to existing sessions on their next hook invocation; an
 already-running supervisor retains its loaded code.
 
-### Native execution while paused (0.16.2)
+### Native execution while paused
 
 An owner pause now leaves new Claude/Codex tool requests unchanged: no forced
 background mode, no queue message, and no worker cap injected by memcap. Explicit
@@ -1712,7 +1662,7 @@ preserving native task settings when the caller cannot find memcap on PATH.
 v0.18.1 corrects job memory attribution for verified descendants that change
 process groups and prevents older cached samples from rolling back paging
 evidence. It preserves lightweight execution, yellow admission and existing
-cancellation permissions. See [evidence and limits](docs/pressure-accounting-0.18.1.md).
+cancellation permissions. See [evidence and limits](docs/dev-notes/pressure-accounting-0.18.1.md).
 
 v0.18.0 adds finite jq formatting (including checked interpolation), Git branch
 inspection, document-to-text reads and GitHub comments. Environment arguments and
@@ -1730,7 +1680,7 @@ The sampler refreshes early without extending its two-second validity. Incomplet
 measurements may increase a learned estimate from an observed peak but never
 decrease it; reduced-worker runs train their actual worker profile. Diagnostic
 events expose numeric classification, estimate provenance, reservation changes
-and elapsed blocker intervals. See [the investigation](docs/queue-productivity-0.18.md)
+and elapsed blocker intervals. See [the investigation](docs/dev-notes/queue-productivity-0.18.md)
 for the baseline, field meanings and unresolved report limitations.
 
 Shell combinations such as `rg pattern $(rg -l needle src | head -3)` now prove

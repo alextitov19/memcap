@@ -3,6 +3,7 @@
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -140,6 +141,40 @@ class AdaptiveSchedulerTests(unittest.TestCase):
             q.measure()
         self.assertTrue(q.sample_signature)
         self.assertEqual(shared.call_args.args[1], q.sample_signature)
+
+    def test_waiter_keeps_measuring_after_an_upgrade_removes_its_installation(self):
+        # brew upgrade deletes the Cellar a queued supervisor was started from.
+        # Its own bridge is gone, so sampling must use the installed one, and
+        # the code digest must come from what the process loaded, not disk.
+        import scheduler
+        bridge = Path(self.tmp.name) / "installed-memcap"
+        bridge.write_text('[ "$1" = _queue-sample ] && echo "20971520 1048576 8388608 1 0"\n')
+        q = self.queue()
+        q.sampler = scheduler.sample_host
+        self.addCleanup(scheduler._LOADED_BUILD.clear)
+        scheduler._LOADED_BUILD.clear()
+        scheduler.loaded_build()
+        signature = None
+        with patch("scheduler.ROOT", Path(self.tmp.name) / "deleted-cellar"), \
+                patch("scheduler.shutil.which", return_value=str(bridge)), \
+                patch("analytics_events.build_digest", side_effect=FileNotFoundError("deleted")), \
+                patch("scheduler.shared_sample", side_effect=lambda _d, _key, sampler: sampler()):
+            for _ in range(2):
+                measured = q.measure()
+                self.assertFalse(measured["fault"])
+                self.assertEqual((measured["pressure"], measured["available_kb"]), (1, 8388608))
+                signature = signature or q.sample_signature
+                self.assertEqual(q.sample_signature, signature)
+
+    def test_supervisor_preloads_every_module_it_imports_lazily(self):
+        import scheduler
+        scheduler.preload_supervisor_modules()
+        self.assertTrue(set(scheduler.SUPERVISOR_MODULES) <= set(sys.modules))
+        source = Path(scheduler.__file__).read_text()
+        lazy = set(re.findall(r"^\s+from (\w+) import", source, re.M)) | set(re.findall(r"^\s+import (\w+)$", source, re.M))
+        top = set(re.findall(r"^from (\w+) import", source, re.M)) | set(re.findall(r"^import (\w+)", source, re.M))
+        local = {p.stem for p in Path(scheduler.__file__).parent.glob("*.py")}
+        self.assertEqual((lazy & local) - top - set(scheduler.SUPERVISOR_MODULES), set())
 
     def contended_run(self, wait=8, **published):
         # The waiter's own sample is already past the limit when it gets the
