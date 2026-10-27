@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.32.5 — 2026-10-27
+
+- Let a running job's reservation shrink after its peak when the queue is busy.
+  A job's allowance drops to its recent usage after 60 seconds of continuous
+  fresh observations. Supervisors take their samples before acquiring the queue
+  lock, so with several jobs waiting, a fresh sample often arrived slightly older
+  than the newest one. The window treated that as a gap, restarted, and reseeded
+  itself with the job's lifetime peak, so the peak stayed reserved until the job
+  ended. On October 27 a `go test ./...` that peaked at 4.5 GiB kept 5.6 GiB
+  reserved for eight minutes while using 0.25 GiB, and held 15 queued jobs at
+  "headroom" under green pressure. In the previous day, 21 of 45 jobs that ran
+  longer than two minutes never shrank. Slightly older fresh samples now fold
+  into the window, which can only raise its peak. Real gaps, stale or incomplete
+  samples and red pressure behave as before.
+
 ## v0.32.4 — 2026-10-27
 
 - Keep queued jobs moving across an upgrade. `brew upgrade` deletes the previous

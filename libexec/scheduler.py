@@ -692,7 +692,12 @@ class Scheduler:
             stamp = sample.get("monotonic", 0)
             if adaptive and 0 <= time.monotonic() - stamp <= 2:
                 history = job.get("reservation_window", [])
-                if not history or not 0 <= stamp - history[-1][0] <= 5:
+                # Supervisors sample before taking the registry lock, so a fresh
+                # observation can arrive slightly older than the newest one. It
+                # still lies inside the window: fold it into the latest point
+                # (raising, never lowering) instead of restarting the window,
+                # which reseeded the lifetime peak and kept it reserved forever.
+                if not history or abs(stamp - history[-1][0]) > 5:
                     history = [[stamp, peak]]
                     job["reservation_window_since"] = stamp
                 elif stamp > history[-1][0]:
