@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.32.3 — 2026-10-27
+
+- Retire disposable test environments whose containers no longer exist. With
+  v0.32.2 the watchdog could reach Docker again, which exposed environments
+  whose containers had been removed outside memcap, for example by an engine
+  reset. Cleanup refused them on every pass because the empty container set
+  did not match the recorded one. When no container carries the environment's
+  exclusive project label at all, nothing remains to stop or protect, so the
+  environment is now marked stopped. A surviving container that is still
+  running or no longer matches its recorded identity is still refused.
+
 ## v0.32.2 — 2026-10-27
 
 - Give the watchdog the Homebrew tools it calls. launchd starts `memcap watch`

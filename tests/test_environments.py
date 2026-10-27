@@ -63,6 +63,28 @@ class EnvironmentTests(unittest.TestCase):
         self.assertFalse(e.eligible({**row, 'agent': {}}, {}, 120))
         self.assertTrue(e.eligible({**row, 'phase': 'releasing'}, {'12': dict(start='agent', uid=os.getuid())}, 120))
 
+    def test_finish_retires_environments_whose_containers_no_longer_exist(self):
+        self.save(phase='active')
+        stopped = {**self.container, 'State': {'Running': False}}
+        for observed in [[self.container], [{**stopped, 'Created': 'new'}]]:
+            with patch('environments.containers', return_value=observed):
+                with self.assertRaisesRegex(ValueError, 'still running or identity changed'):
+                    e.finish(self.token)
+        with patch('environments.local_engine', return_value='unix:///other'):
+            with self.assertRaisesRegex(ValueError, 'endpoint changed'):
+                e.finish(self.token)
+        with e.registry(self.state) as data:
+            self.assertEqual(data[self.token]['phase'], 'active')
+        with patch('environments.containers', return_value=[]):
+            e.finish(self.token)
+        with e.registry(self.state) as data:
+            self.assertEqual(data[self.token]['phase'], 'stopped')
+        self.save(phase='active')
+        with patch('environments.containers', return_value=[stopped]):
+            e.finish(self.token)
+        with e.registry(self.state) as data:
+            self.assertEqual(data[self.token]['phase'], 'stopped')
+
     def test_worker_cannot_forge_a_nested_lease(self):
         with patch('scheduler.Scheduler.nested', return_value=False), patch('environments.os.getpid', return_value=11):
             with self.assertRaisesRegex(ValueError, 'verified live'):

@@ -158,6 +158,21 @@ def scan():
     return ready
 
 
+def finish(token):
+    with registry(state_root()) as data:
+        row = data[token]
+        if local_engine() != row['engine']:
+            raise ValueError('Docker endpoint changed; retaining resource')
+        observed = containers(token, row['engine'])
+        # No container carries this exclusive random project label any more (an
+        # engine reset or manual removal), so nothing remains to stop or protect.
+        # Any surviving container must still match exactly and be stopped.
+        if observed and (identities(observed, token) != row['containers']
+                         or any(c.get('State', {}).get('Running') for c in observed)):
+            raise ValueError('environment still running or identity changed')
+        row['phase'] = 'stopped'
+
+
 def adequate_budget(data, lease, required):
     return any(j.get('id') == lease and j.get('status') == 'running'
                and j.get('memory_kb', 0) >= required for j in data.get('jobs', []))
@@ -276,14 +291,7 @@ def main(argv=None):
     elif args.action == '_scan':
         print('\n'.join(scan()))
     elif args.action == '_finish':
-        with registry(state_root()) as data:
-            row = data[args.token]
-            if local_engine() != row['engine']:
-                raise ValueError('Docker endpoint changed; retaining resource')
-            observed = containers(args.token, row['engine'])
-            if identities(observed, args.token) != row['containers'] or any(c.get('State', {}).get('Running') for c in observed):
-                raise ValueError('environment still running or identity changed')
-            row['phase'] = 'stopped'
+        finish(args.token)
     elif args.action == '_endpoint':
         with registry(state_root()) as data:
             endpoint = data[args.token]['engine']
