@@ -193,3 +193,37 @@ mc_service_status() {
   fi
   return 0
 }
+
+# The optional analytics collector is a long-lived process, so `brew upgrade`
+# leaves it running the code it started with: one collector ran 0.31.0 for two
+# releases after Homebrew had deleted that Cellar, silently dropping every event
+# field added since. Each watch pass runs the installed code, so it compares the
+# collector's recorded root with its own and restarts a stale collector -- at
+# most once per installed root, so a collector that cannot adopt the new code
+# is never restarted in a loop.
+MC_ANALYTICS_LABEL="com.memcap.analytics"
+
+mc_refresh_analytics_collector() {
+  local dir heartbeat marker age current loaded
+  dir="$(mc_state_dir)/analytics"
+  heartbeat="$dir/heartbeat.json"
+  marker="$dir/collector-refreshed"
+  [ -f "$(mc_launchagent_dir)/$MC_ANALYTICS_LABEL.plist" ] && [ -f "$heartbeat" ] || return 0
+  # A stale heartbeat means no collector is running; launchd owns its restarts.
+  age=$(( $(date +%s) - $(stat -f %m "$heartbeat" 2>/dev/null || echo 0) ))
+  [ "$age" -le 120 ] || return 0
+  current=$(cd "$MEMCAP_ROOT" 2>/dev/null && pwd -P) || return 0
+  loaded=$(sed -n 's/.*"root": *"\([^"]*\)".*/\1/p' "$heartbeat" 2>/dev/null)
+  [ "$loaded" != "$current" ] || return 0
+  [ "$(cat "$marker" 2>/dev/null)" != "$current" ] || return 0
+  mc_state_write "$marker" "$current" || return 0
+  if [ "${MC_DRY_RUN:-0}" = "1" ]; then
+    mc_log "analytics: would restart the collector running ${loaded:-code older than 0.32.2} to adopt memcap ${MEMCAP_VERSION:-unknown} (dry run)"
+    return 0
+  fi
+  if "$(mc_launchctl_bin)" kickstart -k "gui/$(id -u)/$MC_ANALYTICS_LABEL" >/dev/null 2>&1; then
+    mc_log "analytics: restarted the collector running ${loaded:-code older than 0.32.2} to adopt memcap ${MEMCAP_VERSION:-unknown}"
+  else
+    mc_log "analytics: could not restart the stale collector; run: launchctl kickstart -k gui/$(id -u)/$MC_ANALYTICS_LABEL"
+  fi
+}

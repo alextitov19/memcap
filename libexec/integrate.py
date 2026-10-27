@@ -491,6 +491,12 @@ class Installer:
                         if isinstance(previous_version, str) and previous_version and installed == expected:
                             print(f"INFO {label}: installation metadata version/format differs; current hook definitions are checked below. No profile changes required for metadata alone.")
                             continue
+                    # A formatter or hand edit that only moves blank lines leaves
+                    # the managed guidance intact; integrate would rewrite it anyway.
+                    if (edit.path.name in ("CLAUDE.md", "AGENTS.md") and edit.before
+                            and edit.before.decode().split() == edit.after.decode().split()):
+                        print(f"INFO {label}: {edit.path.name} differs from the managed guidance only in whitespace. No changes required.")
+                        continue
                     pending.append(edit.path.name)
                 if pending:
                     print(

@@ -1763,6 +1763,10 @@ mc_watch() {
   MC_STATE_WRITE_FAILED=0
 
   mc_watch_liveness
+  # Analytics is independent of the owner pause, so this runs on paused passes too.
+  if command -v mc_refresh_analytics_collector >/dev/null 2>&1; then
+    mc_refresh_analytics_collector
+  fi
 
   if mc_is_paused; then
     echo "memcap is paused (memcap on to resume)"

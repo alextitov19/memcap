@@ -18,6 +18,9 @@ import time
 from analytics_events import Producer, make_event, PACKET_LIMIT
 from analytics_store import Store, private_directory
 
+# The installation this process loaded; the watchdog restarts it once this differs.
+ROOT = Path(__file__).resolve().parent.parent
+
 
 def probe(argv):
     try:
@@ -219,7 +222,7 @@ def collect(directory, port=43190):
                         cached_health = store.health()
                         writable = cached_health["disk_bytes"] < store.limit * .85
                         heartbeat = dict(at=time.time(), received=received, errors=errors,
-                                         build=source.build, otlp_listening=http is not None,
+                                         build=source.build, root=str(ROOT), otlp_listening=http is not None,
                                          port=http.server_port if http else None,
                                          cpu_ms=(time.process_time() - started_cpu) * 1000,
                                          storage=cached_health, paused=(directory.parent / "paused").is_file())

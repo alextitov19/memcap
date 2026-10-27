@@ -148,6 +148,9 @@ case "${1:-help}" in
     mc_agent_hooks "${2:-}" "${3:-}"
     ;;
   watch)
+    mc_append_tool_path
+    # shellcheck source=/dev/null
+    . "$LIB/service.sh"
     # shellcheck source=/dev/null
     . "$LIB/environments.sh"
     # shellcheck source=/dev/null

@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.32.2 — 2026-10-27
+
+- Give the watchdog the Homebrew tools it calls. launchd starts `memcap watch`
+  with only the system directories on PATH, so `docker` was never found and
+  cleanup of finished disposable test environments failed on every pass,
+  writing about 70,000 identical errors to `memcap.err`. The watchdog now
+  appends `/opt/homebrew/bin` and `/usr/local/bin` to its PATH. It appends
+  rather than prepends, so tools that already resolved, `python3` included,
+  keep resolving to the same binary.
+- Restart a stale analytics collector after an upgrade. `brew upgrade`
+  replaces the code on disk but never restarts the long-lived collector, so
+  one kept running 0.31.0 for two releases and silently dropped every event
+  field added since, including v0.32.1's "refreshed under lock" counter. The
+  collector now records which installation it loaded, and the next watch pass
+  restarts it if that differs from the installed one. It restarts at most once
+  per installation, so a collector that cannot adopt new code is never
+  restarted in a loop, and dry runs only log the restart.
+- Stop `memcap doctor` warning when CLAUDE.md or AGENTS.md differs from the
+  managed guidance only in whitespace, for example a blank line added by an
+  editor. Any change to the guidance text itself still warns.
+
 ## v0.32.1 — 2026-10-20
 
 - Stop queued work from losing its turn to sample expiry under lock
