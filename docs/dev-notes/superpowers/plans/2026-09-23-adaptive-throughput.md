@@ -49,7 +49,7 @@ unittest and ShellCheck; existing Homebrew and GitHub release workflow.
 
 **Files:** Read `AGENTS.md`, `CONTRIBUTING.md`, `libexec/agent_diagnostics.py`,
 `libexec/integrate.py`, `libexec/report.py`, `tests/test_agent_diagnostics.py`,
-`tests/test_integrate.py`; create `docs/adaptive-throughput-validation.md` and
+`tests/test_integrate.py`; create `docs/dev-notes/adaptive-throughput-validation.md` and
 `tests/fixtures/adaptive-admission.json` during execution.
 
 - [ ] Inspect Claude's completed hook patch and installed guidance. The corrected
@@ -277,7 +277,7 @@ builds, with explicit accounting for the interaction.
 ## Task 8 — Prove performance and complete release validation
 
 **Files:** Create `tests/benchmark_admission.py`, extend new behavioral tests and
-`tests/scheduler.bats` to run them; update `docs/adaptive-throughput-validation.md`.
+`tests/scheduler.bats` to run them; update `docs/dev-notes/adaptive-throughput-validation.md`.
 
 - [ ] Replay deterministic histories for five/eight sessions: safe inspection,
   remote-control waiting, small tests, cold/warm builds, browser bursts, Docker

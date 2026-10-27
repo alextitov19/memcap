@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Bash/Python standard library, SQLite WAL, launchd, unittest/Bats.
 
-**Spec:** `docs/superpowers/specs/2026-09-29-local-performance-analytics-design.md`
+**Spec:** `docs/dev-notes/superpowers/specs/2026-09-29-local-performance-analytics-design.md`
 
 ## Global constraints
 
@@ -36,4 +36,4 @@
 - [x] **Installation:** `libexec/analytics_install.py`. Private state and independent LaunchAgent, transactional Claude telemetry environment installation without overwriting exporters, capability/observed-coverage doctor. Tests use fake profiles/service and verify idempotence and pause preservation.
 - [x] **Delivery:** document commands and limitations, run targeted analytics and compatibility checks, measure producer/whole-hook overhead, then one final diff review and all four repository gates. Install backed-up local files and recorder; verify live recording and future profile configuration. Report current-session native telemetry limitations truthfully.
 
-Verification and installation evidence: `docs/analytics-validation.md`.
+Verification and installation evidence: `docs/dev-notes/analytics-validation.md`.
