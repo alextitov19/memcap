@@ -16,6 +16,7 @@ import math
 import os
 import re
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -48,6 +49,48 @@ EXPIRED_GUIDANCE = (
     "no existing live task before retrying through memcap with background waiting. "
     "Do not blindly repeat an expired deadline or bypass protection."
 )
+
+
+# A supervisor can outlive its installation: `brew upgrade` deletes the old
+# Cellar while queued jobs still wait on it. Everything a long-running
+# supervisor needs from disk is loaded or resolved here, never re-read later.
+SUPERVISOR_MODULES = (
+    "analytics_events", "command_stages", "command_trace", "compiler_profiles",
+    "idle_gc", "inspection", "job_observation", "native_observer",
+    "orphan_recovery", "passive_timing",
+)
+
+
+def preload_supervisor_modules():
+    import importlib
+    for name in SUPERVISOR_MODULES:
+        importlib.import_module(name)
+    loaded_build()
+
+
+_LOADED_BUILD = []
+
+
+def loaded_build():
+    """Digest of the code this process loaded, computed once per process."""
+    if not _LOADED_BUILD:
+        from analytics_events import build_digest
+        try:
+            _LOADED_BUILD.append(build_digest())
+        except OSError:
+            _LOADED_BUILD.append("0" * 64)
+    return _LOADED_BUILD[0]
+
+
+def memcap_bridge():
+    """This installation's bridge, or the installed one once an upgrade removed it.
+
+    The sample and cancel protocols are line-based and unchanged across releases.
+    """
+    own = ROOT / "bin/memcap"
+    if own.is_file():
+        return str(own)
+    return shutil.which("memcap") or str(own)
 
 
 class QueueError(Exception):
@@ -109,7 +152,7 @@ def sample_host() -> dict:
     # shebang execution can leak kernel pathname allocations on macOS 26.
     # Keep the bridge/config and parent identity intact; never rewrite workloads.
     result = subprocess.run(
-        ["/bin/bash", str(ROOT / "bin/memcap"), "_queue-sample"],
+        ["/bin/bash", memcap_bridge(), "_queue-sample"],
         capture_output=True,
         text=True,
         timeout=25,
@@ -283,8 +326,7 @@ class Scheduler:
             / "memcap/memcap.conf"
         )
         from scheduler_metrics import measurement_signature
-        from analytics_events import build_digest
-        signature = measurement_signature(config, os.environ, build_digest())
+        signature = measurement_signature(config, os.environ, loaded_build())
         self.sample_signature = signature
         began = time.monotonic()
         try:
@@ -423,8 +465,6 @@ class Scheduler:
     def demand(self, argv, cwd, workers, data):
         # Executable identity plus dependency manifests invalidate estimates on
         # tool/dependency changes; worker count conditions the learned peak.
-        import shutil
-
         words = argv
         if (
             len(argv) >= 3
@@ -820,6 +860,7 @@ class Scheduler:
         self, argv, cwd=None, resource="", memory_gb=None, wait=WAIT_SECONDS, session_key=""
     ):
         cwd = Path(cwd or os.getcwd()).resolve(strict=True)
+        preload_supervisor_modules()
         from analytics_events import producer, family
         from scheduler_metrics import analytics_context
         producer()  # Capture code/policy before this supervisor can outlive an upgrade.
@@ -1294,7 +1335,7 @@ class Scheduler:
                     try:
                         cancelled = (
                             subprocess.run(
-                                ["/bin/bash", str(ROOT / "bin/memcap"), "_queue-cancel", ident],
+                                ["/bin/bash", memcap_bridge(), "_queue-cancel", ident],
                                 check=False,
                                 timeout=30,
                             ).returncode
