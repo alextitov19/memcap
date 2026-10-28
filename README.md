@@ -84,6 +84,9 @@ label. Most recent releases were driven by them. Details are in
 - [Local analytics](docs/analytics.md)
 - [Changelog](CHANGELOG.md) and [older release notes](docs/release-notes.md)
 
+Questions and ideas go in [Discussions](https://github.com/alextitov19/memcap/discussions);
+bugs go in [issues](https://github.com/alextitov19/memcap/issues/new/choose).
+
 ---
 
 # Reference

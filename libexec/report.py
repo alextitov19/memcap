@@ -469,12 +469,17 @@ def main():
                 + ("enabled" if reporter.enabled() else "disabled")
                 + f" for {REPO}."
             )
-            print(
-                "Only sanitized numeric diagnostics and fixed error categories; uses your GitHub CLI login."
-            )
-            print(
-                "No memcap publication quota or retry cooldown. Duplicate suppression remains active."
-            )
+            if reporter.enabled():
+                print(
+                    "Only sanitized numeric diagnostics and fixed error categories; uses your GitHub CLI login."
+                )
+                print(
+                    "No memcap publication quota or retry cooldown. Duplicate suppression remains active."
+                )
+            else:
+                print(
+                    "Reports stay on this Mac. Turn publishing on with: memcap report enable"
+                )
         else:
             result = reporter.report(
                 args.action,

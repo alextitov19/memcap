@@ -1,0 +1,147 @@
+<!doctype html>
+<!-- Renders docs/social-preview.png (1280x640, GitHub's social preview size):
+     npx playwright screenshot --viewport-size=1280,640 docs/social-preview.html docs/social-preview.png
+     Upload it under Settings > General > Social preview. The terminal lines are real
+     `memcap classify` output; see docs/demo.tape. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>memcap social preview</title>
+    <style>
+      :root {
+        --base: #1e1e2e;
+        --mantle: #181825;
+        --crust: #11111b;
+        --surface: #313244;
+        --text: #cdd6f4;
+        --subtext: #a6adc8;
+        --overlay: #6c7086;
+        --green: #a6e3a1;
+        --peach: #fab387;
+        --mauve: #cba6f7;
+        --mono: "SF Mono", Menlo, monospace;
+        --sans: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      html,
+      body {
+        width: 1280px;
+        height: 640px;
+        overflow: hidden;
+      }
+      body {
+        background: radial-gradient(
+          1200px 640px at 0% 0%,
+          #26263a 0%,
+          var(--base) 55%,
+          var(--mantle) 100%
+        );
+        color: var(--text);
+        font-family: var(--sans);
+        display: grid;
+        grid-template-columns: 580px 1fr;
+        gap: 56px;
+        align-items: center;
+        padding: 0 80px;
+      }
+      .name {
+        font-family: var(--mono);
+        font-weight: 700;
+        font-size: 30px;
+        color: var(--mauve);
+        letter-spacing: 0.02em;
+      }
+      h1 {
+        font-size: 50px;
+        line-height: 1.12;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin-top: 22px;
+        text-wrap: balance;
+      }
+      .sub {
+        font-size: 23px;
+        line-height: 1.4;
+        color: var(--subtext);
+        margin-top: 22px;
+      }
+      .install {
+        display: inline-block;
+        margin-top: 34px;
+        padding: 12px 18px;
+        border-radius: 10px;
+        background: var(--crust);
+        border: 1px solid var(--surface);
+        font-family: var(--mono);
+        font-size: 18px;
+        color: var(--text);
+      }
+      .install span {
+        color: var(--overlay);
+      }
+      .term {
+        background: var(--crust);
+        border: 1px solid var(--surface);
+        border-radius: 14px;
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+        overflow: hidden;
+      }
+      .bar {
+        display: flex;
+        gap: 8px;
+        padding: 14px 16px;
+        background: var(--mantle);
+        border-bottom: 1px solid var(--surface);
+      }
+      .bar i {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: var(--surface);
+      }
+      pre {
+        font-family: var(--mono);
+        font-size: 19px;
+        line-height: 1.75;
+        padding: 22px 26px 26px;
+        color: var(--text);
+      }
+      .c {
+        color: var(--overlay);
+      }
+      .l {
+        color: var(--green);
+      }
+      .h {
+        color: var(--peach);
+      }
+    </style>
+  </head>
+  <body>
+    <div>
+      <div class="name">memcap</div>
+      <h1>
+        Run several AI coding agents on one Mac without it grinding to a halt.
+      </h1>
+      <p class="sub">
+        One shared memory budget and queue for every Claude Code and Codex
+        session.
+      </p>
+      <div class="install">
+        <span>$</span> brew install alextitov19/memcap/memcap
+      </div>
+    </div>
+    <div class="term">
+      <div class="bar"><i></i><i></i><i></i></div>
+      <pre><span class="c"># run now, or wait for memory?</span>
+rg TODO src            <span class="l">light</span>
+cat package.json       <span class="l">light</span>
+npm test               <span class="h">heavy</span>
+xcodebuild test        <span class="h">heavy</span>
+docker compose up -d   <span class="h">heavy</span></pre>
+    </div>
+  </body>
+</html>
