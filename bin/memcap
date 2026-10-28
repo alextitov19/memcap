@@ -258,6 +258,47 @@ case "${1:-help}" in
   # carried no version at all. Both matter when the evidence for a bug is nine
   # days of one machine's actions.log.
   version|--version|-v) echo "memcap $MEMCAP_VERSION" ;;
-  help|--help|-h) echo "memcap $MEMCAP_VERSION — keep AI agents inside a RAM budget"; echo "usage: memcap {init|integrate|doctor|trace {on|off|status|show|clear}|analytics {today|status|doctor|builds|explain|compare|html|work|enable|disable|benchmark|import-legacy}|report {enable|disable|status|CATEGORY} [--dry-run]|status|diagnostics|gc|run [options] -- command|environment {run --memory GiB --compose FILE -- command|list|pin|unpin|claim|release}|queue [--json]|wait {JOB_ID|--session} [--timeout 60|--until-complete]|feedback|agent-hooks codex|claude [--queue]|watch|clean|profile|docker [apply [--force]]|notify|off|on|service [install|uninstall|status]|uninstall|version}" ;;
+  # Grouped by what a new user reaches for first. It used to be one 600-column
+  # usage line, which is the first thing `memcap` with no arguments prints.
+  help|--help|-h) cat <<EOF
+memcap $MEMCAP_VERSION — one shared memory budget and queue for AI coding agents
+
+Get started
+  init                        set up this Mac: budget, watchdog, agent hooks
+  integrate [selectors]       install Claude Code / Codex hooks and guidance
+  doctor [selectors]          check the agent integration
+
+Day to day
+  status                      memory in use vs. the budget, pressure, queue
+  queue [--json]              what is running or waiting, and why
+  run [options] -- COMMAND    run a heavy command once memory is available
+  wait {JOB_ID|--session} [--timeout 60|--until-complete]
+  environment run --memory GiB --compose FILE -- COMMAND
+  environment {list|pin|unpin|claim|release}
+  off | on                    pause or resume enforcement (the panic switch)
+
+Cleanup and limits
+  clean                       sweep orphaned servers and idle simulators now
+  gc                          show idle-helper cleanup status
+  profile [name]              list or switch budget profiles
+  docker [apply [--force]]    push the VM ceiling into Docker (restarts it)
+
+Diagnostics
+  analytics {today|status|doctor|builds|explain|compare|html|work|
+             enable|disable|benchmark|import-legacy}
+  report {enable|disable|status|CATEGORY} [--dry-run]
+  trace {on|off|status|show|clear}
+  diagnostics | feedback [--wait] | notify
+
+Service
+  service [install|uninstall|status]
+  watch                       one enforcement pass (the service runs this)
+  agent-hooks {codex|claude} [--queue]
+  uninstall                   remove the service and state; keeps config
+  version
+
+Docs: https://github.com/alextitov19/memcap#readme
+EOF
+  ;;
   *) echo "unknown command: $1" >&2; exit 1 ;;
 esac

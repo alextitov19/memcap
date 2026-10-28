@@ -26,6 +26,8 @@ setup() { setup_common; export MC_DRY_RUN=1; }
   [ "$status" = 0 ]
   run "$MEMCAP_ROOT/bin/memcap" report status
   assert_contains "$output" 'disabled'
+  assert_contains "$output" 'stay on this Mac'
+  assert_not_contains "$output" 'uses your GitHub CLI login'
 }
 
 @test "REPORT: setup requires explicit opt-in and remembers the decision" {

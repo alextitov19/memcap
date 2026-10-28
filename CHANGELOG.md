@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.32.6 — 2026-10-27
+
+- Make `memcap help` readable. It was a single 600-column usage line, and it is
+  what `memcap` prints with no arguments. Commands are now grouped (get started,
+  day to day, cleanup, diagnostics, service) and fit an 80-column terminal.
+- `memcap init` now says how to add the agent hooks later when it finds no
+  Claude Code or Codex profile. Before, it skipped them without a word.
+- `memcap report status` no longer describes GitHub publishing after you decline
+  it. It now says reports stay on this Mac and how to turn publishing on.
+- Add a social preview card (`docs/social-preview.png`, rendered from
+  `docs/social-preview.html`) and point questions to GitHub Discussions from the
+  README and the new-issue page.
+
 ## v0.32.5 — 2026-10-27
 
 - Let a running job's reservation shrink after its peak when the queue is busy.

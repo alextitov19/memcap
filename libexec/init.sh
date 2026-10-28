@@ -227,6 +227,10 @@ EOF
     elif [ "$integrations" = yes ]; then
       echo "$detected" >&2
       return 1
+    else
+      # Without this, init on a Mac where neither agent has been installed yet
+      # ends with no hooks and no word about it.
+      echo '  No Claude Code or Codex profile found. After installing one, run: memcap integrate'
     fi
   fi
   if [ ! -f "$(mc_config_dir)/reporting.json" ] && command -v python3 >/dev/null 2>&1; then

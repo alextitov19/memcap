@@ -448,6 +448,23 @@ log_lines() { grep -c "$1" "$(mc_state_dir)/actions.log" 2>/dev/null || echo 0; 
   chmod 755 "$locked"
 }
 
+@test "init says how to add agent hooks later when no agent profile exists yet" {
+  local bin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$bin"
+  ln -s "$(command -v jq)" "$bin/jq"
+  run bash -c "printf '16\n6\nno\nno\n' | env -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME='$HOME_SANDBOX' PATH='$bin:/usr/bin:/bin:/usr/sbin:/sbin' '$MEMCAP_ROOT/bin/memcap' init --no-service"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "run: memcap integrate"
+}
+
+@test "help groups commands and fits an 80-column terminal" {
+  run "$MEMCAP_ROOT/bin/memcap" help
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "Get started"
+  assert_contains "$output" "memcap $MEMCAP_VERSION"
+  [ -z "$(printf '%s\n' "$output" | awk 'length > 80')" ]
+}
+
 # --- init: what it writes -----------------------------------------------------
 
 @test "init writes every knob memcap reads, so users can discover they exist" {

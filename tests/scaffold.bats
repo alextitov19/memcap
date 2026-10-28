@@ -90,9 +90,9 @@ SCRIPT
   [ "$output" = "memcap $MEMCAP_VERSION" ]
 }
 
-@test "the usage line offers version, so it is discoverable" {
+@test "help offers version, so it is discoverable" {
   run "$MEMCAP_ROOT/bin/memcap" help
-  assert_contains "$output" "|version}"
+  assert_contains "$output" $'\n  version'
 }
 
 # The release guard. A version string in the code and a version heading in the
