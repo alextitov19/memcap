@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.32.7 — 2026-11-01
+
+- Keep a simulator booted while an agent's queued job names it. The idle
+  reaper shut a simulator down after 10 CPU-flat minutes unless a Maestro
+  driver held it, so an agent whose `xcodebuild -destination id=<UDID>` (or
+  `name=<device>`) was waiting in the queue lost its device and had to boot it
+  again once admitted. Any live process under an agent session that names the
+  device's UDID or exact destination name now holds it, including the waiting
+  runner. This only ever retains a device; nothing new is shut down or killed.
+- Termination reports now say whether memcap itself acted. memcap keeps a
+  fixed-vocabulary record of its own process signals, queued-job cancellations,
+  simulator shutdowns and watchdog environment stops (no pids, commands or
+  paths), and every report includes `memcap_*_30m` counts. An
+  `unexpected-termination` report states plainly when memcap did nothing in the
+  30 minutes before it, so a failing test is not mistaken for a kill.
+
 ## v0.32.6 — 2026-10-27
 
 - Make `memcap help` readable. It was a single 600-column usage line, and it is

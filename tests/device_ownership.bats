@@ -22,14 +22,13 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
-@test "another device and command-line mentions do not acquire driver protection" {
+@test "another device and mentions outside an agent tree do not acquire driver protection" {
   fixture_table="$fixture_table
 an unrelated command argument contains a newline"
   run mc_sim_device_held 0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9
   [ "$status" -eq 1 ]
   fixture_table="10 1 $fixture_uid codex app-server
-20 10 $fixture_uid java maestro.cli.AppKt mcp
-30 20 $fixture_uid rg /Users/test/.maestro/deps/simulator-server ios --id $device"
+40 1 $fixture_uid rg /Users/test/.maestro/deps/simulator-server ios --id $device"
   run mc_sim_device_held "$device"
   [ "$status" -eq 1 ]
   fixture_table="10 1 $fixture_uid sleep 600
@@ -76,4 +75,43 @@ an unrelated command argument contains a newline"
 30 10 $fixture_uid /Users/test/.maestro/deps/simulator-server ios --id $device"
   run mc_sim_device_held "$device"
   [ "$status" -eq 0 ]
+}
+
+@test "a queued agent job naming the device holds it while the agent waits" {
+  fixture_table="10 1 $fixture_uid claude
+20 10 $fixture_uid /bin/zsh -c memcap run --wait 86400 -- xcodebuild test -destination id=$device
+30 20 $fixture_uid python3 /opt/memcap/libexec/scheduler.py run -- xcodebuild test -destination id=$device"
+  run mc_sim_device_held "$device"
+  [ "$status" -eq 0 ]
+  # The same job after its agent has gone no longer holds the device.
+  # shellcheck disable=SC2034 # consumed by sourced enforcement
+  AGENTPIDS=""
+  run mc_sim_device_held "$device"
+  [ "$status" -eq 1 ]
+}
+
+@test "a name destination holds only the exactly named device" {
+  fixture_table="10 1 $fixture_uid claude
+20 10 $fixture_uid python3 scheduler.py run -- xcodebuild test -destination platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5"
+  run mc_sim_device_held "$device" "iPhone 17 Pro"
+  [ "$status" -eq 0 ]
+  run mc_sim_device_held "$device" "iPhone 17"
+  [ "$status" -eq 1 ]
+  fixture_table="10 1 $fixture_uid claude
+20 10 $fixture_uid python3 scheduler.py run -- xcodebuild test -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max'"
+  run mc_sim_device_held "$device" "iPhone 17 Pro"
+  [ "$status" -eq 1 ]
+  run mc_sim_device_held "$device" "iPhone 17 Pro Max"
+  [ "$status" -eq 0 ]
+  fixture_table="10 1 $fixture_uid claude
+20 10 $fixture_uid xcodebuild test -destination platform=iOS Simulator,name=iPhone 17 Pro -quiet"
+  run mc_sim_device_held "$device" "iPhone 17 Pro"
+  [ "$status" -eq 0 ]
+}
+
+@test "the simulator's own processes never hold their device" {
+  fixture_table="10 1 $fixture_uid claude
+50 10 $fixture_uid /Library/Developer/CoreSimulator/Devices/$device/data/launchd_sim"
+  run mc_sim_device_held "$device"
+  [ "$status" -eq 1 ]
 }

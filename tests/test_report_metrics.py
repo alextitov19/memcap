@@ -194,6 +194,32 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(facts["blocked_unknown"], 1)
         self.assertNotIn("waiting_oldest_seconds", facts)
 
+    def test_counts_only_recent_fixed_vocabulary_enforcement_actions(self):
+        metrics = importlib.import_module("report_metrics")
+        self.assertEqual(
+            metrics.enforcement_facts(self.state, now=10000),
+            {"memcap_signals_30m": 0, "memcap_cancellations_30m": 0,
+             "memcap_simulator_shutdowns_30m": 0, "memcap_environment_stops_30m": 0},
+        )
+        (self.state / "enforcement-actions").write_text(
+            "1000 signal\n9000 signal\n9500 simulator\n9900 cancel\n9950 environment\n"
+            "9960 /Users/secret/path\nnot a line\n9970 bogus\n"
+        )
+        facts = metrics.enforcement_facts(self.state, now=10000)
+        self.assertEqual(facts["memcap_signals_30m"], 1)
+        self.assertEqual(facts["memcap_simulator_shutdowns_30m"], 1)
+        self.assertEqual(facts["memcap_cancellations_30m"], 1)
+        self.assertEqual(facts["memcap_environment_stops_30m"], 1)
+        self.assertNotIn("secret", json.dumps(facts))
+        self.assertEqual(metrics.sanitize(facts), facts)
+
+    def test_symlinked_enforcement_record_is_unknown_not_zero(self):
+        metrics = importlib.import_module("report_metrics")
+        target = self.state / "elsewhere"
+        target.write_text("")
+        (self.state / "enforcement-actions").symlink_to(target)
+        self.assertEqual(metrics.enforcement_facts(self.state, now=10000), {})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,7 @@ set -uo pipefail
 # log analysis had no way to tell which build wrote which line. A test ties this
 # string to CHANGELOG.md's top heading so a release cannot bump one alone.
 # shellcheck disable=SC2034  # read by bin/memcap, status.sh and enforce.sh
-MEMCAP_VERSION="0.32.6"
+MEMCAP_VERSION="0.32.7"
 
 # launchd starts the watchdog with PATH=/usr/bin:/bin:/usr/sbin:/sbin, so the
 # Homebrew docker and jq it calls were never found (environment reaping failed
@@ -53,6 +53,21 @@ mc_state_write() {
   fi
   mc_state_error "$file"
   return 1
+}
+
+# Fixed-vocabulary record of memcap's own enforcement actions: "EPOCH KIND" per
+# line, KIND one of signal, cancel, simulator, environment. Reports count recent
+# lines so an agent's "something was killed" can be checked against what memcap
+# actually did. No pids, commands or paths are written. Kept to ~64 KiB.
+mc_enforcement_record() {
+  local dir file; dir="$(mc_state_dir)"; file="$dir/enforcement-actions"
+  case "$1" in signal|cancel|simulator|environment) ;; *) return 0 ;; esac
+  [ ! -L "$file" ] || return 0
+  { mkdir -p "$dir" && printf '%s %s\n' "$(date +%s)" "$1" >> "$file"; } 2>/dev/null || return 0
+  if [ "$(wc -c < "$file" 2>/dev/null || echo 0)" -gt 65536 ]; then
+    tail -n 1000 "$file" > "$file.tmp" 2>/dev/null && mv -f "$file.tmp" "$file" 2>/dev/null
+  fi
+  return 0
 }
 
 mc_log() {

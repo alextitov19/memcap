@@ -279,8 +279,19 @@ class Reporter:
         facts = sanitize(raw)
         if wait_seconds is not None:
             facts["agent_reported_wait_seconds"] = wait_seconds
+        action_keys = ("memcap_signals_30m", "memcap_cancellations_30m",
+                       "memcap_simulator_shutdowns_30m", "memcap_environment_stops_30m")
+        acted = ""
+        if kind == "unexpected-termination" and all(key in facts for key in action_keys):
+            if not any(facts[key] for key in action_keys):
+                acted = ("Memcap recorded no process signal, cancellation, simulator shutdown or "
+                         "environment stop of its own in the 30 minutes before this report.\n\n")
+            else:
+                acted = ("Memcap recorded enforcement actions of its own in the 30 minutes before "
+                         "this report; see the `memcap_*_30m` counts.\n\n")
         body = (
             f"{marker}\n## Agent-reported observation\n\n{KINDS[kind]}. This is a suspected problem, not a confirmed root cause.\n\n"
+            f"{acted}"
             f"Memcap version at report time: {self.version}\nCategory: {kind}\nReport identifier: {fingerprint}\nReported at: {datetime.fromtimestamp(now, timezone.utc).isoformat()}\n\n"
             f"Activity context: {context or 'unspecified'} (agent supplied, fixed vocabulary).\n\n"
             f"Symptom: {symptom or 'unspecified'} (agent supplied, fixed vocabulary).\n\n"
@@ -301,7 +312,10 @@ class Reporter:
             "`running_reserved_kb` sums effective recorded allowances; `running_measured_kb` and "
             "`running_unused_reservations_kb` are included only when all running entries have complete measurements. "
             "`blocked_pressure_or_measurement` includes failed pressure/measurement checks. "
-            "Unknown/missing decisions are counted in `blocked_unknown`.\n\n"
+            "Unknown/missing decisions are counted in `blocked_unknown`. "
+            "`memcap_*_30m` count memcap's own actions in the 30 minutes before the report: process signals, "
+            "queued-job cancellations, simulator shutdowns and watchdog stops of finished environments "
+            "(a runner stopping its own environment after the workload is not counted).\n\n"
             "`agent_reported_wait_seconds`, when present, is supplied by the reporting agent; "
             "the reporter did not independently time it. A successful command can still suffer a latency regression.\n\n"
             f"```json\n{json.dumps(facts, sort_keys=True, indent=2)}\n```\n\n"

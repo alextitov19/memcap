@@ -27,6 +27,8 @@ mc_environment_stop() {
   . "$LIB/analytics.sh"
   mc_analytics_signal environment 0 1 "$ids" "$token" || :
   python3 "$LIB/environments.py" _finish "$token" || return 1
+  # A runner stopping its own stack after the workload is not enforcement.
+  [ -n "$caller" ] || mc_enforcement_record environment
   mc_log "stopped disposable environment $token"
 }
 

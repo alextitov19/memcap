@@ -519,6 +519,7 @@ mc_kill_pids() {
     . "$LIB/analytics.sh"
     mc_analytics_signal "$scope" 15 1 "$pids" "$analytics_id"
   fi
+  if [ "$scope" = scheduled ]; then mc_enforcement_record cancel; else mc_enforcement_record signal; fi
   sleep 2
   for p in $pids; do
     mc_pid_alive "$p" || continue
@@ -1327,13 +1328,21 @@ mc_sim_device_tracked() {
 # client holding the device. Maestro's native driver names the exact UDID.
 # Fresh same-user driver -> classified agent ancestry protects only that device,
 # directly or via MCP, even while its agent waits in queue.
+#
+# Any other live process under an agent that names the device -- its UDID, or a
+# `name=<device name>` destination -- holds it too. That covers the case the
+# CPU-flat clock cannot see: an agent whose `memcap run -- xcodebuild -destination
+# id=<UDID>` is waiting in the queue leaves its simulator idle, and shutting the
+# device down then makes the agent reboot it once admitted. The runner's own
+# command line carries the destination, so no command text is ever stored.
+# The simulator's own processes (paths under /Devices/<UDID>/) never count.
 mc_sim_device_held() {
-  local udid="$1" table verdict
+  local udid="$1" name="${2:-}" table verdict
   [ -n "${AGENTPIDS+x}" ] || return 0
   table=$(ps -Ao pid=,ppid=,uid=,command= 2>/dev/null) || return 0
   [ -n "$table" ] || return 0
-  verdict=$(printf '%s\n' "$table" | awk -v device="$udid" -v uid="$(id -u)" \
-      -v agents=" $AGENTPIDS " '
+  verdict=$(printf '%s\n' "$table" | awk -v device="$udid" -v devname="$name" \
+      -v uid="$(id -u)" -v agents=" $AGENTPIDS " '
     {
       # argv can contain newlines. Ignore continuation lines without a PID,
       # but retain a known driver if any row in its own ancestry is missing.
@@ -1346,6 +1355,23 @@ mc_sim_device_held() {
       n=split(cmd,a,/[[:space:]]+/)
       if(n==4 && a[1] ~ /^\/.*\/\.maestro\/deps\/simulator-server$/ &&
          a[2]=="ios" && a[3]=="--id" && tolower(a[4])==tolower(device)) D[p]=1
+      lc=tolower(cmd)
+      if(!(p in D) && index(lc, "/devices/" tolower(device) "/")==0) {
+        if(index(lc, tolower(device))) D[p]=1
+        else if(devname!="" && named(lc, "name=" tolower(devname))) D[p]=1
+      }
+    }
+    # A destination names the device only when the name ends there: "name=iPhone
+    # 17 Pro" must not hold an "iPhone 17 Pro Max". ps joins argv with spaces, so
+    # a space ends the name only when the next word is an option.
+    function named(s, want,   at, next_ch) {
+      while((at=index(s, want))) {
+        next_ch=substr(s, at+length(want), 1)
+        if(next_ch=="" || next_ch=="," || next_ch=="\047" || next_ch=="\"") return 1
+        if(substr(s, at+length(want), 2)==" -") return 1
+        s=substr(s, at+length(want))
+      }
+      return 0
     }
     END {
       if(!valid || uid !~ /^[0-9]+$/) { print "unknown"; exit }
@@ -1592,7 +1618,7 @@ mc_reap_sims() {
     udid="${device%% *}"
     name="${device#* }"
     if dev_pid="$(mc_sim_device_pid "$udid" "$ios_ready_map")"; then
-      if mc_sim_device_held "$udid"; then
+      if mc_sim_device_held "$udid" "$name"; then
         mc_log_throttled "tier3-device-held-$udid" "tier3: retaining device $udid -- held by a live agent driver or ownership measurement unavailable"
         continue
       fi
@@ -1650,7 +1676,7 @@ EOF
     fi
     # Repeat the cross-tree ownership observation immediately before acting.
     # A driver may have attached since this pass planned the idle device.
-    mc_sim_device_held "$udid" && continue
+    mc_sim_device_held "$udid" "$name" && continue
     if [ "$MC_DRY_RUN" = "1" ]; then
       echo "would shut down device $udid ($name)"
       continue
@@ -1659,6 +1685,7 @@ EOF
     err="$("$MC_XCRUN_BIN" simctl shutdown "$udid" 2>&1 >/dev/null)" || rc=$?
     if [ "$rc" = "0" ]; then
       mc_log "tier3: xcrun simctl shutdown $udid ($name) -- launchd_sim pid $dev_pid CPU-flat for ${age}s"
+      mc_enforcement_record simulator
     else
       mc_log "tier3: simctl shutdown $udid ($name) failed (rc $rc): $(printf '%s' "$err" | head -1)"
     fi
