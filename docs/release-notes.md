@@ -60,7 +60,7 @@ at their next invocation; native Claude API/token telemetry applies at session
 startup. Before upgrading, save an immutable local baseline with
 `memcap analytics snapshot ~/memcap-before --days 1`; compare a later snapshot
 using `memcap analytics release-compare ~/memcap-before ~/memcap-after`.
-See [analytics setup, interpretation, and benchmarks](docs/analytics.md).
+See [analytics setup, interpretation, and benchmarks](analytics.md).
 
 Since v0.29.0, reports also preserve a bounded private incident bundle when local
 analytics is available: up to 2,000 sanitized decision events from the preceding
@@ -115,4 +115,4 @@ Green or yellow pressure does not guarantee admission: measured usage, outstandi
 reservations, configured headroom and job slots still matter. The aim is more useful
 concurrency, not a promise of zero waits or zero pressure spikes. The boot deadline
 releases a reservation only after its managed processes exit; it does not reset a
-simulator or prove that app tests ran. See [CHANGELOG.md](CHANGELOG.md) for details.
+simulator or prove that app tests ran. See [CHANGELOG.md](../CHANGELOG.md) for details.
