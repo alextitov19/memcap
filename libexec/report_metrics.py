@@ -72,6 +72,10 @@ FACTS = {
     "running_resources",
     "admission_oldest_seconds",
     "admission_observed_waiters",
+    "memcap_signals_30m",
+    "memcap_cancellations_30m",
+    "memcap_simulator_shutdowns_30m",
+    "memcap_environment_stops_30m",
 } | {"blocked_" + reason for reason in BLOCKERS} | {"blocked_" + reason + "_ms" for reason in BLOCKERS} | {"waiting_classification_" + str(code) for code in range(6)}
 
 
@@ -210,6 +214,40 @@ def queue_facts(state):
     return sanitize(facts)
 
 
+ENFORCEMENT_KINDS = {
+    "signal": "memcap_signals_30m",
+    "cancel": "memcap_cancellations_30m",
+    "simulator": "memcap_simulator_shutdowns_30m",
+    "environment": "memcap_environment_stops_30m",
+}
+
+
+def enforcement_facts(state, now=None, window=1800):
+    """Counts of memcap's own actions in the last 30 minutes. Missing file = none
+    recorded; an unreadable or symlinked file omits the counts (unknown)."""
+    now = time.time() if now is None else now
+    path = state / "enforcement-actions"
+    counts = dict.fromkeys(ENFORCEMENT_KINDS.values(), 0)
+    if path.is_symlink():
+        return {}
+    try:
+        with path.open() as stream:
+            stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, stream.tell() - 131072))
+            lines = stream.read().splitlines()
+    except FileNotFoundError:
+        return counts
+    except (OSError, ValueError, UnicodeDecodeError):
+        return {}
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 2 or parts[1] not in ENFORCEMENT_KINDS or not parts[0].isdigit():
+            continue
+        if 0 <= now - int(parts[0]) <= window:
+            counts[ENFORCEMENT_KINDS[parts[1]]] += 1
+    return counts
+
+
 def capture(state):
     facts = {"enforcement_paused": int((state / "paused").is_file())}
     root = Path(__file__).resolve().parents[1]
@@ -327,4 +365,5 @@ def capture(state):
     except (OSError, ValueError, KeyError, TypeError):
         pass
     facts.update(queue_facts(state))
+    facts.update(enforcement_facts(state))
     return sanitize(facts)

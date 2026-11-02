@@ -24,6 +24,24 @@ env HOME="$(mktemp -d)" bats tests/
 
 Run all four. Report the actual counts, and report failures as failures.
 
+## Cutting a release
+
+A release is not done until every one of these agrees on the new version:
+
+1. `MEMCAP_VERSION` in `libexec/common.sh` and a matching `CHANGELOG.md` entry
+   (a test enforces the match).
+2. The PR is merged, and the `vX.Y.Z` tag is pushed from the merge commit.
+3. The tap formula (`alextitov19/homebrew-memcap`, `Formula/memcap.rb`) points
+   at the new tag tarball with its sha256, and its caveats mention the change.
+4. A GitHub Release exists for the tag, with the CHANGELOG entry as its notes.
+5. The memcap page on alextitov.com matches the release. That page lives in the
+   owner's `personal-website` repository: bump `version` in
+   `content/tools/memcap.md`, add an entry at the top of
+   `src/data/memcap-releases.ts` (one plain sentence on why the release
+   happened; the site forbids em dashes), and correct any page copy the release
+   made false. Validate that repository with its own checks. It deploys
+   separately, and only when the owner asks.
+
 ## Safety rules while working in this repo
 
 The machine you are running on very likely has memcap installed and enforcing,

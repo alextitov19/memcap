@@ -70,3 +70,24 @@ setup() { setup_common; export MC_DRY_RUN=1; }
   [ "$status" = 2 ]
   [ ! -f "$MEMCAP_CONFIG_HOME/memcap/reporting.json" ]
 }
+
+@test "REPORT: termination reports say whether memcap itself acted recently" {
+  run "$MEMCAP_ROOT/bin/memcap" report unexpected-termination --dry-run
+  [ "$status" = 0 ]
+  run cat "$MEMCAP_STATE_HOME"/memcap/reports/*.md
+  assert_contains "$output" 'recorded no process signal'
+  assert_contains "$output" '"memcap_signals_30m": 0'
+  rm -f "$MEMCAP_STATE_HOME"/memcap/reports/*.md
+  # shellcheck source=/dev/null
+  source "$MEMCAP_ROOT/libexec/common.sh"
+  mc_enforcement_record simulator
+  mc_enforcement_record 'not-a-kind /secret'
+  run cat "$MEMCAP_STATE_HOME/memcap/enforcement-actions"
+  [ "${#lines[@]}" -eq 1 ]
+  assert_contains "$output" ' simulator'
+  run "$MEMCAP_ROOT/bin/memcap" report unexpected-termination --dry-run
+  [ "$status" = 0 ]
+  run cat "$MEMCAP_STATE_HOME"/memcap/reports/*.md
+  assert_contains "$output" 'recorded enforcement actions of its own'
+  assert_contains "$output" '"memcap_simulator_shutdowns_30m": 1'
+}
